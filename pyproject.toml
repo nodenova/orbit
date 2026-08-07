@@ -1,0 +1,59 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tandem"
+version = "0.1.0"
+description = "A local coding-agent runtime that optimises for merge quality."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+
+# Licence discipline (spec sec 15): Apache-2.0 / MIT / BSD only.
+#   fastapi      MIT      uvicorn  BSD-3      pydantic MIT
+#   httpx        BSD-3    blake3   Apache-2.0/CC0
+# Every addition to this list is a supply-chain decision (spec sec 8.6).
+#
+# A floor is the oldest version the suite is actually run against, never the
+# oldest that might work. There is no lockfile here, so the floor is the only
+# thing standing between a resolver and a version nobody has executed; the
+# previous floors admitted a stack roughly two years behind the one CI installs.
+dependencies = [
+    # 0.140 is the first release to admit Starlette 1.x — 0.130 still caps it at
+    # <1.0.0 — and Starlette 1.x is the TestClient the gateway tests run against.
+    "fastapi>=0.140",
+    "uvicorn[standard]>=0.52",
+    "pydantic>=2.13",
+    "httpx>=0.28",
+    # 1.0 is the API boundary. Attestation (sec 9) hashes against this, which is
+    # not a place to accept whatever a 0.x resolves to.
+    "blake3>=1.0",
+]
+
+[project.optional-dependencies]
+# Constrained decoding. Pure Python (pydantic + interegular) by design:
+# XGrammar hard-requires PyTorch and would break an MLX-native runtime (spec sec 5.1).
+constrain = ["lm-format-enforcer>=0.11"]
+# Apple-Silicon-only. Not installable on the CI box; backends degrade explicitly.
+# These two floors stay where they are: nothing here can execute them, and raising
+# a floor the suite cannot run is the claim this file is trying to stop making.
+mlx = ["mlx>=0.32.0", "mlx-lm>=0.28"]
+# pytest 9 and pytest-asyncio 1.x are what CI runs and what the strict-mode
+# convention in CLAUDE.md describes. The old floors predate both majors.
+dev = ["pytest>=9.0", "pytest-asyncio>=1.0"]
+
+[project.scripts]
+tandem = "tandem.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tandem"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+filterwarnings = ["error::DeprecationWarning:tandem.*"]
+# Strict is already the default. Written out because CLAUDE.md documents the
+# explicit `@pytest.mark.asyncio` it implies, and a default that flips upstream
+# would turn every unmarked coroutine into a silent skip rather than an error.
+asyncio_mode = "strict"

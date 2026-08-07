@@ -1,0 +1,40 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.venv/
+venv/
+
+# Runtime state — never committed.
+/var/
+*.jsonl
+!tests/**/*.jsonl
+!src/tandem/**/*.jsonl
+
+# Model containers, adapters, routing profiles, KV snapshots.
+#
+# Every one of these is anchored with a leading slash so it matches only the
+# working-directory artefact, not a source package that happens to share the
+# name. Unanchored, `adapters/` also matched `src/tandem/adapters/` and silently
+# excluded the entire adapter pipeline from the first commit — the package was
+# on disk, imported fine locally, and simply was not in the repository.
+/models/
+/adapters/
+/profiles/
+/kvcache/
+/corpus/
+
+# The technical specification (v1) itself — the thing `sec 8.2` and friends point
+# at. It is not ours to publish and this repository is public, so /specs/ is the
+# place to drop a local copy and it never leaves the machine.
+#
+# What must NOT live here is the handoff. It was `specs/NEXT_STEPS.md` for a while,
+# under this same ignore rule, and that defeated its entire purpose: it exists so a
+# session can restart from a cold clone, and an untracked file dies with the
+# container it was written in. It is `docs/HANDOFF.md` now — committed, public, and
+# written so that it stays safe to publish.
+/specs/
+*.safetensors
+*.gguf
