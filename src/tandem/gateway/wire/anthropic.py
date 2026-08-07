@@ -30,6 +30,7 @@ from ...types import (
     ToolDef,
     ToolResult,
 )
+from . import check_bounds, size_of
 
 _STOP_REASON = {
     StopReason.END_TURN: "end_turn",
@@ -59,8 +60,13 @@ def to_canonical(body: dict[str, Any]) -> GenRequest:
     if isinstance(system, list):
         system = _text_of(system)
 
+    raw_messages = body.get("messages") or []
+    # Checked before the loop rather than after it: the whole point of a message-count
+    # bound is not to do per-message work a million times first.
+    check_bounds(items=len(raw_messages) if isinstance(raw_messages, list) else 0)
+
     messages: list[Message] = []
-    for raw in body.get("messages", []):
+    for raw in raw_messages:
         role = Role(raw.get("role", "user")) if raw.get("role") in ("user", "assistant") else Role.USER
         content = raw.get("content")
 
@@ -113,6 +119,9 @@ def to_canonical(body: dict[str, Any]) -> GenRequest:
     )
 
     stop = body.get("stop_sequences") or []
+    max_tokens = int(body.get("max_tokens", 4096))
+    check_bounds(chars=size_of(system, messages), max_tokens=max_tokens)
+
     return GenRequest(
         messages=messages,
         system=system if isinstance(system, str) else None,
@@ -121,7 +130,7 @@ def to_canonical(body: dict[str, Any]) -> GenRequest:
             temperature=float(body.get("temperature", 0.7)),
             top_p=float(body.get("top_p", 1.0)),
             seed=int(body.get("seed", 0)),
-            max_tokens=int(body.get("max_tokens", 4096)),
+            max_tokens=max_tokens,
             stop=tuple(stop) if isinstance(stop, list) else (),
         ),
         stream=bool(body.get("stream", False)),
@@ -160,6 +169,17 @@ def from_canonical(result: GenResult, *, model: str, request_id: str = "") -> di
         # without going to the audit log.
         body["tandem_receipt"] = result.receipt
     return body
+
+
+def stream_options(body: dict[str, Any]) -> dict[str, Any]:
+    """`StreamEncoder` keyword arguments this protocol reads off the request body.
+
+    Empty here: the Messages protocol always reports usage, on `message_start` and
+    again on `message_delta`, so there is nothing for a client to opt into. The
+    function exists anyway so `app.py` can build any protocol's encoder identically
+    rather than branching on which one has options.
+    """
+    return {}
 
 
 class StreamEncoder:
@@ -275,18 +295,23 @@ class StreamEncoder:
         The status line went out with the first event, so an error this late can
         only be an in-band event. Silence would leave the harness waiting for a
         `message_stop` that is never coming.
+
+        An open text block is closed first. The Anthropic SDK's stream accumulator
+        tracks blocks by index, and an `error` arriving on top of an unterminated
+        block leaves it holding a half-built message — so the harness's own error
+        handling runs against corrupt state rather than against a clean partial
+        turn. No `message_stop` follows: that event means the turn completed, and
+        this one did not.
         """
-        return self._emit("error", error(500, message, err_type))
-
-
-def sse_events(result: GenResult, *, model: str, request_id: str = "") -> list[str]:
-    """The whole SSE sequence for a completed result, in one call."""
-    enc = StreamEncoder(model=model, request_id=request_id)
-    return [
-        *enc.open(result.usage.input_tokens),
-        *enc.delta(result.text),
-        *enc.close(result),
-    ]
+        out: list[str] = []
+        if self._text_open:
+            out += self._emit(
+                "content_block_stop", {"type": "content_block_stop", "index": self._index}
+            )
+            self._text_open = False
+            self._index += 1
+        out += self._emit("error", error(500, message, err_type))
+        return out
 
 
 def count_tokens_response(n: int) -> dict[str, Any]:

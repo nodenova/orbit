@@ -20,7 +20,7 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 # Sec 8.6. Emitted by `env_exports()` and asserted by `check_env()`.
 HARNESS_ENV: dict[str, str] = {
@@ -42,6 +42,13 @@ ALLOWED_DEPENDENCIES = frozenset(
 )
 
 _LSOF_LINE = re.compile(r"\S+\s+(\d+)\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+(TCP|UDP)\s+(\S+)")
+
+# `observe_connections(ALL_PROCESSES)` snapshots every socket on the machine. It is
+# not the default, and the reason is that it does not answer the question: a browser
+# or a package manager running alongside the gateway makes `loopback_only` false
+# through no fault of tandem's, and a check that is false for reasons the operator
+# cannot act on is a check the operator learns to ignore.
+ALL_PROCESSES = -1
 
 
 @dataclass
@@ -71,13 +78,53 @@ class Connection:
 
 
 def _is_loopback_host(host: str) -> bool:
-    host = host.strip().strip("[]")
-    if host in ("*", "localhost", ""):
-        return True
+    """Is this host unambiguously *this machine*, and nothing else?
+
+    Three things this deliberately answers `False` to, each of which it once
+    answered `True`:
+
+    * `"*"` — how `lsof` prints a socket bound to **every** interface. A wildcard
+      bind is the opposite of loopback: `TANDEM_HOST=0.0.0.0 tandem serve` puts an
+      unauthenticated coding agent on the LAN, and reporting that as loopback is
+      precisely the silent break `ServerConfig.host`'s comment warns about.
+      `0.0.0.0` and `::` reach the same answer through `ipaddress`.
+    * `""` — no host at all is not a host on this machine. Callers that mean
+      "this field is absent" skip it before asking (see `Connection.is_loopback`).
+    * `localhost.attacker.example` — `startswith("localhost")` matched it. Only the
+      exact name and true subdomains of it resolve to loopback (RFC 6761).
+    """
+    host = host.strip().strip("[]").rstrip(".").lower()
+    if not host or host == "*":
+        return False
     try:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
-        return host.startswith("localhost")
+        return host == "localhost" or host.endswith(".localhost")
+
+
+def endpoint_host(url: str) -> str:
+    """The host of a URL — no scheme, credentials, port or path.
+
+    Hand-parsed rather than `urllib.parse.urlsplit` because nothing under
+    `src/tandem/` imports `urllib` and `tests/test_export_reviews.py` walks the
+    package's imports to keep it that way (sec 8.6). A host is a prefix of a URL,
+    so extracting one is three splits, and it is worth that to keep the pin crisp.
+    """
+    rest = url.strip().split("://", 1)[-1]
+    for cut in ("/", "?", "#"):
+        rest = rest.split(cut, 1)[0]
+    # userinfo@host — a credential in a URL must never be mistaken for the host.
+    rest = rest.rsplit("@", 1)[-1]
+    return _host_of(rest)
+
+
+def is_loopback_endpoint(url: str) -> bool:
+    """Would traffic to this URL stay on this machine?
+
+    Used to refuse a configured endpoint before a socket exists, rather than to
+    describe one that already opened.
+    """
+    return _is_loopback_host(endpoint_host(url))
 
 
 def _split_endpoint(endpoint: str) -> tuple[str, str]:
@@ -96,10 +143,19 @@ def _host_of(part: str) -> str:
 
 
 def observe_connections(pid: int | None = None) -> tuple[list[Connection], str]:
-    """Snapshot open sockets via `lsof -i -P`. Returns (connections, note)."""
+    """Snapshot open sockets via `lsof -i -P`. Returns (connections, note).
+
+    Scoped to one process. `None` means *this* one — pass `ALL_PROCESSES` for the
+    machine-wide snapshot, and read that constant's comment before doing so.
+    """
     cmd = ["lsof", "-i", "-P", "-n"]
-    if pid is not None:
-        cmd += ["-p", str(pid)]
+    if pid is None:
+        pid = os.getpid()
+    if pid != ALL_PROCESSES:
+        # `-a` ANDs the selectors. Without it lsof ORs them, so `-i … -p PID` means
+        # "every internet socket on the machine, or every file of this process" —
+        # which is how the pid argument came to have no effect at all.
+        cmd += ["-a", "-p", str(pid)]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
     except FileNotFoundError:
@@ -130,6 +186,10 @@ class OfflineReport:
     # A configuration fact, not an observation — `lsof` only sees a call that has
     # already happened, and the posture is wrong from the moment the rung is armed.
     remote_tier1: bool = False
+    # Same reasoning, one rung down: an endpoint this process is configured to POST
+    # to that is not on this machine. Rung 1's `tier1.endpoint` is the case that
+    # matters — it is the *default* rung and it carries none of rung 4's four gates.
+    nonloopback_endpoints: list[str] = field(default_factory=list)
     note: str = ""
 
     @property
@@ -139,6 +199,7 @@ class OfflineReport:
             and self.env_ok
             and not self.unexpected_dependencies
             and not self.remote_tier1
+            and not self.nonloopback_endpoints
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -151,6 +212,7 @@ class OfflineReport:
             "env_missing": self.env_missing,
             "unexpected_dependencies": self.unexpected_dependencies,
             "remote_tier1": self.remote_tier1,
+            "nonloopback_endpoints": self.nonloopback_endpoints,
             "note": self.note,
         }
 
@@ -198,8 +260,19 @@ def audit_dependencies() -> list[str]:
 
 
 def verify(
-    pid: int | None = None, *, strict_deps: bool = False, remote_tier1: bool = False
+    pid: int | None = None,
+    *,
+    strict_deps: bool = False,
+    remote_tier1: bool = False,
+    configured_endpoints: Iterable[tuple[str, str]] = (),
 ) -> OfflineReport:
+    """Offline posture: what this process has open, and what it is armed to do.
+
+    `configured_endpoints` is (label, url) pairs the process would POST to — the
+    same reasoning as `remote_tier1`, applied to a URL instead of a rung name. The
+    claim is about what this process will do, not about what it has done so far, so
+    an endpoint pointing off the machine falsifies it before any socket opens.
+    """
     connections, note = observe_connections(pid)
     offending = [c for c in connections if not c.is_loopback]
     env_ok, missing = check_env()
@@ -211,6 +284,11 @@ def verify(
         env_missing=missing,
         unexpected_dependencies=audit_dependencies() if strict_deps else [],
         remote_tier1=remote_tier1,
+        nonloopback_endpoints=[
+            f"{label}={url}"
+            for label, url in configured_endpoints
+            if url and not is_loopback_endpoint(url)
+        ],
         note=note,
     )
     if note != "ok":
@@ -220,5 +298,11 @@ def verify(
             "tier1.rung='remote' (sec 5.5 rung 4) is configured: verdicts and the "
             "code they judge leave this machine. The offline claim does not hold "
             f"while it is enabled. [{note}]"
+        )
+    elif report.nonloopback_endpoints:
+        report.note = (
+            "configured to send requests off this machine: "
+            + ", ".join(report.nonloopback_endpoints)
+            + f". The offline claim does not hold while that is set. [{note}]"
         )
     return report

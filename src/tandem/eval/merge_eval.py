@@ -234,21 +234,36 @@ class ArmSummary:
     median_proximity: float = 0.0
     mean_blast_files: float = 0.0
     mean_blast_lines: float = 0.0
+    # Mean of the *per-case* blast accuracy. Held separately from the two means
+    # above because it cannot be recovered from them: see `_blast_accuracy`.
+    blast_accuracy: float | None = None
     mean_review_proxy: float | None = None
     mean_latency_s: float = 0.0
     errors: int = 0
+    # How many cases each rate was actually computed over. A rate is a fraction and
+    # a fraction hides its denominator, which is how an arm scored on three cases
+    # came to be compared against an arm scored on a hundred. `None` means "this
+    # summary was not built by `summarise`" — the hand-assembled ones in the tests —
+    # and switches the coverage check off rather than failing them all closed.
+    applied_n: int | None = None
+    tested_n: int | None = None
+    linted_n: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "arm": self.arm,
             "n": self.n,
             "apply_rate": self.apply_rate,
+            "applied_n": self.applied_n,
             "test_pass_rate": self.test_pass_rate,
+            "tested_n": self.tested_n,
             "convention_rate": self.convention_rate,
+            "linted_n": self.linted_n,
             "mean_proximity": round(self.mean_proximity, 4),
             "median_proximity": round(self.median_proximity, 4),
             "mean_blast_files": round(self.mean_blast_files, 3),
             "mean_blast_lines": round(self.mean_blast_lines, 3),
+            "blast_accuracy": _round(self.blast_accuracy),
             "mean_review_proxy": self.mean_review_proxy,
             "mean_latency_s": round(self.mean_latency_s, 2),
             "errors": self.errors,
@@ -322,12 +337,15 @@ def summarise(arm_name: str, scores: Sequence[CaseScore]) -> ArmSummary:
         return summary
 
     applied = [s for s in valid if s.applied is not None]
+    summary.applied_n = len(applied)
     if applied:
         summary.apply_rate = round(sum(1 for s in applied if s.applied) / len(applied), 4)
     tested = [s for s in valid if s.test_pass is not None]
+    summary.tested_n = len(tested)
     if tested:
         summary.test_pass_rate = round(sum(1 for s in tested if s.test_pass) / len(tested), 4)
     linted = [s for s in valid if s.convention_clean is not None]
+    summary.linted_n = len(linted)
     if linted:
         summary.convention_rate = round(
             sum(1 for s in linted if s.convention_clean) / len(linted), 4
@@ -341,25 +359,65 @@ def summarise(arm_name: str, scores: Sequence[CaseScore]) -> ArmSummary:
     summary.median_proximity = statistics.median(prox)
     summary.mean_blast_files = sum(s.blast_radius_files for s in valid) / len(valid)
     summary.mean_blast_lines = sum(s.blast_radius_lines for s in valid) / len(valid)
+    # Score each case, then average. Averaging the *ratios* first and taking the
+    # distance afterwards is what the metric's own docstring forbids, and it is not
+    # a rounding-level difference: an arm that touches nothing on half the cases and
+    # twice too much on the other half averages to exactly 1.0 and scores a perfect
+    # 1.0000, beating an arm that is within 10% on every single case. Since
+    # blast radius is one of only two metrics always measured, that is a free win on
+    # a fifth of the M3 gate available to the arm with the *least* consistent
+    # footprint.
+    summary.blast_accuracy = sum(
+        case_blast_accuracy(s.blast_radius_files, s.blast_radius_lines) for s in valid
+    ) / len(valid)
     summary.mean_latency_s = sum(s.latency_s for s in valid) / len(valid)
     return summary
 
 
-def _blast_accuracy(summary: ArmSummary) -> float:
-    """Closeness of blast radius to the merged diff's own footprint.
+def case_blast_accuracy(files_ratio: float, lines_ratio: float) -> float:
+    """Closeness of one patch's blast radius to the merged diff's own footprint.
 
     Distance from 1.0 in either direction, so a patch that touches twice as much and
     one that touches half as much are both penalised — averaging the raw ratio would
     let those cancel.
     """
-    err = abs(summary.mean_blast_files - 1.0) + abs(summary.mean_blast_lines - 1.0)
+    err = abs(files_ratio - 1.0) + abs(lines_ratio - 1.0)
     return 1.0 / (1.0 + err)
+
+
+def _blast_accuracy(summary: ArmSummary) -> float:
+    """The arm's blast-radius accuracy, per case where that is available.
+
+    `summarise` records the per-case mean, which is the honest number. The fallback
+    on the arm's mean ratios exists only for an `ArmSummary` assembled by hand — it
+    is the cancelling average this metric is defined to avoid, and it cannot be
+    recovered from the two means, so it is used and not preferred.
+    """
+    if summary.blast_accuracy is not None:
+        return summary.blast_accuracy
+    return case_blast_accuracy(summary.mean_blast_files, summary.mean_blast_lines)
+
+
+# A rate computed over fewer than this fraction of an arm's cases is not a
+# statement about the arm. It is reported (the summary carries both the rate and
+# its denominator) but it is not offered to `compare_arms`, because the comparison
+# is between arms and there is no reason to believe the minority of cases one arm
+# managed to produce a patch for is the same population as the cases the other was
+# scored on. Set at a half rather than tuned: the failure it exists to stop is an
+# arm scoring 1.0 on three of a hundred cases.
+_MIN_RATE_COVERAGE = 0.5
+
+
+def _covered(rate: float | None, denominator: int | None, n: int) -> float | None:
+    if rate is None or denominator is None or n <= 0:
+        return rate
+    return rate if denominator >= _MIN_RATE_COVERAGE * n else None
 
 
 def comparable_metrics(summary: ArmSummary) -> dict[str, float | None]:
     return {
-        "test_pass_rate": summary.test_pass_rate,
-        "convention_rate": summary.convention_rate,
+        "test_pass_rate": _covered(summary.test_pass_rate, summary.tested_n, summary.n),
+        "convention_rate": _covered(summary.convention_rate, summary.linted_n, summary.n),
         "mean_proximity": summary.mean_proximity,
         "blast_radius_accuracy": _blast_accuracy(summary),
         # Lower is better for the raw proxy (probability of drawing a comment), so

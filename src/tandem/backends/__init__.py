@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import Config
+from ..offline import is_loopback_endpoint
 from .base import Backend, BackendUnavailable, Delta, render_default
 from .mock import Fault, MockBackend
 from .remote_tier1 import RUNG as REMOTE_RUNG
@@ -98,6 +99,7 @@ def build_tier1(cfg: Config, tier0: Backend | None = None) -> Backend | None:
             f"unknown tier1.rung: {rung!r} (expected one of {', '.join(RUNGS)})"
         )
 
+    _require_loopback_endpoint(cfg)
     if cfg.backend == "mock":
         return MockBackend(name="mock-tier1", tier=1, container="mock-tier1-container-v1")
     from .mlx_tier1 import OptiqTier1Backend
@@ -109,6 +111,41 @@ def build_tier1(cfg: Config, tier0: Backend | None = None) -> Backend | None:
         timeout_s=cfg.tier1.request_timeout_s,
         expert_cache_bytes=cfg.tier1.expert_cache_bytes,
         pinned_version=cfg.tier1.pinned_version,
+    )
+
+
+# --- rung 1 -----------------------------------------------------------------
+
+
+def _require_loopback_endpoint(cfg: Config) -> None:
+    """Rung 1 talks to a *local* process, and only a local one (sec 5.4, 8.6).
+
+    Rung 4 has four gates before a socket exists: the rung has to be named, the
+    consent sentence has to be written out in full, the transport has to be a file
+    outside the package, and `OfflineReport.ok` goes false. Every one of them keys
+    on `rung == "remote"` — so rung 1, which is the *default*, had none of them
+    while opening an `httpx.AsyncClient` inside the package against whatever
+    `tier1.endpoint` said. `TANDEM_TIER1_ENDPOINT=https://collector.example/v1`
+    was enough to ship candidate patches and the repository context they were
+    generated from to a third party, with `tandem doctor` still reporting
+    `offline.ok: true`.
+
+    The endpoint exists because sec 5.4 puts mlx-optiq behind a *process* boundary,
+    not a machine boundary. Refusing here rather than warning is the same choice
+    rung 4 makes: the claim is about what this process will do, not about what it
+    has done so far, so the moment to answer is before the client is constructed.
+    Sending tier 1 off the machine is rung 4, and rung 4 is reached by naming it.
+    """
+    endpoint = cfg.tier1.endpoint
+    if not endpoint or is_loopback_endpoint(endpoint):
+        return
+    raise ValueError(
+        f"tier1.endpoint={endpoint!r} is not on this machine, and "
+        f"tier1.rung={cfg.tier1.rung!r} carries none of rung 4's consent gates. "
+        "Rung 1 speaks to a local mlx-optiq process (sec 5.4), so the endpoint must "
+        "be loopback. Sending tier 1 off this machine is rung 4: set "
+        "tier1.rung='remote', tier1.remote_endpoint and tier1.remote_consent, which "
+        "also makes `tandem doctor` report the offline claim as broken (sec 8.6)."
     )
 
 

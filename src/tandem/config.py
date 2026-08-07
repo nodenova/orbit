@@ -11,8 +11,10 @@ from __future__ import annotations
 import os
 import tomllib
 from dataclasses import dataclass, field, fields, is_dataclass
+from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from types import UnionType
+from typing import Any, Union, get_args, get_origin, get_type_hints
 
 DEFAULT_CONFIG_PATH = Path(os.environ.get("TANDEM_CONFIG", "tandem.toml"))
 
@@ -164,7 +166,14 @@ class EvalConfig:
     test_timeout_s: float = 600.0
     lint_timeout_s: float = 120.0
     setup_timeout_s: float = 600.0
-    worktree_dir: str = "var/worktrees"
+    # Outside every repository, on purpose. `repo` defaults to "." and this used to
+    # default to the relative "var/worktrees", so the scratch trees landed *inside*
+    # the repo under test — which `WorktreeRunner`'s own comment forbids, because
+    # that repo's pytest collects them and its linters lint them, a full copy of the
+    # suite rediscovered once per case. This repo gitignores `/var/`; a customer's
+    # will not, so they would also watch `?? var/` sit in `git status` for hours.
+    # `expanduser()` is applied at the far end (`worktree.py`).
+    worktree_dir: str = "~/.cache/tandem/worktrees"
 
     # T2 escalation on the *served* path (sec 7.2). Off by default, and the default
     # is the interesting part: turning it on runs the repository's test command on
@@ -190,10 +199,20 @@ class AttestConfig:
 @dataclass
 class ServerConfig:
     # Loopback only. The offline posture (sec 8.6) is a verifiable claim, and
-    # binding 0.0.0.0 would break it silently.
+    # binding 0.0.0.0 would break it silently — `OfflineReport` now says so out
+    # loud rather than reading lsof's `*:8080` as loopback.
     host: str = "127.0.0.1"
     port: int = 8080
     api_key: str | None = None
+    # Host-header allow-list. Binding loopback answers "who can reach the socket";
+    # this answers "who can drive it", which is a different question once a browser
+    # is involved. Any page the operator visits can point an attacker-controlled
+    # hostname at 127.0.0.1 and POST to the gateway (DNS rebinding) — and with
+    # `api_key` unset, the default, that is a session against a local coding agent.
+    # A browser cannot forge the Host header, so pinning it to loopback names is
+    # what turns "binds loopback by default" into an actual boundary. An operator
+    # who genuinely fronts this with a reverse proxy puts their hostname here.
+    allowed_hosts: tuple[str, ...] = ("localhost", "127.0.0.1", "[::1]", "::1")
 
 
 @dataclass
@@ -221,21 +240,106 @@ class Config:
 
 
 def _apply(target: Any, data: dict[str, Any]) -> None:
-    """Merge a TOML mapping into a dataclass, rejecting unknown keys.
+    """Merge a TOML mapping into a dataclass, rejecting unknown keys and wrong types.
 
     Silently ignoring a typo'd key is how a config change appears to take effect and
     does not — unacceptable when the key in question is `expert_cache_bytes` and the
     number ends up in a published measurement.
+
+    The same argument runs one level down, so the value is checked too. `port =
+    "eighty"` used to be stored verbatim and surface as a `TypeError` inside
+    uvicorn; `server = "x"` used to *replace the whole dataclass* with a string and
+    fail somewhere that names neither `server` nor the file it came from. A config
+    error should be reported against the line that caused it.
     """
+    hints = _hints(type(target))
     known = {f.name: f for f in fields(target)}
     for key, value in data.items():
         if key not in known:
             raise ValueError(f"unknown config key: {type(target).__name__}.{key}")
         current = getattr(target, key)
-        if is_dataclass(current) and isinstance(value, dict):
+        where = f"{type(target).__name__}.{key}"
+        if is_dataclass(current):
+            if not isinstance(value, dict):
+                raise ValueError(
+                    f"{where} is a section: expected a TOML table ([{key}] with its "
+                    f"own keys), got {_describe(value)}"
+                )
             _apply(current, value)
         else:
+            expected = hints.get(key)
+            if expected is not None and not _matches(expected, value):
+                raise ValueError(
+                    f"{where} expects {_type_name(expected)}, got {_describe(value)}"
+                )
+            # TOML has arrays, not tuples. A tuple-typed field means "sequence that
+            # nothing mutates later", and the file cannot express that itself.
+            if get_origin(expected) is tuple and isinstance(value, list):
+                value = tuple(value)
             setattr(target, key, value)
+
+
+@lru_cache(maxsize=None)
+def _hints(cls: type) -> dict[str, Any]:
+    """Resolved annotations for a config dataclass.
+
+    `from __future__ import annotations` makes `Field.type` a string, and matching
+    on strings would break the first time someone writes `Optional[str]` instead of
+    `str | None`. Cached because `_apply` runs per key and these classes never change.
+    """
+    return get_type_hints(cls)
+
+
+def _matches(expected: Any, value: Any) -> bool:
+    origin = get_origin(expected)
+    if origin in (Union, UnionType):
+        return any(_matches(arm, value) for arm in get_args(expected))
+    if origin is list:
+        if not isinstance(value, list):
+            return False
+        (item,) = get_args(expected) or (Any,)
+        return item is Any or all(_matches(item, v) for v in value)
+    if origin is tuple:
+        if not isinstance(value, (list, tuple)):  # a TOML array is a list
+            return False
+        args = get_args(expected)
+        if not args:
+            return True
+        if len(args) == 2 and args[1] is Ellipsis:
+            return all(_matches(args[0], v) for v in value)
+        return len(value) == len(args) and all(
+            _matches(a, v) for a, v in zip(args, value)
+        )
+    if expected is type(None):
+        return value is None
+    # `isinstance(True, int)` is True, so a plain isinstance would accept
+    # `port = true` and `mtp = 1`. TOML distinguishes them; so does this.
+    if expected is bool:
+        return type(value) is bool
+    if expected is int:
+        return type(value) is int
+    if expected is float:
+        return type(value) is int or type(value) is float  # TOML `0` for a float
+    return isinstance(value, expected)
+
+
+def _type_name(expected: Any) -> str:
+    origin = get_origin(expected)
+    if origin in (Union, UnionType):
+        return " or ".join(_type_name(a) for a in get_args(expected))
+    if origin in (list, tuple):
+        return f"a list of {_type_name(get_args(expected)[0])}"
+    return {
+        bool: "true or false",
+        int: "an integer",
+        float: "a number",
+        str: "a string",
+        type(None): "nothing",
+    }.get(expected, getattr(expected, "__name__", str(expected)))
+
+
+def _describe(value: Any) -> str:
+    return f"{type(value).__name__} {value!r}"
 
 
 _ENV_MAP: dict[str, tuple[str, ...]] = {

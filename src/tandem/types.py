@@ -2,7 +2,17 @@
 
 All three wire protocols (spec sec 8.1) normalise into these types on the way in and
 denormalise out of them on the way back. Nothing downstream of the gateway edge —
-router, backends, tool-call layer, attestation — knows which harness spoke.
+router, backends, tool-call layer — knows which *protocol* spoke: `GenRequest.protocol`
+is set by the wire modules and read by none of them.
+
+Harness identity is a separate thing and deliberately does travel. `GenRequest.harness`
+is not set by the wire layer at all — it cannot be, because the protocol a harness
+speaks does not identify it — but by `Compactor.apply`, which fingerprints the system
+prompt against its templates and stamps the match. Attestation reads it: the audit
+record names the harness a turn came from (sec 9.2), because "which harness produced
+this prompt" is part of what a receipt has to answer. The invariant that holds is the
+protocol one; the harness field is an intentional exception, and it is written by
+exactly one module.
 
 Everything here is frozen or explicitly copy-on-write. The gateway pipeline is a
 chain of transforms over a GenRequest, and attestation (sec 9) requires that the

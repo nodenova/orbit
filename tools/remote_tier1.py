@@ -28,6 +28,11 @@ be one the runtime does not otherwise need.
 **The key is never in the config file.** `remote_api_key_env` names an environment
 variable; this reads it at startup. A config file is committed, diffed, pasted into
 issues and shipped in support bundles, and a key in one is a key that has leaked.
+
+**TLS is required**, with loopback the only exception. The payload is the candidate
+patch and the code it was generated from, and the header is a bearer key; `http://`
+puts all three on the wire in the clear, which is not what the consent sentence
+consented to.
 """
 
 from __future__ import annotations
@@ -44,6 +49,42 @@ from typing import Any, Awaitable, Callable
 USER_AGENT = "tandem-remote-tier1/1.0"
 
 
+def _is_loopback(netloc: str) -> bool:
+    host = netloc.rsplit("@", 1)[-1]
+    if host.startswith("["):
+        host = host[1 : host.find("]")]
+    elif ":" in host:
+        host = host.rsplit(":", 1)[0]
+    return host in ("localhost", "127.0.0.1", "::1") or host.endswith(".localhost")
+
+
+def require_tls(url: str) -> None:
+    """Refuse a cleartext endpoint (sec 5.5 rung 4).
+
+    What goes over this socket is the candidate patch, the context it was generated
+    from, and a bearer key — the whole reason rung 4 needs a consent sentence. Over
+    `http://` all three are readable by anyone on the path, and the operator who
+    typed the consent sentence consented to *one* third party seeing them, not to
+    everyone between here and there.
+
+    The one opt-out is a loopback host: an on-machine proxy or a test double, where
+    there is no path to be on. It is deliberately not a flag — a flag named
+    `--insecure` gets set once during setup and never unset.
+    """
+    scheme, _, rest = url.partition("://")
+    scheme = scheme.lower()
+    netloc = rest.split("/", 1)[0]
+    if scheme == "https":
+        return
+    if scheme == "http" and _is_loopback(netloc):
+        return
+    raise ValueError(
+        f"tier1.remote_endpoint={url!r} is not TLS. Rung 4 sends the candidate "
+        "patch, the code it was generated from and the API key over this socket; "
+        "use https:// (http:// is accepted only for a loopback host)."
+    )
+
+
 def build_transport(
     *,
     endpoint: str,
@@ -57,6 +98,7 @@ def build_transport(
     schema, the greedy sampling — is already in the payload by the time it gets here
     (`backends/tier1_call.py`), so this file cannot weaken any of it. It moves bytes.
     """
+    require_tls(endpoint)
     url = endpoint.rstrip("/") + "/chat/completions"
 
     def _post(payload: dict[str, Any]) -> dict[str, Any]:

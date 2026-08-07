@@ -27,6 +27,7 @@ from ...types import (
     ToolDef,
     ToolResult,
 )
+from . import check_bounds, size_of
 
 _STATUS = {
     StopReason.END_TURN: "completed",
@@ -62,6 +63,9 @@ def to_canonical(body: dict[str, Any]) -> GenRequest:
     if isinstance(raw_input, str):
         messages.append(Message(role=Role.USER, content=raw_input))
     elif isinstance(raw_input, list):
+        # Checked before the loop rather than after it: the whole point of an
+        # item-count bound is not to do per-item work a million times first.
+        check_bounds(items=len(raw_input))
         for item in raw_input:
             if isinstance(item, str):
                 messages.append(Message(role=Role.USER, content=item))
@@ -152,15 +156,19 @@ def to_canonical(body: dict[str, Any]) -> GenRequest:
         if isinstance(fmt, dict) and fmt.get("type") == "json_schema":
             schema = fmt.get("schema")
 
+    system = "\n\n".join(system_parts) if system_parts else None
+    max_tokens = int(body.get("max_output_tokens") or 4096)
+    check_bounds(chars=size_of(system, kept), max_tokens=max_tokens)
+
     return GenRequest(
         messages=kept,
-        system="\n\n".join(system_parts) if system_parts else None,
+        system=system,
         tools=tuple(tools),
         sampling=Sampling(
             temperature=float(body.get("temperature", 0.7) or 0.0),
             top_p=float(body.get("top_p", 1.0) or 1.0),
             seed=int(body.get("seed") or 0),
-            max_tokens=int(body.get("max_output_tokens") or 4096),
+            max_tokens=max_tokens,
         ),
         stream=bool(body.get("stream", False)),
         json_schema=schema,
@@ -169,13 +177,17 @@ def to_canonical(body: dict[str, Any]) -> GenRequest:
     )
 
 
+def _text_part(text: str) -> dict[str, Any]:
+    return {"type": "output_text", "text": text, "annotations": []}
+
+
 def _message_item(text: str, item_id: str, *, status: str = "completed") -> dict[str, Any]:
     return {
         "type": "message",
         "id": item_id,
         "status": status,
         "role": "assistant",
-        "content": [{"type": "output_text", "text": text, "annotations": []}],
+        "content": [_text_part(text)],
     }
 
 
@@ -236,6 +248,17 @@ def from_canonical(result: GenResult, *, model: str, request_id: str = "") -> di
         output=output,
         output_text=result.text,
     )
+
+
+def stream_options(body: dict[str, Any]) -> dict[str, Any]:
+    """`StreamEncoder` keyword arguments this protocol reads off the request body.
+
+    Empty here: a Responses stream always carries usage on `response.completed`, so
+    there is nothing for a client to opt into. The function exists anyway so
+    `app.py` can build any protocol's encoder identically rather than branching on
+    which one has options.
+    """
+    return {}
 
 
 class StreamEncoder:
@@ -301,6 +324,21 @@ class StreamEncoder:
                     "item": _message_item("", self._message_id, status="in_progress"),
                 },
             )
+            # A Responses item is a container; the text lives in a numbered content
+            # part inside it, and the deltas below are addressed to that part by
+            # `content_index`. Announcing the item but never the part leaves a client
+            # applying deltas to a part it was never told about — Codex tolerates it,
+            # the SDK's own event-to-state reducer does not.
+            out += self._emit(
+                "response.content_part.added",
+                {
+                    "type": "response.content_part.added",
+                    "item_id": self._message_id,
+                    "output_index": self._index,
+                    "content_index": 0,
+                    "part": _text_part(""),
+                },
+            )
             self._message_open = True
         self._text.append(text)
         out += self._emit(
@@ -331,6 +369,16 @@ class StreamEncoder:
                     "output_index": self._index,
                     "content_index": 0,
                     "text": text,
+                },
+            )
+            out += self._emit(
+                "response.content_part.done",
+                {
+                    "type": "response.content_part.done",
+                    "item_id": self._message_id,
+                    "output_index": self._index,
+                    "content_index": 0,
+                    "part": _text_part(text),
                 },
             )
             out += self._emit(
@@ -393,15 +441,6 @@ class StreamEncoder:
                 },
             },
         )
-
-
-def sse_events(result: GenResult, *, model: str, request_id: str = "") -> list[str]:
-    enc = StreamEncoder(model=model, request_id=request_id)
-    return [
-        *enc.open(result.usage.input_tokens),
-        *enc.delta(result.text),
-        *enc.close(result),
-    ]
 
 
 def error(status: int, message: str, err_type: str = "invalid_request_error") -> dict[str, Any]:
