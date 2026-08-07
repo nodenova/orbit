@@ -26,7 +26,9 @@ from ...types import (
     ToolCall,
     ToolDef,
     ToolResult,
+    Usage,
 )
+from . import check_bounds, size_of
 
 _FINISH_REASON = {
     StopReason.END_TURN: "stop",
@@ -49,10 +51,15 @@ def _content_text(content: Any) -> str:
 
 
 def to_canonical(body: dict[str, Any]) -> GenRequest:
+    raw_messages = body.get("messages") or []
+    # Checked before the loop rather than after it: the whole point of a message-count
+    # bound is not to do per-message work a million times first.
+    check_bounds(items=len(raw_messages) if isinstance(raw_messages, list) else 0)
+
     system_parts: list[str] = []
     messages: list[Message] = []
 
-    for raw in body.get("messages", []):
+    for raw in raw_messages:
         role_name = raw.get("role", "user")
         content = _content_text(raw.get("content"))
 
@@ -121,22 +128,25 @@ def to_canonical(body: dict[str, Any]) -> GenRequest:
     else:
         stop_seqs = ()
 
-    max_tokens = body.get("max_completion_tokens") or body.get("max_tokens") or 4096
+    max_tokens = int(body.get("max_completion_tokens") or body.get("max_tokens") or 4096)
 
     schema = None
     fmt = body.get("response_format")
     if isinstance(fmt, dict) and fmt.get("type") == "json_schema":
         schema = (fmt.get("json_schema") or {}).get("schema")
 
+    system = "\n\n".join(system_parts) if system_parts else None
+    check_bounds(chars=size_of(system, messages), max_tokens=max_tokens)
+
     return GenRequest(
         messages=messages,
-        system="\n\n".join(system_parts) if system_parts else None,
+        system=system,
         tools=tuple(tools),
         sampling=Sampling(
             temperature=float(body.get("temperature", 0.7) or 0.0),
             top_p=float(body.get("top_p", 1.0) or 1.0),
             seed=int(body.get("seed") or 0),
-            max_tokens=int(max_tokens),
+            max_tokens=max_tokens,
             stop=stop_seqs,
         ),
         stream=bool(body.get("stream", False)),
@@ -182,27 +192,75 @@ def from_canonical(result: GenResult, *, model: str, request_id: str = "") -> di
     return body
 
 
+def stream_options(body: dict[str, Any]) -> dict[str, Any]:
+    """`StreamEncoder` keyword arguments this protocol reads off the request body.
+
+    Every wire module exposes this so `app.py` can build any protocol's encoder the
+    same way; only this one has anything to say. `stream_options.include_usage` is
+    the client asking for the usage chunk, and without it sec 8.3's context scaling
+    never reaches an OpenAI-compatible streaming client at all — the scaled number
+    is the whole mechanism by which the harness decides to compact.
+    """
+    opts = body.get("stream_options")
+    return {"include_usage": bool(opts.get("include_usage")) if isinstance(opts, dict) else False}
+
+
 class StreamEncoder:
     """Incremental SSE encoder: `open` -> `delta`* -> `close`."""
 
-    def __init__(self, *, model: str, request_id: str = ""):
+    def __init__(self, *, model: str, request_id: str = "", include_usage: bool = False):
         self.model = model
         self.id = request_id or f"chatcmpl-{uuid.uuid4().hex[:24]}"
         # One `created` for the whole stream. A per-chunk timestamp would have the
         # same completion claiming several creation times.
         self.created = int(time.time())
+        # Off unless the client set `stream_options.include_usage`. Not defaulted on:
+        # a chunk with an empty `choices` array is a shape many OpenAI-compatible
+        # clients only tolerate because they asked for it, and several index
+        # `choices[0]` unconditionally otherwise.
+        self.include_usage = include_usage
+        self._input_tokens = 0
 
     def _chunk(self, delta: dict[str, Any], finish: str | None = None) -> list[str]:
-        payload = {
+        payload: dict[str, Any] = {
             "id": self.id,
             "object": "chat.completion.chunk",
             "created": self.created,
             "model": self.model,
             "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
         }
+        if self.include_usage:
+            # Part of the same contract: with usage requested, every chunk carries
+            # the key and only the final usage-only chunk carries a value.
+            payload["usage"] = None
+        return [f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"]
+
+    def _usage_chunk(self, usage: Usage) -> list[str]:
+        """The final chunk: empty `choices`, whole-request usage, then [DONE]."""
+        # The prologue's count is the fallback, not the preference: a backend that
+        # reports its own prompt tokens knows better than a pre-generation estimate,
+        # and a turn whose result carries none would otherwise report zero to the
+        # harness's context meter — the exact silent failure sec 8.3 exists to avoid.
+        prompt_tokens = usage.input_tokens or self._input_tokens
+        payload = {
+            "id": self.id,
+            "object": "chat.completion.chunk",
+            "created": self.created,
+            "model": self.model,
+            "choices": [],
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": usage.output_tokens,
+                "total_tokens": prompt_tokens + usage.output_tokens,
+                "prompt_tokens_details": {"cached_tokens": usage.cached_input_tokens},
+            },
+        }
         return [f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"]
 
     def open(self, input_tokens: int = 0) -> list[str]:
+        # Chat Completions has nowhere to put prompt usage until the stream ends, so
+        # unlike the sibling protocols the count is held rather than emitted here.
+        self._input_tokens = input_tokens
         return self._chunk({"role": "assistant", "content": ""})
 
     def delta(self, text: str) -> list[str]:
@@ -224,6 +282,8 @@ class StreamEncoder:
                 }
             )
         out += self._chunk({}, finish=_FINISH_REASON[result.stop_reason])
+        if self.include_usage:
+            out += self._usage_chunk(result.usage)
         out.append("data: [DONE]\n\n")
         return out
 
@@ -231,15 +291,6 @@ class StreamEncoder:
         """Terminate a stream whose headers already went out."""
         payload = json.dumps(error(500, message, err_type), separators=(",", ":"))
         return [f"data: {payload}\n\n", "data: [DONE]\n\n"]
-
-
-def sse_events(result: GenResult, *, model: str, request_id: str = "") -> list[str]:
-    enc = StreamEncoder(model=model, request_id=request_id)
-    return [
-        *enc.open(result.usage.input_tokens),
-        *enc.delta(result.text),
-        *enc.close(result),
-    ]
 
 
 def error(status: int, message: str, err_type: str = "invalid_request_error") -> dict[str, Any]:

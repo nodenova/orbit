@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import difflib
 import re
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
 
@@ -95,6 +96,11 @@ class CompactionResult:
 
     def diff(self) -> str:
         """Unified diff of what the harness sent vs what the model saw."""
+        if self.original_system is None and self.compacted_system is None:
+            # `keep_original=False` deliberately retains no prompt text. Returning an
+            # empty diff here would read as "compaction changed nothing", which is
+            # the opposite of the truth; say why there is nothing to show.
+            return "(no prompt text retained: compaction.keep_original = false)\n"
         a = (self.original_system or "").splitlines(keepends=True)
         b = (self.compacted_system or "").splitlines(keepends=True)
         return "".join(
@@ -246,22 +252,72 @@ def strip_tool(tool: ToolDef) -> ToolDef:
 # --- the pipeline stage -----------------------------------------------------
 
 
+# A served gateway runs for days. `history` exists for the M1 gate and the diff
+# view, both of which want a recent sample rather than every turn since boot, and a
+# Claude Code system prompt is 40-100 KB — an unbounded list of them is a gigabyte
+# after ten thousand turns. Bounded rather than cleared, so the gate still has a
+# population to take a median over; the running totals below keep `measure()`
+# honest about how many turns that median was drawn from.
+DEFAULT_HISTORY_LIMIT = 256
+
+
 @dataclass
 class Compactor:
     enabled: bool = True
     strip_schemas: bool = True
     # Retain the harness's original prompt on the request so --no-compact and the
     # diff view can reach it. Off only if a deployment considers the raw prompt
-    # itself sensitive enough not to hold in memory.
+    # itself sensitive enough not to hold in memory — in which case it must not be
+    # held in `history` either, which is the other place it would otherwise live.
     keep_original: bool = True
     templates: tuple[CompactionTemplate, ...] = TEMPLATES
     # Injected so the multiplier is measured in the serving model's own tokens
     # rather than a character-count proxy.
     count_tokens: Callable[[str], int] = field(default=lambda s: max(1, len(s) // 4))
-    # Every result this process has produced, for the M1 gate report.
-    history: list[CompactionResult] = field(default_factory=list, repr=False)
+    # How many recent results to retain. See DEFAULT_HISTORY_LIMIT.
+    history_limit: int = DEFAULT_HISTORY_LIMIT
+    # The most recent `history_limit` results, for the M1 gate report and the diff
+    # view. A deque so retention is enforced by the container rather than by every
+    # call site remembering to trim.
+    history: "deque[CompactionResult]" = field(default_factory=deque, repr=False)
+    # Population counts over *every* turn, not just the retained window: a median
+    # taken from 256 samples out of 10k turns is fine, but reporting n=256 would
+    # understate the evidence behind the gate.
+    turns_seen: int = 0
+    turns_applied: int = 0
+    turns_stale: int = 0
 
-    def apply(self, req: GenRequest, *, force_off: bool = False) -> tuple[GenRequest, CompactionResult]:
+    def __post_init__(self) -> None:
+        limit = max(1, self.history_limit)
+        if self.history.maxlen != limit:
+            self.history = deque(self.history, maxlen=limit)
+
+    def _record(self, result: CompactionResult, record: bool) -> CompactionResult:
+        """Append to the bounded history and update the population counters."""
+        if not record:
+            # `record=False` is a probe rather than a served turn — the token-count
+            # endpoint compacts to answer honestly, but a probe is not a request the
+            # model ran. Counting it would skew the M1 gate's multiplier statistics,
+            # and appending it would hide the last real turn behind a probe in the
+            # sec 8.2 diff view — Claude Code probes far more often than it completes.
+            return result
+        if not self.keep_original:
+            # The flag has to bite here and not only on the outgoing GenRequest:
+            # `history` outlives the request, and holding the raw prompt in it is
+            # exactly what the deployment asked us not to do.
+            result.original_system = None
+            result.compacted_system = None
+        self.history.append(result)
+        self.turns_seen += 1
+        if result.applied:
+            self.turns_applied += 1
+            if result.stale_fingerprint:
+                self.turns_stale += 1
+        return result
+
+    def apply(
+        self, req: GenRequest, *, force_off: bool = False, record: bool = True
+    ) -> tuple[GenRequest, CompactionResult]:
         original = req.system
         tmpl, score = detect(original, self.templates)
         harness = tmpl.harness if tmpl else None
@@ -269,59 +325,65 @@ class Compactor:
         original_tokens = self._tokens_for(original, req.tools)
 
         if force_off or not self.enabled:
-            result = CompactionResult(
-                applied=False,
-                template_id=None,
-                harness=harness,
-                original_system=original,
-                compacted_system=original,
-                original_tokens=original_tokens,
-                compacted_tokens=original_tokens,
-                reason="compaction disabled",
+            result = self._record(
+                CompactionResult(
+                    applied=False,
+                    template_id=None,
+                    harness=harness,
+                    original_system=original,
+                    compacted_system=original,
+                    original_tokens=original_tokens,
+                    compacted_tokens=original_tokens,
+                    reason="compaction disabled",
+                ),
+                record,
             )
-            self.history.append(result)
             return req.with_(harness=harness), result
 
         if tmpl is None:
             # An unrecognised harness is compacted not at all. Guessing at a prompt
             # we do not recognise is how you mis-strip a tool.
-            result = CompactionResult(
-                applied=False,
-                template_id=None,
-                harness=None,
-                original_system=original,
-                compacted_system=original,
-                original_tokens=original_tokens,
-                compacted_tokens=original_tokens,
-                reason="no template matched this system prompt",
+            result = self._record(
+                CompactionResult(
+                    applied=False,
+                    template_id=None,
+                    harness=None,
+                    original_system=original,
+                    compacted_system=original,
+                    original_tokens=original_tokens,
+                    compacted_tokens=original_tokens,
+                    reason="no template matched this system prompt",
+                ),
+                record,
             )
-            self.history.append(result)
             return req, result
 
         tools = tuple(strip_tool(t) for t in req.tools) if self.strip_schemas else req.tools
         compacted_tokens = self._tokens_for(tmpl.replacement, tools)
         stale = score < tmpl.stale_below_ratio * len(tmpl.markers)
 
-        result = CompactionResult(
-            applied=True,
-            template_id=tmpl.id,
-            harness=tmpl.harness,
-            original_system=original,
-            compacted_system=tmpl.replacement,
-            original_tokens=original_tokens,
-            compacted_tokens=compacted_tokens,
-            stale_fingerprint=stale,
-            matched_markers=score,
-            total_markers=len(tmpl.markers),
-            reason=(
-                f"harness prompt matched only {score}/{len(tmpl.markers)} markers for "
-                f"{tmpl.id}; the harness has been upgraded and the template needs "
-                "re-authoring before it mis-strips something"
-                if stale
-                else "ok"
+        result = self._record(
+            CompactionResult(
+                applied=True,
+                template_id=tmpl.id,
+                harness=tmpl.harness,
+                original_system=original,
+                compacted_system=tmpl.replacement,
+                original_tokens=original_tokens,
+                compacted_tokens=compacted_tokens,
+                stale_fingerprint=stale,
+                matched_markers=score,
+                total_markers=len(tmpl.markers),
+                reason=(
+                    f"harness prompt matched only {score}/{len(tmpl.markers)} markers for "
+                    f"{tmpl.id}; the harness has been upgraded and the template needs "
+                    "re-authoring before it mis-strips something"
+                    if stale
+                    else "ok"
+                ),
             ),
+            record,
         )
-        self.history.append(result)
 
         new_req = req.with_(
             system=tmpl.replacement,
@@ -346,10 +408,21 @@ class Compactor:
         return n
 
     def measure(self) -> dict[str, Any]:
-        """M1 gate (sec 11): >=10x measured compaction on your own harness."""
+        """M1 gate (sec 11): >=10x measured compaction on your own harness.
+
+        The multiplier statistics come from the retained window; the counts come
+        from the running totals. Reporting the window's length as `n` would claim
+        a 256-turn sample when the process has served ten thousand.
+        """
+        if not self.turns_applied:
+            return {"pass": False, "reason": "compaction never applied", "n": 0}
         applied = [r for r in self.history if r.applied]
         if not applied:
-            return {"pass": False, "reason": "compaction never applied", "n": 0}
+            return {
+                "pass": False,
+                "reason": "no compacted turn inside the retained window",
+                "n": self.turns_applied,
+            }
         mults = sorted(r.multiplier for r in applied)
         median = mults[len(mults) // 2]
         return {
@@ -358,6 +431,8 @@ class Compactor:
             "median_multiplier": round(median, 2),
             "min_multiplier": round(mults[0], 2),
             "max_multiplier": round(mults[-1], 2),
-            "n": len(applied),
-            "stale_fingerprints": sum(1 for r in applied if r.stale_fingerprint),
+            "n": self.turns_applied,
+            "sampled": len(applied),
+            "window": self.history.maxlen,
+            "stale_fingerprints": self.turns_stale,
         }

@@ -17,12 +17,24 @@ what really happened, and the harness gets the scaled number.
 `_finish` does everything after it, and the two differ only in whether the middle
 emits deltas as they arrive (sec 7.3's TTFT budget) or produces the whole result
 first (best-of-N, which cannot be streamed honestly).
+
+One deliberate asymmetry in that middle, stated here because it is invisible at the
+call site: the incrementally-streamed path does **not** go through `Cascade`. It
+reads `Backend.stream` directly and reports a synthesised `CascadeInfo` with
+`candidates_generated=1`. That is sound only because `_not_streamable` has already
+excluded every turn the cascade would do anything for — a turn that streams carries
+no tools, is not `code_change` and is not `plan`, so there is no best-of-N to run,
+no rerank to ask for and no T2 escalation to consider. It also means the sec 7.3
+pressure valve does not apply to those turns, which is the intent: they are the
+turns whose whole point is first-token latency.
 """
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
@@ -55,6 +67,10 @@ from .context_scale import ContextScaler
 from .toolcall.constrain import Constrainer, tool_call_schema
 from .toolcall.repair import looks_like_tool_intent, repair
 from .toolcall.replay import ReplayMap, render_call
+
+# Enough to cover a working session's recent history for `/tandem/trace/last` and
+# the sec 10.5 measurement discipline, without growing without bound.
+_MAX_TRACES = 512
 
 _RETRY_INSTRUCTION = (
     "Your previous reply was not a valid tool call. Reply with a single JSON object "
@@ -174,11 +190,17 @@ class Pipeline:
         self.replay = ReplayMap(max_size=cfg.toolcall.replay_map_size)
         self.constrainer = Constrainer(enabled=cfg.toolcall.constrain)
         self.audit = audit or AuditLog(cfg.attest.audit_log, fsync=cfg.attest.fsync)
-        self.traces: list[TurnTrace] = []
+        # Bounded. Only `/tandem/trace/last` and the measurement discipline read
+        # this, both of which want recent turns; an unbounded list is a slow leak
+        # in a process that is meant to stay resident for a working day.
+        self.traces: deque[TurnTrace] = deque(maxlen=_MAX_TRACES)
         # Rolling tool-call tally, so `tandem gate toolcall` can report the sec 10.2
         # number from live traffic rather than only from a synthetic suite.
         self.tool_turns = 0
         self.tool_turns_wellformed = 0
+        # Tool-bearing turns the model answered in prose without attempting a call.
+        # Held apart from both sides of the ratio; see `_settle_tool_calls`.
+        self.tool_turns_prose = 0
         # Disk-cache hits are counted separately from the in-memory ones: they are
         # the ones that prove the cache survives a restart, and folding them into
         # `PromptCache.stats` would hide a disk cache that never hits behind a
@@ -295,7 +317,7 @@ class Pipeline:
         turn.trace.cascade = info.as_dict()
         result, tool_info = await self._settle_tool_calls(turn.req, result)
         turn.trace.toolcall = tool_info
-        yield Delta(done=True, result=self._finish(turn, result, info))
+        yield Delta(done=True, result=await self._finish(turn, result, info))
 
     # --- shared stages ------------------------------------------------------
 
@@ -309,10 +331,37 @@ class Pipeline:
         req, comp = self.compactor.apply(req, force_off=no_compact)
         trace.compaction = comp.as_dict()
 
-        req = self._prepare_sampling(req)
+        # Constrain *after* the render and the cache probe, which is the order this
+        # module's own docstring states. It used to run first, and while that was
+        # benign for `render_default` — which reads neither sampling nor
+        # `json_schema` — `Backend.render` is an override point, and a chat template
+        # that serialised `response_format` would have put the constraining schema
+        # into the rendered bytes and therefore into the cache key. Two turns
+        # differing only in a schema the model never sees would then miss each
+        # other's cached prefix. Ordering it here makes that unrepresentable rather
+        # than merely unobserved.
         rendered = self.render(req)
         req, trace.cache = self._probe_cache(rendered, req)
+        req = self._prepare_sampling(req)
         return _Turn(req=req, rendered=rendered, trace=trace, t0=t0)
+
+    def count_prompt_tokens(self, req: GenRequest, *, no_compact: bool = False) -> int:
+        """Prompt tokens for `req`, counted against the prompt that would be sent.
+
+        The count endpoint has to run the same compaction the completion path runs,
+        or it describes a request this gateway would never send: the raw harness
+        prompt is the compaction multiplier larger than what reaches the model, and
+        a harness that drives its context meter and its auto-compact threshold off
+        this number will compact its own history far too aggressively on the
+        strength of it.
+
+        Not recorded in the compaction history. A count is a probe, not a served
+        turn — Claude Code issues them continuously — so recording them would both
+        skew the M1 gate's statistics and bury the last real request in the sec 8.2
+        diff view behind a stream of probes.
+        """
+        req, _ = self.compactor.apply(req, force_off=no_compact, record=False)
+        return self.tier0.count_tokens(self.render(req))
 
     async def _produce(self, turn: _Turn) -> GenResult:
         """The non-streaming middle: cascade, then settle tool calls."""
@@ -320,15 +369,26 @@ class Pipeline:
         turn.trace.cascade = cinfo.as_dict()
         result, tool_info = await self._settle_tool_calls(turn.req, result)
         turn.trace.toolcall = tool_info
-        return self._finish(turn, result, cinfo)
+        return await self._finish(turn, result, cinfo)
 
-    def _finish(self, turn: _Turn, result: GenResult, cinfo: CascadeInfo) -> GenResult:
+    async def _finish(self, turn: _Turn, result: GenResult, cinfo: CascadeInfo) -> GenResult:
         """Everything after the model: cache, receipt, audit, reported usage."""
-        self._remember(turn.rendered, turn.req, result)
+        # A cache store can never fail a turn. The model has already answered by
+        # the time we get here, and `_remember` is the first thing `_finish` does,
+        # so any exception out of it used to lose a completed answer *and* skip the
+        # audit record below — a request that vanished from the sec 9.2 chain
+        # entirely while returning a 500 to the harness. A cache is an
+        # optimisation: the only correct behaviour on a store failure is to degrade
+        # to a cache miss and carry on. Recorded in the trace so a cache that has
+        # silently stopped storing is visible rather than merely slow.
+        try:
+            await self._remember(turn.rendered, turn.req, result)
+        except Exception as exc:  # noqa: BLE001 - a cache must not be able to fail a request
+            turn.trace.cache["store_error"] = f"{type(exc).__name__}: {exc}"
 
         receipt = self._build_receipt(turn.req, cinfo)
         result.receipt = receipt.as_dict() if self.cfg.attest.attach_to_response else None
-        self._write_audit(turn.req, turn.rendered, result, cinfo)
+        await self._write_audit(turn.req, turn.rendered, result, cinfo)
 
         # Reporting-only scaling (sec 8.3). Applied after the audit record so the
         # log holds true counts.
@@ -487,7 +547,19 @@ class Pipeline:
         # chattier, not more correct (sec 8.5.4).
         if not looks_like_tool_intent(result.text):
             info["outcome"] = "prose"
-            self.tool_turns_wellformed += 1
+            # Counted, but into neither side of the sec 10.2 ratio. This turn
+            # produced no tool call and was not attempting one, so it is not
+            # evidence that the tool-call layer works — it used to increment
+            # `wellformed`, which meant a model that answered every tool-bearing
+            # turn with "Sure, I'll take a look!" scored a perfect rate. Nor is it
+            # straightforwardly a failure: on live traffic a model may legitimately
+            # answer a tool-bearing turn in prose, and scoring that against the
+            # gate would understate a layer that is working. It is not measured,
+            # which this codebase models as its own outcome rather than folding
+            # into whichever side is convenient. (The synthetic gate is a different
+            # case and treats prose as a failure: every one of its scenario steps
+            # requires a call, so there prose *is* the failure being measured.)
+            self.tool_turns_prose += 1
             return result, info
 
         retry_req = req
@@ -521,7 +593,7 @@ class Pipeline:
         info["outcome"] = "failed"
         return result, info
 
-    def _remember(self, rendered: str, req: GenRequest, result: GenResult) -> None:
+    async def _remember(self, rendered: str, req: GenRequest, result: GenResult) -> None:
         """Cache the turn's prefix in memory and, when possible, on disk (sec 8.4).
 
         Aligned down to a chunk boundary before saving: a state covering a partial
@@ -552,7 +624,13 @@ class Pipeline:
         if state is None:
             return
         digest = chunk_digests(prefix, self.prompt_cache.chunk_bytes)[-1][1]
-        self.disk_kv.put(
+        # Off the event loop. `put` writes a temp file, fsyncs it, renames it and
+        # may walk the cache directory to enforce the budget — tens of milliseconds
+        # of blocking syscalls at a realistic entry count. On the loop that is not
+        # this request's latency, it is every *concurrent* request's: a stream in
+        # another task cannot emit a delta while this one is in `write`.
+        await asyncio.to_thread(
+            self.disk_kv.put,
             KVSnapshot(
                 digest=digest,
                 token_ids=list(state.token_ids),
@@ -589,10 +667,17 @@ class Pipeline:
             escalated=cinfo.escalated,
         )
 
-    def _write_audit(
+    async def _write_audit(
         self, req: GenRequest, rendered: str, result: GenResult, cinfo: CascadeInfo
     ) -> None:
-        self.audit.append(
+        # Off the event loop for the same reason as the disk cache store, and more
+        # so: the append takes a file lock, re-reads the chain tail under it and
+        # optionally fsyncs. Unlike the cache this is *not* wrapped in a
+        # degrade-to-nothing handler — an audit record that cannot be written is a
+        # failed request, because a served turn missing from the sec 9.2 chain is
+        # precisely what the chain exists to make impossible.
+        await asyncio.to_thread(
+            self.audit.append,
             AuditRecord(
                 request_id=req.request_id,
                 ts=now(),
@@ -622,12 +707,29 @@ class Pipeline:
         }
 
     def tool_call_rate(self) -> dict[str, Any]:
-        """Live tool-call validity, against the sec 10.2 blocking gate."""
-        if not self.tool_turns:
-            return {"turns": 0, "rate": None, "pass": None, "threshold": 0.99}
-        rate = self.tool_turns_wellformed / self.tool_turns
+        """Live tool-call validity, against the sec 10.2 blocking gate.
+
+        The denominator is tool-bearing turns on which the model *attempted* a
+        call. Prose turns are reported alongside rather than folded in, so a rate
+        of 1.0 over three attempts cannot look like a rate of 1.0 over three
+        hundred — the same denominator discipline `apply_rate` exists to enforce in
+        the merge eval.
+        """
+        attempted = self.tool_turns - self.tool_turns_prose
+        if not attempted:
+            return {
+                "turns": self.tool_turns,
+                "attempted": 0,
+                "prose": self.tool_turns_prose,
+                "rate": None,
+                "pass": None,
+                "threshold": 0.99,
+            }
+        rate = self.tool_turns_wellformed / attempted
         return {
             "turns": self.tool_turns,
+            "attempted": attempted,
+            "prose": self.tool_turns_prose,
             "wellformed": self.tool_turns_wellformed,
             "rate": round(rate, 4),
             "threshold": 0.99,

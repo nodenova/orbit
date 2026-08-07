@@ -12,6 +12,7 @@ consumer diffing two receipts should never have to distinguish "absent" from
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -25,19 +26,45 @@ from ..types import Sampling
 # in force, so a receipt from before a kernel change is distinguishable from after.
 REDUCTION_ORDER = "pinned-v1"
 
+# A commit id and nothing else. Short shas are allowed because a build pipeline may
+# stamp one, but a tag, a branch name or "dirty" is not a commit and must not be
+# attested as one.
+_SHA_RE = re.compile(r"\A[0-9a-fA-F]{7,64}\Z")
 
-@lru_cache(maxsize=1)
-def engine_commit() -> str:
-    """Commit of the engine that served the request.
 
-    Prefers an explicit build stamp so a wheel installed without a .git directory
-    still attests honestly; falls back to git, then to "unknown". Never guesses.
+def _stamped_commit() -> str | None:
+    """`$TANDEM_ENGINE_COMMIT`, if it is plausibly a commit id.
+
+    Validated rather than trusted: a build that exports a tag, a branch name or an
+    empty-after-strip value would otherwise land in the receipt *as the commit*, and
+    the receipt is what an auditor re-derives a run from. Rejecting it falls through
+    to git or to "unknown" — both honest answers, unlike a plausible-looking wrong
+    one.
     """
-    stamped = os.environ.get("TANDEM_ENGINE_COMMIT")
-    if stamped:
-        return stamped.strip()
+    raw = (os.environ.get("TANDEM_ENGINE_COMMIT") or "").strip()
+    if not raw or not _SHA_RE.match(raw):
+        return None
+    return raw.lower()
+
+
+def _git_head_of_this_checkout() -> str | None:
+    """HEAD of the repo this very file lives in — never of any other repo.
+
+    The old fallback ran `git -C <__file__ parents[3]> rev-parse HEAD`. For a source
+    checkout that is the repo root; for a wheel in site-packages it is some
+    unrelated directory that may well be a git repository of the user's, whose HEAD
+    would then be attested as the engine that served the request. The guard is that
+    the candidate root must actually contain *this file* where the source layout
+    puts it: true for a checkout or an editable install, false for a wheel, in which
+    case no git process runs at all.
+    """
+    here = Path(__file__).resolve()
+    root = here.parents[3]  # <root>/src/tandem/attest/receipt.py
+    if (root / "src" / "tandem" / "attest" / "receipt.py").resolve() != here:
+        return None
+    if not (root / ".git").exists():  # a worktree's .git is a file, hence exists()
+        return None
     try:
-        root = Path(__file__).resolve().parents[3]
         out = subprocess.run(
             ["git", "-C", str(root), "rev-parse", "HEAD"],
             capture_output=True,
@@ -45,11 +72,29 @@ def engine_commit() -> str:
             timeout=5,
             check=False,
         )
-        if out.returncode == 0 and out.stdout.strip():
-            return out.stdout.strip()
     except (OSError, subprocess.SubprocessError):
-        pass
-    return "unknown"
+        return None
+    head = out.stdout.strip()
+    if out.returncode != 0 or not _SHA_RE.match(head):
+        return None
+    return head.lower()
+
+
+@lru_cache(maxsize=1)
+def engine_commit() -> str:
+    """Commit of the engine that served the request.
+
+    Prefers an explicit build stamp so a wheel installed without a .git directory
+    still attests honestly; falls back to git only when this file is inside that
+    checkout; otherwise "unknown". Never guesses — and both halves used to (M28):
+    the stamp was returned verbatim, and the fallback would attest a stranger's
+    HEAD.
+
+    "unknown" rather than None because the field is present in every receipt and a
+    consumer diffing two receipts must not have to tell absent from unknown; the
+    None cases are internal to the two helpers.
+    """
+    return _stamped_commit() or _git_head_of_this_checkout() or "unknown"
 
 
 @dataclass
@@ -103,9 +148,20 @@ class Receipt:
     candidate_selected: int = 0
     # Populated when the router escalated on a failing test (T2, sec 7.2).
     escalated: bool = False
+    # The id the wire response carries and the audit line records. Without it a
+    # customer holding a response and an auditor holding the log share no field and
+    # can correlate only by timestamp (M2).
+    request_id: str = ""
+    # Tip of the audit chain after this turn's record was appended. This is the
+    # out-of-band anchor `verify_chain(expected_tip=...)` needs: a link that has left
+    # the machine, in the customer's hands, is one the log's writer can no longer
+    # quietly restate. Defaulted empty — a receipt is still valid without it, it just
+    # anchors nothing (C1).
+    audit_tip: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
+            "request_id": self.request_id,
             "tier0": self.tier0.as_dict(),
             "tier1": self.tier1.as_dict(),
             "engine_commit": engine_commit(),
@@ -119,4 +175,5 @@ class Receipt:
             "candidates_generated": self.candidates_generated,
             "candidate_selected": self.candidate_selected,
             "escalated": self.escalated,
+            "audit_tip": self.audit_tip,
         }

@@ -45,9 +45,20 @@ def cfg(tmp_path):
     return c
 
 
+def build_client(cfg) -> TestClient:
+    """A client whose Host header passes the gateway's allow-list.
+
+    `TestClient` defaults to `http://testserver`, which the Host allow-list
+    correctly rejects — the allow-list is what stops a DNS-rebinding page from
+    driving the gateway from a browser, so it has to reject unfamiliar names. Tests
+    address the app the way a real local client does.
+    """
+    return TestClient(create_app(cfg), base_url="http://127.0.0.1")
+
+
 @pytest.fixture
 def client(cfg):
-    return TestClient(create_app(cfg))
+    return build_client(cfg)
 
 
 # --- wire protocols (sec 8.1) -----------------------------------------------
@@ -347,7 +358,7 @@ def test_api_key_is_enforced_when_set(tmp_path):
     c = Config()
     c.attest.audit_log = str(tmp_path / "audit.jsonl")
     c.server.api_key = "secret"
-    client = TestClient(create_app(c))
+    client = build_client(c)
     assert client.post("/v1/messages", json={"messages": [], "max_tokens": 8}).status_code == 401
     ok = client.post(
         "/v1/messages",
@@ -355,6 +366,232 @@ def test_api_key_is_enforced_when_set(tmp_path):
         headers={"x-api-key": "secret"},
     )
     assert ok.status_code == 200
+
+
+# Every registered route, not just /v1/messages. The admin routes carried no auth
+# at all: /tandem/compaction/last returned the previous request's full raw system
+# prompt — for a coding agent, repository context, file paths and project
+# instructions — to any unauthenticated caller, and /tandem/health enumerated the
+# mounted adapter names.
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("post", "/v1/messages"),
+        ("post", "/v1/messages/count_tokens"),
+        ("post", "/v1/chat/completions"),
+        ("post", "/v1/responses"),
+        ("get", "/v1/models"),
+        ("get", "/tandem/health"),
+        ("get", "/tandem/stats"),
+        ("get", "/tandem/audit/verify"),
+        ("get", "/tandem/compaction/last"),
+        ("get", "/tandem/trace/last"),
+    ],
+)
+def test_every_route_requires_the_api_key_when_set(tmp_path, method, path):
+    c = Config()
+    c.attest.audit_log = str(tmp_path / "audit.jsonl")
+    c.server.api_key = "secret"
+    client = build_client(c)
+
+    unauth = client.request(method, path, json={} if method == "post" else None)
+    assert unauth.status_code == 401, f"{path} served an unauthenticated caller"
+
+    authed = client.request(
+        method, path, json={} if method == "post" else None, headers={"x-api-key": "secret"}
+    )
+    assert authed.status_code != 401
+
+
+def test_the_compaction_view_does_not_disclose_the_prompt_without_the_key(tmp_path):
+    """The specific disclosure H6 named, pinned end to end."""
+    c = Config()
+    c.attest.audit_log = str(tmp_path / "audit.jsonl")
+    c.server.api_key = "secret"
+    client = build_client(c)
+    secret_prompt = CC_SYSTEM + "\nThe repository is at /home/alice/acme-payments."
+    client.post(
+        "/v1/messages",
+        json={
+            "system": secret_prompt,
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 8,
+        },
+        headers={"x-api-key": "secret"},
+    )
+    leaked = client.get("/tandem/compaction/last")
+    assert leaked.status_code == 401
+    assert "acme-payments" not in leaked.text
+
+
+def test_an_unknown_adapter_is_refused_rather_than_silently_served_by_the_base(client):
+    r = client.post(
+        "/v1/messages",
+        json={"messages": [{"role": "user", "content": "hi"}], "max_tokens": 8},
+        headers={"x-tandem-adapter": "no-such-adapter"},
+    )
+    # Serving the base model here would attest an adapter that never ran.
+    assert r.status_code == 400
+    assert "no-such-adapter" in r.json()["error"]["message"]
+
+
+def test_a_typod_default_adapter_is_refused_for_every_request(tmp_path):
+    c = Config()
+    c.attest.audit_log = str(tmp_path / "audit.jsonl")
+    c.tier0.default_adapter = "a1-typo"
+    client = build_client(c)
+    r = client.post(
+        "/v1/messages",
+        json={"messages": [{"role": "user", "content": "hi"}], "max_tokens": 8},
+    )
+    assert r.status_code == 400
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"messages": ["hello"]},
+        {"messages": [{"role": "user", "content": "hi"}], "metadata": "x"},
+    ],
+)
+def test_malformed_but_plausible_bodies_are_400_in_protocol_shape(client, body):
+    """A wrong-shaped body two levels down is a client error, not a bare 500."""
+    r = client.post("/v1/messages", json=body)
+    assert r.status_code == 400
+    assert r.json()["type"] == "error"
+
+
+def test_a_malformed_openai_tool_call_is_a_400(client):
+    r = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [
+                {"role": "assistant", "tool_calls": [{"id": "a", "function": "oops"}]},
+            ],
+        },
+    )
+    assert r.status_code == 400
+
+
+def test_count_tokens_rejects_a_non_json_body(client):
+    r = client.post(
+        "/v1/messages/count_tokens",
+        content=b"not json",
+        headers={"content-type": "application/json"},
+    )
+    assert r.status_code == 400
+
+
+def test_count_tokens_counts_the_compacted_prompt(client):
+    """M1: counting the raw harness prompt over-reports by the whole multiplier.
+
+    Claude Code drives its context meter *and* its auto-compact threshold off this
+    number, so an inflated count makes the harness throw away its own history.
+    """
+    body = {
+        "system": CC_SYSTEM,
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 8,
+    }
+    counted = client.post("/v1/messages/count_tokens", json=body).json()["input_tokens"]
+
+    served = client.post("/v1/messages", json=body).json()["usage"]["input_tokens"]
+    # The count endpoint and the completion path must describe the same prompt.
+    # Before the fix this was ~29x apart.
+    assert counted <= served * 1.5
+    assert counted < 2000
+
+
+def test_count_tokens_honours_the_no_compact_escape_hatch(client):
+    body = {
+        "system": CC_SYSTEM,
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 8,
+    }
+    compacted = client.post("/v1/messages/count_tokens", json=body).json()["input_tokens"]
+    raw = client.post(
+        "/v1/messages/count_tokens", json=body, headers={"x-tandem-no-compact": "1"}
+    ).json()["input_tokens"]
+    assert raw > compacted
+
+
+def test_count_tokens_probes_do_not_displace_the_diff_view(client):
+    """A probe is not a served turn; the sec 8.2 view must still show the request."""
+    client.post(
+        "/v1/messages",
+        json={"system": CC_SYSTEM, "messages": [{"role": "user", "content": "served"}],
+              "max_tokens": 8},
+    )
+    for _ in range(5):
+        client.post(
+            "/v1/messages/count_tokens",
+            json={"system": CC_SYSTEM, "messages": [{"role": "user", "content": "probe"}]},
+        )
+    assert client.get("/tandem/compaction/last").status_code == 200
+
+
+def test_the_response_id_is_the_audited_request_id(client, cfg):
+    """M2: an auditor could previously correlate only by timestamp."""
+    r = client.post(
+        "/v1/messages",
+        json={"messages": [{"role": "user", "content": "hi"}], "max_tokens": 8},
+    )
+    response_id = r.json()["id"]
+    with open(cfg.attest.audit_log, encoding="utf-8") as fh:
+        records = [json.loads(line) for line in fh if line.strip()]
+    assert records, "the turn wrote no audit record"
+    assert records[-1]["request_id"] == response_id
+
+
+def test_a_cache_store_failure_degrades_to_a_miss_and_still_audits(client, cfg, monkeypatch):
+    """C3: a cache must never fail a served request or suppress its audit record."""
+    from tandem.gateway.cache.prompt_cache import PromptCache
+
+    def boom(*_a, **_k):
+        raise RuntimeError("cache exploded")
+
+    monkeypatch.setattr(PromptCache, "store", boom)
+    # Long enough to reach a chunk boundary, or there is nothing to store and the
+    # failing path is never entered.
+    r = client.post(
+        "/v1/messages",
+        json={
+            "messages": [{"role": "user", "content": "hi " * 4000}],
+            "max_tokens": 8,
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["content"][0]["text"]
+
+    with open(cfg.attest.audit_log, encoding="utf-8") as fh:
+        records = [json.loads(line) for line in fh if line.strip()]
+    assert len(records) == 1, "the answered turn vanished from the sec 9.2 chain"
+    trace = client.get("/tandem/trace/last").json()
+    assert "store_error" in trace["cache"]
+
+
+def test_prose_on_a_tool_turn_is_not_counted_as_a_wellformed_tool_call(cfg):
+    """C4's shape in the live tally: 'Sure, I'll take a look!' is not a tool call."""
+    # Prevention off: under a tool-call grammar the model *cannot* answer a tool
+    # turn with prose, so with constrained decoding enabled this shape is
+    # unrepresentable and the test would assert nothing. `script` is the existing
+    # fixed-reply mechanism, and it only reaches the model path once the schema is
+    # not being enforced.
+    cfg.toolcall.constrain = False
+    backend = MockBackend(script=["Sure, I'll take a look!"])
+    pipeline = Pipeline(cfg, backend)
+    client = TestClient(create_app(cfg, pipeline), base_url="http://127.0.0.1")
+    client.post(
+        "/v1/messages",
+        json={
+            "messages": [{"role": "user", "content": "read the file"}],
+            "max_tokens": 32,
+            "tools": [{"name": "read_file", "description": "read", "input_schema": SCHEMA}],
+        },
+    )
+    rate = pipeline.tool_call_rate()
+    assert rate["prose"] == 1
+    assert rate["rate"] != 1.0
 
 
 # --- compaction (sec 8.2) ---------------------------------------------------

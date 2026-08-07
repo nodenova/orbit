@@ -14,6 +14,13 @@ installed, and imports nothing from tandem.
 Stdlib only, for the same reason: every dependency is a security surface, not a
 convenience, and this one would be a dependency the runtime does not otherwise need.
 
+**The token comes from `$GITHUB_TOKEN` (or `$GH_TOKEN`) and from nowhere else** — not
+from a flag, which would put it in shell history and in `/proc/*/cmdline`. It rides on
+every request, so the transport is pinned as well: TLS is required, and neither a
+redirect nor a `Link: rel="next"` may take the request off the host it was aimed at.
+Both of those are chosen by the server, and `urllib` re-sends `Authorization` across
+redirects — including cross-host and https to http.
+
 **What it is for.** A2's preference pairs are (`rejected` = the diff as of the first
 review comment, `chosen` = the diff as merged). Without this file, extraction falls
 back to the first branch commit — the closest local approximation of "what the
@@ -41,6 +48,74 @@ API = "https://api.github.com"
 USER_AGENT = "tandem-export-reviews/1.0"
 
 Fetch = Callable[[str], Any]
+
+
+# --- transport safety --------------------------------------------------------
+#
+# Two properties this file has to keep, because the token travels on every request
+# and the thing on the other end controls both the redirects and the pagination
+# links: the connection is TLS, and it stays on the one host it was aimed at.
+
+
+def origin_of(url: str) -> tuple[str, str]:
+    """(scheme, netloc) — what "the same place" means for a redirect."""
+    parts = urllib.parse.urlsplit(url)
+    return parts.scheme.lower(), parts.netloc.lower()
+
+
+def _is_loopback(netloc: str) -> bool:
+    host = netloc.rsplit("@", 1)[-1]
+    host = host[1 : host.find("]")] if host.startswith("[") else host.rsplit(":", 1)[0] if ":" in host else host
+    return host in ("localhost", "127.0.0.1", "::1") or host.endswith(".localhost")
+
+
+def require_tls(url: str) -> None:
+    """Refuse a cleartext endpoint.
+
+    Without this an `http://` base ships the bearer token, and the repository and
+    pull-request metadata it fetches, to anyone on the path. The single opt-out is
+    loopback — a test double or a local proxy, where there is no path to be on.
+    """
+    scheme, netloc = origin_of(url)
+    if scheme == "https":
+        return
+    if scheme == "http" and _is_loopback(netloc):
+        return
+    raise ValueError(
+        f"refusing to send an API token over {scheme or 'no'}:// to {netloc or url!r}. "
+        "Use https:// (http:// is accepted only for a loopback host)."
+    )
+
+
+class _SameOriginRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse a redirect that leaves the origin the request was aimed at.
+
+    `urllib`'s default handler re-sends the headers it was given on the redirected
+    request — `Authorization` included — and follows `http://` as readily as
+    `https://` (verified against CPython 3.11.15's `HTTPRedirectHandler`). A 302 to
+    an attacker's host therefore hands over the token, in cleartext if they ask for
+    it, and nothing about the transaction looks wrong from here.
+
+    Refusing rather than stripping the header: this exporter talks to exactly one
+    host, so there is no legitimate cross-origin redirect to preserve, and a
+    stripped-header retry would quietly return an anonymous, rate-limited answer
+    instead of saying what happened.
+    """
+
+    def __init__(self, origin: tuple[str, str]):
+        self.origin = origin
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        if origin_of(newurl) != self.origin:
+            raise urllib.error.HTTPError(
+                newurl,
+                code,
+                f"refusing a redirect off {self.origin[1]} — the Authorization "
+                "header would travel with it",
+                headers,
+                fp,
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 # --- pure logic (tested; no network) ----------------------------------------
@@ -122,14 +197,19 @@ def build_records(pulls: Iterable[dict[str, Any]], fetch: Fetch) -> list[dict[st
 
 class GitHub:
     def __init__(self, owner: str, repo: str, token: str | None, *, base: str = API):
+        require_tls(base)
         self.prefix = f"{base}/repos/{owner}/{repo}"
         self.token = token
+        self.origin = origin_of(base)
+        # A dedicated opener rather than the module-level one: the redirect policy
+        # is a property of *this* client and its token, not of the process.
+        self._opener = urllib.request.build_opener(_SameOriginRedirect(self.origin))
 
     def _request(self, url: str) -> tuple[Any, dict[str, str]]:
         req = urllib.request.Request(url, headers=self._headers())
         for attempt in range(5):
             try:
-                with urllib.request.urlopen(req, timeout=30) as resp:
+                with self._opener.open(req, timeout=30) as resp:
                     return json.loads(resp.read().decode("utf-8")), dict(resp.headers)
             except urllib.error.HTTPError as exc:
                 body = _read_error(exc)
@@ -144,8 +224,11 @@ class GitHub:
                     continue
                 if exc.code == 404:
                     return None, {}
+                # `reason` carries the refusal from `_SameOriginRedirect` on a 3xx,
+                # where the body is the redirect's own (empty) one and says nothing.
                 raise RuntimeError(
-                    f"GitHub returned {exc.code} for {url}\n  {body.strip()[:400]}"
+                    f"GitHub returned {exc.code} for {url}\n"
+                    f"  {exc.reason}\n  {body.strip()[:400]}"
                 ) from exc
             except urllib.error.URLError as exc:
                 if attempt == 4:
@@ -177,8 +260,28 @@ class GitHub:
                 items.extend(body)
             else:
                 return body
-            url = _next_link(headers.get("Link", ""))
+            url = self._next_page(headers.get("Link", ""))
         return items
+
+    def _next_page(self, link_header: str) -> str | None:
+        """The `rel="next"` URL, once it has been shown to be the same server.
+
+        The Link header is chosen by whatever answered the last request, and the
+        token goes on whatever it names. GitHub paginates within one origin (the
+        `next` URL may be the `/repositories/{id}/…` form rather than the
+        `/repos/{owner}/{repo}/…` one, so the check is the origin, not the prefix);
+        anything else is a redirect wearing a different hat.
+        """
+        nxt = _next_link(link_header)
+        if nxt is None:
+            return None
+        if origin_of(nxt) != self.origin:
+            raise RuntimeError(
+                f"refusing to follow a pagination link to {origin_of(nxt)[1]!r}: the "
+                f"Link header is server-controlled and this client's token would go "
+                f"with it (expected {self.origin[1]})"
+            )
+        return nxt
 
 
 def _next_link(link_header: str) -> str | None:
@@ -240,12 +343,24 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--repo", required=True)
     p.add_argument("--out", default="reviews.json")
     p.add_argument("--limit", type=int, default=0, help="stop after N merged PRs (0 = all)")
-    p.add_argument(
-        "--token",
-        default=os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN"),
-        help="defaults to $GITHUB_TOKEN or $GH_TOKEN; anonymous is 60 req/hour",
-    )
+
+    # The token is read from the environment and from nowhere else. It used to be
+    # accepted on argv too, which puts it in shell history and in `/proc/*/cmdline`
+    # for every user on the box, for the whole run. Rejecting the flag by name
+    # rather than letting argparse call it unrecognised, because the fix is
+    # specific and the person hitting this is one export away from pasting it in
+    # again.
+    supplied = sys.argv[1:] if argv is None else argv
+    if any(a == "--token" or a.startswith("--token=") for a in supplied):
+        print(
+            "--token is no longer accepted: a token on the command line is in the "
+            "shell history and in /proc/*/cmdline for every user on the machine. "
+            "Set GITHUB_TOKEN (or GH_TOKEN) instead.",
+            file=sys.stderr,
+        )
+        return 2
     args = p.parse_args(argv)
+    args.token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
 
     if not args.token:
         print(

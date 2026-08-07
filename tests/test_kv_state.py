@@ -9,19 +9,40 @@ The other half is refusal. A KV state restored under a different container or a
 different adapter would continue the conversation in a model that never saw its own
 prefix, and the failure is silent: fluent output, wrong model, and a receipt naming
 the adapter that did not produce it. Every mismatch below must miss, not restore.
+
+The third half — the cheapest tests here and the ones that were missing — is that
+none of this may ever *fail a turn*. A cache is written after the model has answered,
+so a store that raises loses the answer; and a cache is read into a prompt, so an
+entry that comes back short, or under the wrong name, is worse than no entry at all.
 """
 
 from __future__ import annotations
+
+import os
+import stat
+import threading
+import time
 
 import pytest
 
 from tandem.backends.mock import MockBackend
 from tandem.config import Config
 from tandem.gateway.cache.kv_disk import DiskKVCache, KVSnapshot
+from tandem.gateway.cache.prompt_cache import (
+    CacheEntry,
+    PromptCache,
+    align_down,
+    aligned_mark,
+    chunk_digests,
+)
 from tandem.gateway.pipeline import Pipeline
 from tandem.types import GenRequest, KVState, Message, Role
 
 LONG_BODY = "def handler(request):\n    return process(request)\n\n" * 300
+# The same shape of body with the multi-byte characters a real diff carries: a CJK
+# identifier, an accented one, an emoji and a box-drawing character. Every cache test
+# in the suite used to be pure ASCII, which is why H1 survived.
+UNICODE_BODY = "def 计算(请求):\n    return prozessieren(请求)  # ✅ résumé ─┤\n\n" * 300
 
 
 @pytest.fixture

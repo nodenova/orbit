@@ -12,6 +12,7 @@ that changes what A2 learns.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 from pathlib import Path
@@ -214,42 +215,169 @@ def test_the_exporter_is_not_part_of_the_package():
     assert pkg_root not in _PATH.parents
 
 
+# --- the network surface ----------------------------------------------------
+
+# Modules that can open a socket. Matched on the *imported name*, so a submodule
+# (`urllib.request`) and a from-import (`from urllib import request`) both count,
+# while a sibling that cannot reach the network (`urllib.parse`) does not — the
+# offline check parses endpoint hosts and needs no exemption for doing so.
+_NETWORK_MODULES = frozenset(
+    {
+        "httpx", "requests", "aiohttp", "urllib3", "socket", "ssl", "asyncio.streams",
+        "urllib.request", "urllib.error", "http.client", "ftplib", "smtplib",
+        "telnetlib", "xmlrpc.client", "websockets", "grpc", "boto3", "paramiko",
+    }
+)
+
+# `curl`/`wget` through a subprocess is an outbound call with the import graph left
+# clean, which is exactly the shape a substring pin misses.
+_NETWORK_BINARIES = frozenset({"curl", "wget", "nc", "ncat", "netcat", "ssh", "scp", "rsync"})
+
+# `asyncio` is imported almost everywhere and is not a network module, but two of its
+# attributes are sockets and nothing else. Matched by attribute name rather than by
+# import, because the import is legitimate.
+_NETWORK_ATTRS = frozenset({"open_connection", "start_server", "create_connection"})
+
+
+def _imported_modules(tree: ast.AST) -> set[str]:
+    """Every module name an `import` statement in this file brings in.
+
+    For `from a.b import c` both `a.b` and `a.b.c` are reported, because
+    `from urllib import request` names the network module in the *alias*, not in
+    the module field — the hole that let a bare `import socket` through the old
+    substring pin.
+    """
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add(alias.name)
+                names.update(_prefixes(alias.name))
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:  # a relative import cannot leave the package
+                continue
+            mod = node.module or ""
+            names.add(mod)
+            names.update(_prefixes(mod))
+            for alias in node.names:
+                names.add(f"{mod}.{alias.name}" if mod else alias.name)
+    return names
+
+
+def _prefixes(dotted: str) -> set[str]:
+    parts = dotted.split(".")
+    return {".".join(parts[: i + 1]) for i in range(len(parts))}
+
+
+def _network_binaries(tree: ast.AST) -> set[str]:
+    """String constants naming a network binary — `subprocess.run(["curl", …])`."""
+    return {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and node.value in _NETWORK_BINARIES
+    }
+
+
+def _network_attributes(tree: ast.AST) -> set[str]:
+    """`asyncio.open_connection(...)` and friends — a socket via a legitimate import."""
+    return {
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute) and node.attr in _NETWORK_ATTRS
+    }
+
+
+def _network_surface(py: Path) -> list[str]:
+    tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
+    hits = sorted(_imported_modules(tree) & _NETWORK_MODULES)
+    hits += [f"subprocess binary {b!r}" for b in sorted(_network_binaries(tree))]
+    hits += [f"call to .{a}()" for a in sorted(_network_attributes(tree))]
+    return hits
+
+
 def test_the_package_s_network_surface_stays_one_known_file():
     """Sec 8.6, stated accurately.
 
     The package is *not* free of HTTP: `backends/mlx_tier1.py` holds an httpx client
     for the tier-1 process boundary (sec 5.4), pointed at a configured endpoint that
-    defaults to loopback. That is the entire network surface, and pinning it to one
-    file is what makes a second one a test failure rather than a discovery.
+    `build_tier1` now requires to be loopback. That is the entire network surface,
+    and pinning it to one file is what makes a second one a test failure rather than
+    a discovery.
 
-    Extraction in particular must stay clean, because A2's fallback to
-    first-branch-commit pairs is what lets a corpus be built with the network off.
+    Walked as an AST rather than searched for substrings. The substring version
+    matched six literal strings and CLAUDE.md claimed it caught any new
+    `httpx`/`socket`/`urllib` import; it did not — `from httpx import AsyncClient`,
+    a bare `import socket`, `from urllib import request`, `import requests` followed
+    by `requests.post`, and `subprocess.run(["curl", …])` all passed it. An import
+    statement is a grammatical construct, so the grammar is the right thing to ask.
     """
     import tandem
 
     pkg_root = Path(tandem.__file__).resolve().parent
-    allowed = {"backends/mlx_tier1.py"}
-    # Import- and call-shaped, not bare names: `offline.py` lists "httpx" as a
-    # string in its dependency allow-list, which is the opposite of a network call.
-    markers = (
+    allowed = {"backends/mlx_tier1.py": ["httpx"]}
+
+    found = {
+        py.relative_to(pkg_root).as_posix(): hits
+        for py in sorted(pkg_root.rglob("*.py"))
+        if (hits := _network_surface(py))
+    }
+    assert found == allowed, f"network surface changed: {found}"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
         "import httpx",
-        "httpx.",
-        "urllib.request",
-        "requests.get",
-        "socket.create_connection",
+        "from httpx import AsyncClient",
+        "import httpx as h",
+        "import socket",
+        "from socket import create_connection",
+        "import urllib.request",
+        "from urllib import request",
+        "from urllib.request import urlopen",
+        "import requests",
+        "from http.client import HTTPSConnection",
         "import aiohttp",
+        "import subprocess\nsubprocess.run(['curl', '-s', 'https://example.com'])",
+    ],
+)
+def test_every_import_form_of_a_network_module_is_caught(source, tmp_path):
+    """The forms the substring pin let through, one per case.
+
+    Each of these is a way to make an outbound call from inside `src/tandem/`, and
+    each used to pass. They are asserted here rather than only implicitly through
+    the package walk, so the pin cannot regress to matching literals without a
+    failure that names the form it stopped catching.
+    """
+    py = tmp_path / "candidate.py"
+    py.write_text(source, encoding="utf-8")
+    assert _network_surface(py), f"not detected: {source!r}"
+
+
+def test_the_pin_does_not_fire_on_names_that_only_look_like_it():
+    """`offline.py` holds "httpx" as a string in its dependency allow-list and parses
+    endpoint hosts by hand; neither is a network call, and a pin that flagged them
+    would be turned off."""
+    src = (
+        "ALLOWED = frozenset({'httpx', 'socket'})\n"
+        "import urllib.parse\n"
+        "from . import socket_helpers\n"
+        "def f(u):\n    return urllib.parse.urlsplit(u).netloc\n"
     )
+    py = Path(__file__).parent / "_unused.py"
+    tree = ast.parse(src)
+    assert not (_imported_modules(tree) & _NETWORK_MODULES)
+    assert not _network_binaries(tree)
+    assert not py.exists()  # nothing was written
 
-    found: dict[str, list[str]] = {}
-    for py in sorted(pkg_root.rglob("*.py")):
-        rel = py.relative_to(pkg_root).as_posix()
-        text = py.read_text(encoding="utf-8")
-        hits = [m for m in markers if m in text]
-        if hits:
-            found[rel] = hits
 
-    assert set(found) == allowed, f"network surface changed: {found}"
+def test_the_adapter_pipeline_never_reaches_the_network():
+    """A2's fallback to first-branch-commit pairs is what lets a corpus be built with
+    the network off; an import here would quietly make that untrue."""
+    import tandem
 
-    for py in (pkg_root / "adapters").rglob("*.py"):
-        text = py.read_text(encoding="utf-8")
-        assert not any(m in text for m in markers), f"{py.name} reaches the network"
+    pkg_root = Path(tandem.__file__).resolve().parent
+    for py in sorted((pkg_root / "adapters").rglob("*.py")):
+        assert not _network_surface(py), f"{py.name} reaches the network"

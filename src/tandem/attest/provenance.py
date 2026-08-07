@@ -12,12 +12,23 @@ without a source kind. A corpus we cannot attest, we do not train on.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from .hashing import hash_file, hash_text
+from .hashing import PROVENANCE_FILENAME, hash_file, hash_text
+
+__all__ = [
+    "PROVENANCE_FILENAME",
+    "ProvenanceError",
+    "ProvenanceRecord",
+    "SourceKind",
+    "corpus_hash_for",
+    "file_hash",
+    "redact_source_repo",
+]
 
 
 class SourceKind(str, Enum):
@@ -35,6 +46,34 @@ class SourceKind(str, Enum):
 
 class ProvenanceError(ValueError):
     pass
+
+
+def redact_source_repo(source_repo: str) -> str:
+    """Make a local checkout path safe to ship inside an adapter.
+
+    `provenance.json` travels with the adapter, so an absolute path publishes the
+    operator's home directory, username and client name to everyone the adapter is
+    shared with — `"/Users/alice/clients/acme-payments"` is a real shape. Keep the
+    basename, because an auditor still needs to know *which* repo, and replace the
+    rest with a short digest of the full path: stable run to run, so two records can
+    still be compared for "same checkout", and not reversible into the path.
+
+    Remote URLs and scp-style git addresses are left verbatim. They are already
+    shareable, and they are what an auditor would use to re-derive the corpus —
+    redacting them would cost the record its only reproducible pointer.
+
+    Idempotent: the redacted form carries no separator, so re-reading a record and
+    writing it back does not redact twice.
+    """
+    value = source_repo.strip()
+    if not value:
+        return value
+    if "://" in value or (":" in value and "/" not in value.split(":", 1)[0]):
+        return value  # https://…, ssh://…, git@host:org/repo
+    if "/" not in value and os.sep not in value and not value.startswith("~"):
+        return value  # a bare name leaks nothing
+    name = Path(value.rstrip("/" + os.sep)).name or value
+    return f"{name}#{hash_text(value)[:12]}"
 
 
 @dataclass
@@ -57,6 +96,12 @@ class ProvenanceRecord:
     parent_adapter_hash: str | None = None
     licence: str = ""
     created_ts: float = 0.0
+
+    def __post_init__(self) -> None:
+        # Redact once, at construction, rather than on the way out: there is then a
+        # single representation of the field, and a serialiser added later cannot
+        # reintroduce the leak by forgetting to call the redactor.
+        self.source_repo = redact_source_repo(self.source_repo)
 
     def validate(self) -> None:
         if not self.adapter_name:
@@ -124,11 +169,21 @@ def corpus_hash_for(path: str | Path) -> str:
     Line-order-independent: extraction walks git history and a topological tie can
     reorder two same-timestamp commits between runs, which should not invalidate an
     otherwise identical corpus.
+
+    The decomposition is the reader's, not Python's convenience one. A JSONL reader
+    — mlx-lm's, ours — takes one JSON document per ``\\n`` and nothing else, while
+    `str.splitlines()` also breaks on U+0085, U+2028 and U+2029, which survive the
+    extractors' ``ensure_ascii=False`` verbatim and occur in ordinary source (U+2028
+    inside a JavaScript string literal is the common one). Hashing that
+    decomposition hashes fragments no reader ever sees: after sorting, two different
+    corpora can produce the same digest, and "same corpus_hash ⇒ same corpus" — the
+    whole claim the provenance record makes — stops holding (M30). ``newline=""``
+    for the same reason: universal-newline translation would rewrite a lone ``\\r``
+    into a split the reader does not make.
     """
-    p = Path(path)
-    lines = sorted(
-        line for line in p.read_text(encoding="utf-8").splitlines() if line.strip()
-    )
+    with open(path, "r", encoding="utf-8", newline="") as fh:
+        text = fh.read()
+    lines = sorted(line for line in text.split("\n") if line.strip())
     return hash_text("\n".join(lines))
 
 
