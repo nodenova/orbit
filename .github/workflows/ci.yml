@@ -1,0 +1,177 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# A second push to the same branch supersedes the first; nothing here is worth
+# paying for twice.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.14"
+
+jobs:
+  test:
+    name: tests (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      # A floor failure and a current-release failure are different findings;
+      # cancelling one to report the other loses half the answer.
+      fail-fast: false
+      matrix:
+        # Both ends of `requires-python`, because the floor was previously a claim
+        # nothing executed. 3.12 and 3.13 sit between two tested ends rather than
+        # being tested themselves, which is what the README says and now means.
+        python-version: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          # [constrain] included so the prevention layer (sec 8.5.1) is exercised
+          # rather than skipped as unavailable.
+          pip install -e '.[dev,constrain]'
+
+      # The adapter tests build real git repositories rather than mocking git,
+      # because every failure mode that matters lives in git's actual output
+      # format. They set user.name/user.email per repo, so a bare runner is fine;
+      # this only pins the initial branch so `git init` does not warn.
+      - name: Configure git defaults
+        run: git config --global init.defaultBranch main
+
+      - name: Tests
+        run: pytest -q
+
+  smoke:
+    name: cli and gateway smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # A1 extraction walks history; a depth-1 clone would give it nothing to
+          # walk and the step would pass vacuously.
+          fetch-depth: 200
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev,constrain]'
+
+      # Exercises the console entry point plus the wiring the unit tests reach
+      # around it: config loading, backend construction, the offline audit.
+      - name: doctor
+        run: tandem doctor
+
+      # The one thing unit tests cannot prove: a real uvicorn process serving all
+      # three wire protocols (sec 8.1) from one model, and writing the audit chain
+      # as it goes.
+      - name: Serve and exercise all three wire protocols
+        run: |
+          set -euo pipefail
+          tandem serve --backend mock --port 8099 > /tmp/serve.log 2>&1 &
+          echo $! > /tmp/serve.pid
+          for _ in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8099/tandem/health > /dev/null && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:8099/tandem/health
+
+          curl -sf -X POST http://127.0.0.1:8099/v1/messages \
+            -H 'content-type: application/json' \
+            -d '{"model":"t","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}' \
+            | python -c "import json,sys; d=json.load(sys.stdin); assert d['type']=='message', d; assert d['tandem_receipt']['engine_commit'], 'receipt carries no engine commit'"
+
+          curl -sf -X POST http://127.0.0.1:8099/v1/chat/completions \
+            -H 'content-type: application/json' \
+            -d '{"model":"t","messages":[{"role":"user","content":"hello"}]}' \
+            | python -c "import json,sys; assert json.load(sys.stdin)['object']=='chat.completion'"
+
+          curl -sf -X POST http://127.0.0.1:8099/v1/responses \
+            -H 'content-type: application/json' \
+            -d '{"model":"t","input":"hello"}' \
+            | python -c "import json,sys; assert json.load(sys.stdin)['object']=='response'"
+
+          # Incremental streaming (sec 7.3). A single delta carrying the whole reply
+          # frames correctly and passes every shape check, so the only assertion
+          # that catches a regression to whole-turn TTFT is counting the deltas.
+          curl -sfN -X POST http://127.0.0.1:8099/v1/messages \
+            -H 'content-type: application/json' \
+            -d '{"model":"t","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hello there"}]}' \
+            > /tmp/stream.sse
+          python - <<'PY'
+          import json
+          events = [l for l in open("/tmp/stream.sse") if l.startswith("event: ")]
+          data = [json.loads(l[6:]) for l in open("/tmp/stream.sse") if l.startswith("data: ")]
+          deltas = [d for d in data if d.get("type") == "content_block_delta"]
+          assert len(deltas) > 1, f"chat turn did not stream incrementally: {len(deltas)} delta(s)"
+          assert events[-1].strip() == "event: message_stop", events[-1]
+          start = next(d for d in data if d["type"] == "message_start")
+          assert start["message"]["usage"]["input_tokens"] > 0, "message_start reported no input tokens"
+          print(f"streamed {len(deltas)} deltas")
+          PY
+
+          # The chain must now hold over the records those three requests wrote.
+          curl -sf http://127.0.0.1:8099/tandem/audit/verify \
+            | python -c "import json,sys; d=json.load(sys.stdin); assert d['ok'], d; print(d['reason'])"
+
+      - name: Stop the server
+        if: always()
+        run: |
+          [ -f /tmp/serve.pid ] && kill "$(cat /tmp/serve.pid)" 2>/dev/null || true
+          echo "--- server log ---"
+          cat /tmp/serve.log || true
+
+      # Sec 9.2, against the log the served requests just wrote.
+      - name: Audit chain verifies
+        run: tandem audit verify
+
+      # Sec 10.2, blocking. Re-run on every change to compaction, quantization,
+      # adapter or sampling — which in practice means every change.
+      - name: Tool-call gate
+        run: tandem gate toolcall --runs 100
+
+      # Sec 4.2, blocking. Vacuous with no adapters mounted, which is the state in
+      # CI; it is here so the gate cannot rot unnoticed between real runs.
+      - name: Adapter isolation gate
+        run: tandem gate isolation
+
+      - name: A0 corpus generation
+        run: tandem extract a0 --n 200 --out /tmp/corpus-a0
+
+      # A1 against this repository's own history. `extract` exits 2 on a thin
+      # corpus (< 500 pairs), which this repo is and will be for a long time, so 2
+      # is the expected outcome here — the step checks the entry point and the
+      # exit-code contract, not the yield. Extraction quality is covered by the
+      # unit tests, which build real repositories to walk.
+      - name: A1 extraction from this repo
+        run: |
+          set +e
+          tandem extract a1 --repo . --holdout 2 --out /tmp/corpus-a1
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ] && [ "$code" -ne 2 ]; then
+            echo "::error::a1 extraction exited $code (expected 0, or 2 for a thin corpus)"
+            exit "$code"
+          fi

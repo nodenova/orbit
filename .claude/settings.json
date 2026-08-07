@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -m pip install --quiet --root-user-action=ignore -e '.[dev,constrain]' 2>&1 | tail -2 || true",
+            "timeout": 300
+          }
+        ]
+      }
+    ]
+  }
+}
