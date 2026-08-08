@@ -111,6 +111,7 @@ def build_tier1(cfg: Config, tier0: Backend | None = None) -> Backend | None:
         timeout_s=cfg.tier1.request_timeout_s,
         expert_cache_bytes=cfg.tier1.expert_cache_bytes,
         pinned_version=cfg.tier1.pinned_version,
+        reasoning_control=cfg.tier1.reasoning_control,
     )
 
 
@@ -227,6 +228,7 @@ def _build_remote(cfg: Config) -> Backend:
         transport,
         model=cfg.tier1.remote_model or cfg.tier1.model,
         endpoint_label=_endpoint_label(cfg.tier1.remote_endpoint),
+        reasoning_control=cfg.tier1.reasoning_control,
     )
 
 

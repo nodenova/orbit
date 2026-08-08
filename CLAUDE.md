@@ -9,6 +9,8 @@ streamed model verifies them rather than generating.
 Background, read when relevant (not loaded automatically): `docs/HANDOFF.md` —
 state, next steps, and the decisions that look simplifiable and are not ·
 `docs/STATUS.md` — spec-section → code map and three documented deviations ·
+`docs/DEEPSEEK_V4.md` — DeepSeek-V4-Flash-0731 as tier 1: architecture audit, the
+role/engine decision, the 64 GB budget, and why a verifier must not reason ·
 `README.md` — usage.
 
 ## Commands

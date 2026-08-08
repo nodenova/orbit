@@ -59,6 +59,7 @@ quantised deltas and Metal.
 | 5.1 three call types, schema-constrained, verifier-only | `tier1/schemas.py`, `tier1/verifier.py` | built |
 | 5.2 2-bit caveat mitigations | schema `additionalProperties: false`; verdict validation | built |
 | 5.3 prefill measurement | `mlx_tier1.measure_prefill`, `gate_b_report` | built (instrument) / open (numbers) |
+| 5.2 reasoning refusal (DeepSeek-V4 family) | `tier1_call.resolve_reasoning_control`, `refuse_reasoned_answer` | built |
 | 5.4 mlx-optiq behind a process boundary | `mlx_tier1.OptiqTier1Backend` | built |
 | 5.5 rung 1 (streamed) | `build_tier1()`, `backends/mlx_tier1.py` | built (client) / open (engine) |
 | 5.5 rung 2 (80B resident-swapped) | `backends/resident_swap.py` | built (policy) / open (MLX occupants) |
@@ -72,6 +73,16 @@ that is right in one and drifts in the other is not a clamp — and the move gav
 ceiling that keeps tier 1 a verifier its first test, since it had lived only in a file
 nothing had ever imported. `tests/test_mlx_tier1.py` now checks the clamp again on the
 wire, where a transport could still drop it between the helper and the request body.
+
+**Tier 1 never reasons.** DeepSeek-V4-Flash is the first candidate verifier that
+reasons by default, and it breaks two invariants at once without reporting either: a
+`<think>` block spends the sec 5.1 clamp before the verdict exists, and thinking mode
+*silently ignores* `temperature`, so the greedy judgement the receipt attests to
+(sec 9.3) is a sample. `tier1.reasoning_control` sends thinking off in both dialects
+the engines read, and — the half that holds — `refuse_reasoned_answer` rejects a
+verdict that reasoned anyway on every rung and every model, ungated by the config. A
+guess about what the engine reads is not a guarantee; an observation of what it did
+is. Full analysis in `docs/DEEPSEEK_V4.md`.
 
 `tier1.rung` selects which rung serves the verifier. Selected, never descended:
 nothing falls from one rung to the next on an error, which matters most at rung 4.

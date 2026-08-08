@@ -58,7 +58,7 @@ code that implements it, which covers most day-to-day needs.
 ## 2. State
 
 `main`, green CI (Python 3.11 and 3.14; jobs `tests` and `cli and gateway smoke`).
-**399 tests**, passing on both `[dev,constrain]` and `[dev]`-only installs.
+**515 tests**, passing on both `[dev,constrain]` and `[dev]`-only installs.
 
 Working end to end against `MockBackend`: three wire protocols, harness compaction
 (~41× measured), incremental streaming, prompt + disk KV caching across a restart,
@@ -128,6 +128,21 @@ on, and the in-house loader becomes M-blocking rather than optional.
 
 A live risk, not a formality: `ds4` measures GLM-5.2 streaming prefill at 3–5 t/s,
 ~100× below the bandwidth bound.
+
+**The filler this gate measures on was rebuilt.** It used to be one 23-character
+line repeated to length, on the reasoning that only length matters. On a streamed
+MoE that is false in the flattering direction: identical tokens route to identical
+experts — by construction on layers using hash routing — so the chunk's expert union
+collapses, the cache serves the sweep from RAM, and the gate reports a throughput no
+real prompt reaches. `prefill_filler` is now deterministic and identifier-diverse.
+A floor test must not fail in the direction that lets you pass.
+
+**Running DeepSeek-V4-Flash-0731 here is a config change, not a port** — same rung,
+same engine, same process boundary. `docs/DEEPSEEK_V4.md` is the analysis: role and
+engine decided on numbers, the 64 GB budget, and the arithmetic showing Gate B turns
+entirely on whether the engine amortises the expert sweep across a prefill chunk
+(~330 tok/s derived at a 4k chunk, ~3.5 at per-position loading — a 60× fork on one
+engine behaviour, not on the hardware).
 
 ### 3. Prove the adapter mounting
 
@@ -231,6 +246,15 @@ Each looks simplifiable and is not. Every one has a comment in the code saying s
 - **Tier 1 has no `generate` entrypoint** and clamps `max_tokens` per call type
   (sec 5.1). The model that reranks five candidates in 18 s takes six minutes to
   write one.
+- **Tier 1 never reasons, and a reasoned verdict is refused rather than read.**
+  Both halves are load-bearing and they are not redundant. The request-side
+  `reasoning_control` guesses which dialect of "thinking off" the engine reads;
+  `refuse_reasoned_answer` observes what it actually did, unconditionally, on every
+  rung and every model. Dropping the second because the first "already handles it"
+  restores the failure for exactly the models nobody thought about — and that
+  failure is silent twice over: the `<think>` block spends the clamp before the
+  verdict exists, and thinking mode discards `temperature` without erroring, so the
+  receipt attests to a greedy judgement that was a sample.
 - **`rerank_schema(n)` bounds the choice to the candidates on offer.** Without the
   `maximum`, a constrained decode can still name a candidate that does not exist.
 - **Rung 3 strips the adapter.** An adapted model judging its own candidates is

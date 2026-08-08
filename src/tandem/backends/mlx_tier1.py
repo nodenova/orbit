@@ -26,6 +26,7 @@ process boundary, and the prefill instrumentation Gate B reads.
 
 from __future__ import annotations
 
+import random
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -35,7 +36,108 @@ import httpx
 from ..attest.hashing import hash_artefact
 from ..types import GenRequest, GenResult, Message, Role, Sampling, StopReason, Usage
 from .base import Backend
-from .tier1_call import Tier1Unavailable, build_payload, read_completion, validate_or_raise
+from .tier1_call import (
+    Tier1Unavailable,
+    build_payload,
+    read_completion,
+    resolve_reasoning_control,
+    validate_or_raise,
+)
+
+
+# Fragments the filler is assembled from. Deliberately a wide vocabulary rather
+# than one repeated line — see `prefill_filler`.
+_FILLER_VERBS = (
+    "resolve", "collect", "flatten", "annotate", "reconcile", "dispatch", "prune",
+    "serialise", "bisect", "coalesce", "validate", "rehydrate", "quantise", "route",
+    "materialise", "invalidate", "checkpoint", "escalate", "attribute", "compact",
+)
+_FILLER_NOUNS = (
+    "manifest", "shard", "cursor", "envelope", "quorum", "digest", "lease",
+    "watermark", "partition", "ledger", "snapshot", "backlog", "delta", "receipt",
+    "adapter", "expert", "router", "verdict", "worktree", "corpus",
+)
+_FILLER_TYPES = ("bytes", "str", "int", "float", "dict", "list", "tuple", "bool")
+
+
+def prefill_filler(target_chars: int) -> str:
+    """Exactly `target_chars` characters of code-shaped filler, deliberately varied.
+
+    The variety is the point, and it is specific to what Gate B measures. This
+    prompt is prefilled by a *streamed* MoE, where the cost is the union of experts
+    the chunk routes to, read off SSD once each. One line repeated to 16k tokens
+    routes to almost no experts — identical tokens route identically, and on a model
+    whose first MoE layers use hash routing they route identically by construction.
+    The union collapses, the engine's expert cache serves the whole sweep out of
+    RAM, and the measurement reports a throughput no real prompt will ever see.
+    That is the one direction a floor test must not fail in: Gate B decides whether
+    the in-house streaming loader is a three-week option or M-blocking, and a
+    flattering number defers that discovery to month two.
+
+    So the filler spans a wide identifier vocabulary, which is what a real 16k
+    context of source actually looks like to a router. It is still deterministic —
+    fixed seed, no wall clock — because a gate whose number moves between runs is
+    not a gate.
+
+    It does *not* claim to reproduce the expert distribution of the operator's own
+    repository; nothing synthetic can. It claims only to stop understating the
+    number of experts a chunk touches, which is the failure the old filler had.
+    """
+    rng = random.Random(20260731)
+    out: list[str] = []
+    total = 0
+    i = 0
+    while total < target_chars:
+        verb = rng.choice(_FILLER_VERBS)
+        noun = rng.choice(_FILLER_NOUNS)
+        other = rng.choice(_FILLER_NOUNS)
+        typ = rng.choice(_FILLER_TYPES)
+        tag = f"{verb}_{noun}_{i}"
+        # Literals are drawn per block rather than reused: constants, hex digests
+        # and paths are a large share of the distinct tokens in real source, and
+        # they are exactly what a repeated unit has none of.
+        limit = rng.randrange(2, 99991)
+        digest = f"{rng.randrange(1 << 44):011x}"
+        shape = i % 4
+        if shape == 0:
+            block = (
+                f"def {tag}({other}: {typ}, limit: int = {limit}) -> {typ}:\n"
+                f'    """{verb.capitalize()} the {noun} against the {other}."""\n'
+                f"    {noun} = {other}.{verb}(limit=limit, strict={rng.choice(('True', 'False'))})\n"
+                f"    if not {noun}:\n"
+                f'        raise ValueError(f"{other} produced no {noun} under {{limit}}")\n'
+                f"    return {noun}\n\n"
+            )
+        elif shape == 1:
+            block = (
+                f"class {verb.capitalize()}{noun.capitalize()}{i}(Base{other.capitalize()}):\n"
+                f"    __slots__ = ('{noun}_{i}', '{other}_{i}', 'cursor_{digest}')\n"
+                f"    threshold = {limit}\n"
+                f"    checksum = 0x{digest}\n\n"
+                f"    def {verb}(self, {other}: {typ} | None = None) -> {typ}:\n"
+                f"        return self.{noun}_{i} if {other} is None else {other}\n\n"
+            )
+        elif shape == 2:
+            block = (
+                f"{tag.upper()} = {{\n"
+                f'    "{noun}": "src/{other}/{tag}.py",\n'
+                f'    "{other}": {limit},\n'
+                f'    "digest": "{digest}",\n'
+                f'    "mode": "{rng.choice(_FILLER_VERBS)}-{rng.choice(_FILLER_NOUNS)}",\n'
+                f"}}\n\n"
+            )
+        else:
+            block = (
+                f"# {verb} {noun} {i}: rebuilt when the {other} changes ({digest}).\n"
+                f"@register('{tag}', priority={limit % 97})\n"
+                f"async def {other}_{verb}_{i}(ctx: Context) -> {typ}:\n"
+                f"    ctx.emit('{tag}', {other}={limit}, digest='{digest}')\n"
+                f"    return await ctx.{verb}('{noun}')\n\n"
+            )
+        out.append(block)
+        total += len(block)
+        i += 1
+    return "".join(out)[:target_chars]
 
 
 @dataclass
@@ -76,12 +178,16 @@ class OptiqTier1Backend(Backend):
         timeout_s: float = 180.0,
         expert_cache_bytes: int | None = None,
         pinned_version: str = "",
+        reasoning_control: str = "auto",
     ):
         self.endpoint = endpoint.rstrip("/")
         self.model = model
         self.timeout_s = timeout_s
         self.expert_cache_bytes = expert_cache_bytes
         self.pinned_version = pinned_version
+        # Resolved once, at construction, so an unknown value is a startup error
+        # rather than a failed verdict on the first reranked turn.
+        self.reasoning_control = resolve_reasoning_control(reasoning_control, model)
         self._container_hash = hash_artefact(container_path)
         self._client = httpx.AsyncClient(timeout=timeout_s)
         # Every prefill measurement taken this run, for the M0 Gate B report.
@@ -104,7 +210,9 @@ class OptiqTier1Backend(Backend):
 
     async def generate(self, req: GenRequest) -> GenResult:
         """Serve a canonical request. Always schema-constrained, always clamped."""
-        payload = build_payload(req, model=self.model)
+        payload = build_payload(
+            req, model=self.model, reasoning_control=self.reasoning_control
+        )
 
         t0 = time.perf_counter()
         try:
@@ -154,14 +262,12 @@ class OptiqTier1Backend(Backend):
         rather than optional — which is a three-week schedule fact, so it is worth
         measuring on day three rather than discovering in month two.
         """
-        # ~4 chars/token of filler; content is irrelevant, length is the variable.
-        # Sized in characters rather than in repeats of the unit: the unit is 23
-        # chars, so a repeat count derived from the token count undershoots the
-        # target by ~4%, and a sample labelled 16k that carried 15.3k tokens is a
-        # measurement of a different input size than the one Gate B is quoted at.
-        unit = "def f():\n    return 1\n\n"
-        target_chars = input_tokens * 4
-        filler = (unit * (target_chars // len(unit) + 1))[:target_chars]
+        # ~4 chars/token of filler. Length is the variable Gate B is quoted at, and
+        # it is sized in characters rather than in repeats of a unit: a repeat count
+        # derived from the token count undershoots by ~4%, and a sample labelled 16k
+        # that carried 15.3k tokens measures a different input size than the one
+        # being reported.
+        filler = prefill_filler(input_tokens * 4)
         req = GenRequest(
             messages=[Message(role=Role.USER, content=filler)],
             system="Reply with the single word: ok",
@@ -179,10 +285,19 @@ class OptiqTier1Backend(Backend):
             "pass": worst >= 200.0,
             "threshold_tok_per_s": 200.0,
             "worst_tok_per_s": round(worst, 1),
+            # Reported with the number, not alongside it (sec 10.5). Streamed
+            # prefill throughput is a function of how much of the expert set the
+            # cache already holds, so a rate quoted without the model and the cache
+            # size is not a measurement anyone can reproduce or compare.
+            "model": self.model,
+            "expert_cache_bytes": self.expert_cache_bytes,
             "samples": [s.as_dict() for s in self.prefill_samples],
             "note": (
                 "Below 200 tok/s the engine is not doing batch-union prefill; "
-                "Phase 2 in-house loader becomes M-blocking (spec sec 5.4, 11)."
+                "Phase 2 in-house loader becomes M-blocking (spec sec 5.4, 11). "
+                "Filler is deterministic and identifier-diverse so the chunk's "
+                "expert union is not artificially small; it does not reproduce a "
+                "real repository's expert distribution."
             ),
         }
 
