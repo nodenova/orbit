@@ -49,6 +49,42 @@ pinned_version = ""
 stream_experts = true
 expert_cache_bytes = 19327352832   # 18 GB, per the sec 2.1 budget
 request_timeout_s = 180.0
+# Which dialect of "thinking off" to send. A verifier must not reason: the <think>
+# block spends the sec 5.1 output clamp before the verdict exists, and thinking mode
+# silently ignores `temperature`, which turns the greedy judgement the receipt
+# attests to (sec 9.3) into a sample. There is no value here that turns reasoning on.
+#
+#   "auto"         guess from the model name (DeepSeek-V4 family -> deepseek_v4)
+#   "deepseek_v4"  send it explicitly, for a model the guess does not recognise
+#   "none"         send nothing; the engine is configured for non-think itself
+#
+# Guessing is safe because it is not the guarantee: a reasoned answer is refused on
+# arrival whatever was asked for, on every rung and every model.
+reasoning_control = "auto"
+
+# --- DeepSeek-V4-Flash-0731 -------------------------------------------------
+# The other tier-1 model this runtime supports, and the one to use on a 64 GB Mac
+# where the 122B does not leave room. Same rung, same engine, same process
+# boundary — `optiq serve --stream-experts` on 8081 — so this is a model swap and
+# not a code path. The full analysis is docs/DEEPSEEK_V4.md.
+#
+# 284B total / 13B active, 92.5 GB on disk, 6.5 GB resident with experts streamed.
+# MIT licensed and ungated, so the weights are a one-off auditable download.
+#
+# model = "mlx-community/DeepSeek-V4-Flash-0731-OptiQ-2bit-mixed"
+#
+# Budget on a 64 GB M4 Max with tier 0 resident: ~8 OS + ~20 tier 0 + ~4 tier-0 KV
+# + 6.5 non-routed + ~4 activations leaves ~21 GB, so the 18 GB default above fits
+# with ~3 GB of headroom — about 21% of the ~86 GB routed-expert set. Sweep it at
+# 12/18/24 GB once Gate B has a number; do not tune it from this comment.
+#
+# Raise the timeout with it. Gate B's floor is 200 tok/s, and at the floor a 30k
+# review costs ~150 s of prefill plus ~46 s of decode — past the 180 s default, so
+# the largest reviews would degrade to failed verdicts on a passing gate.
+# request_timeout_s = 300.0
+#
+# Leave DSpark/MTP speculative decoding off at the engine. It buys nothing for a
+# verifier writing <=128 tokens and threatens the byte-identity G1/G2 assert.
 
 # --- rung 2 -----------------------------------------------------------------
 # Decline a verdict once the *measured* swap round trip costs more than this many

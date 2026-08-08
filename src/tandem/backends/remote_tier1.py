@@ -42,7 +42,13 @@ from typing import Any, Awaitable, Callable
 
 from ..types import GenRequest, GenResult, StopReason, Usage
 from .base import Backend
-from .tier1_call import Tier1Unavailable, build_payload, read_completion, validate_or_raise
+from .tier1_call import (
+    Tier1Unavailable,
+    build_payload,
+    read_completion,
+    resolve_reasoning_control,
+    validate_or_raise,
+)
 
 RUNG = "remote"
 
@@ -86,6 +92,7 @@ class RemoteTier1Backend(Backend):
         *,
         model: str,
         endpoint_label: str = "",
+        reasoning_control: str = "auto",
     ):
         if not callable(transport):
             raise ValueError(
@@ -99,11 +106,17 @@ class RemoteTier1Backend(Backend):
         # is for the operator to recognise where verdicts went; it is not a secret
         # store and must not become one.
         self.endpoint_label = endpoint_label
+        # A hosted DeepSeek-V4 endpoint reasons by default, and the two invariants
+        # that breaks (sec 5.1's clamp, sec 9.3's determinism) do not become less
+        # true for being someone else's engine.
+        self.reasoning_control = resolve_reasoning_control(reasoning_control, model)
         self.calls = 0
         self.total_s = 0.0
 
     async def generate(self, req: GenRequest) -> GenResult:
-        payload = build_payload(req, model=self.model)
+        payload = build_payload(
+            req, model=self.model, reasoning_control=self.reasoning_control
+        )
         t0 = time.perf_counter()
         try:
             body = await self._transport(payload)

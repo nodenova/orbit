@@ -77,6 +77,19 @@ class Tier1Config:
     stream_experts: bool = True
     expert_cache_bytes: int = 18 * (1 << 30)  # sec 2.1 budget
     request_timeout_s: float = 180.0
+    # Which dialect of "thinking off" to send. A verifier must not reason: the
+    # `<think>` block spends the sec 5.1 output clamp before the verdict exists,
+    # and thinking mode silently ignores `temperature`, which would make the greedy
+    # judgement the receipt attests to a sample instead. There is no value here
+    # that turns reasoning on.
+    #
+    #   "auto"         guess from the model name (DeepSeek-V4 family -> deepseek_v4)
+    #   "deepseek_v4"  send it explicitly, for a model the guess does not recognise
+    #   "none"         send nothing; the engine is configured for non-think itself
+    #
+    # Guessing is safe because the guess is not the guarantee: a reasoned answer is
+    # refused on arrival whatever was requested (`backends/tier1_call.py`).
+    reasoning_control: str = "auto"
 
 
 @dataclass

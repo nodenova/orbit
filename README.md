@@ -178,7 +178,7 @@ Two blocks are worth knowing about before anything else.
 
 | Rung | `tier1.rung` | What it is |
 |---|---|---|
-| 1 | `streamed` | The 122B design target, experts streamed from NVMe. |
+| 1 | `streamed` | The 122B design target, experts streamed from NVMe. Also where **DeepSeek-V4-Flash-0731** runs — same rung, same engine, a model swap rather than a code path ([docs/DEEPSEEK_V4.md](docs/DEEPSEEK_V4.md)). |
 | 2 | `resident_swap` | An 80B swapped into residency, evicting tier 0 — ~10 s each way, and tier 0 cannot serve while it is in. |
 | 3 | `second_opinion` | Tier 0 with its adapter unmounted. Free, weak, needs no second model, and still catches adapter overfit. The rung available before the 122B container exists. |
 | 4 | `remote` | Somebody else's API. Breaks the offline claim, so it needs `tier1.remote_consent` written out in full. |
