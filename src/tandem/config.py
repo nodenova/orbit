@@ -75,7 +75,11 @@ class Tier1Config:
     endpoint: str = "http://127.0.0.1:8081/v1"
     pinned_version: str = ""
     stream_experts: bool = True
-    expert_cache_bytes: int = 18 * (1 << 30)  # sec 2.1 budget
+    # sec 2.1 budget. Host-sizing input only — it is not sent to the engine and has
+    # no engine-side counterpart to be sent to. See
+    # `backends.mlx_tier1.expert_cache_provenance` for why, and for what a receipt is
+    # allowed to say about it.
+    expert_cache_bytes: int = 18 * (1 << 30)
     request_timeout_s: float = 180.0
     # Which dialect of "thinking off" to send. A verifier must not reason: the
     # `<think>` block spends the sec 5.1 output clamp before the verdict exists,

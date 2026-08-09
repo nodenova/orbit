@@ -472,7 +472,7 @@ def test_receipt_has_the_spec_shape():
         "invoked": True,
         "call": "rerank",
         "rung": None,
-        "expert_cache_bytes": None,
+        "expert_cache_configured_bytes": None,
     }
     assert d["compaction_template"] == "cc-2026.08@v3"
     assert d["seed"] == 7

@@ -17,6 +17,11 @@ port = 8080
 
 [tier0]
 model = "mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit"
+# Set this, or receipts carry no container hash at all. `hash_artefact` takes a
+# filesystem path and answers None for anything that is not one, so the repo id
+# above hashes to nothing — honestly ("not mounted"), and uselessly. Point it at the
+# resolved snapshot directory, e.g. the HF cache:
+#   ~/.cache/huggingface/hub/models--mlx-community--Qwen3.6-35B-A3B-OptiQ-4bit/snapshots/<rev>
 # container_path = "/models/qwen3.6-35b-a3b-4bit"
 adapter_dir = "adapters"
 # default_adapter = "a1-myrepo"
@@ -47,7 +52,16 @@ endpoint = "http://127.0.0.1:8081/v1"
 # monorepo, so it is unforkable and unauditable (sec 13).
 pinned_version = ""
 stream_experts = true
-expert_cache_bytes = 19327352832   # 18 GB, per the sec 2.1 budget
+# 18 GB, per the sec 2.1 budget — but read this before quoting it in a measurement.
+# This value does NOT reach the engine, and there is nothing for it to reach: the
+# engine is a process you launch yourself (sec 5.4), and `optiq serve` has no byte
+# budget. Its `--stream-experts-cache N` is a per-projection count, and at 0.4.18 it
+# is accepted and then discarded before the shard reader sees it, so every expert is
+# read per call and the only cache in play is the OS page cache. Receipts therefore
+# report this as `expert_cache_configured_bytes` and Gate B reports it as provenance,
+# both saying plainly that it was not in force. Keep it as the budget you sized the
+# host for; do not read a throughput next to it as having been measured under it.
+expert_cache_bytes = 19327352832
 request_timeout_s = 180.0
 # Which dialect of "thinking off" to send. A verifier must not reason: the <think>
 # block spends the sec 5.1 output clamp before the verdict exists, and thinking mode

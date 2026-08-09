@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import platform
+import re
 import subprocess
 import time
 from dataclasses import asdict, dataclass, field
@@ -27,6 +28,11 @@ from typing import Any, Sequence
 from ..backends.base import Backend
 from ..types import GenRequest, Message, Role, Sampling
 
+# Fixed, and deliberately not derived from `tier0.max_kv_tokens`: the frontiers are
+# the axis a measurement is plotted against, so a host that lowers its KV budget must
+# still report the same columns or the numbers stop being comparable across machines.
+# A frontier above the configured KV budget is a real datapoint, not a misconfiguration
+# — it is what the backend does when asked for more than it was sized for.
 FRONTIERS: tuple[int, ...] = (2_000, 4_000, 8_000, 16_000, 32_000)
 
 # Latency contract (sec 7.3), asserted by `check_contract`.
@@ -42,12 +48,16 @@ CONTRACT = {
 class Environment:
     """Everything sec 10.5 requires recorded alongside a number."""
 
+    # Unknown is `None`, never 0. These serialise straight into a published report,
+    # and `"memory_bandwidth_gb_s": 0.0` reads as a measurement of zero rather than as
+    # a field nobody filled in — the exact way a wrong number gets quoted. `null` can
+    # only be read one way. Anything that consumes these must handle None.
     chip: str = "unknown"
-    cpu_cores: int = 0
-    gpu_cores: int = 0
-    ram_gb: float = 0.0
-    ssd_capacity_gb: float = 0.0
-    memory_bandwidth_gb_s: float = 0.0
+    cpu_cores: int | None = None
+    gpu_cores: int | None = None
+    ram_gb: float | None = None
+    ssd_capacity_gb: float | None = None
+    memory_bandwidth_gb_s: float | None = None
     os_version: str = ""
     engine_commit: str = ""
     python: str = ""
@@ -67,12 +77,17 @@ class Environment:
             env.chip = f"non-darwin ({platform.machine()})"
             return env
         env.chip = _sysctl("machdep.cpu.brand_string") or "unknown"
-        env.cpu_cores = int(_sysctl("hw.ncpu") or 0)
+        ncpu = _sysctl("hw.ncpu")
+        env.cpu_cores = int(ncpu) if ncpu.isdigit() else None
         mem = _sysctl("hw.memsize")
-        env.ram_gb = round(int(mem) / (1 << 30), 1) if mem else 0.0
+        env.ram_gb = round(int(mem) / (1 << 30), 1) if mem.isdigit() else None
         env.ssd_capacity_gb = _disk_capacity_gb()
+        env.gpu_cores = _gpu_cores()
         # Bandwidth is not queryable; it is a bin fact (546 vs 410 GB/s on M4 Max,
-        # sec 2.3) that the operator must supply. Left at 0 = unknown.
+        # sec 2.3) that the operator must supply. Left None = unknown. Deliberately
+        # *not* inferred from the GPU-core count, even though the two correlate on
+        # current parts: a lookup table would be indistinguishable in the report from
+        # a measured figure, and would go quietly wrong on the next silicon.
         return env
 
 
@@ -86,7 +101,29 @@ def _sysctl(key: str) -> str:
         return ""
 
 
-def _disk_capacity_gb() -> float:
+def _gpu_cores() -> int | None:
+    """GPU core count from the IORegistry.
+
+    Keyed on the `gpu-core-count` property rather than on the `AGXAccelerator` class
+    name, so a renamed accelerator class still resolves. ~20 ms. Returns None rather
+    than 0 when the property is absent — a report that says 0 GPU cores is claiming
+    something false about the machine, which is worse than admitting ignorance.
+    """
+    try:
+        out = subprocess.run(
+            ["ioreg", "-r", "-d", "1", "-k", "gpu-core-count", "-w0"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r'"gpu-core-count"\s*=\s*(\d+)', out.stdout)
+    return int(m.group(1)) if m else None
+
+
+def _disk_capacity_gb() -> float | None:
     """SSD capacity — a performance spec, not a storage detail (sec 2.3).
 
     Apple SSD read bandwidth scales with NAND package count, so 512 GB vs 1 TB is
@@ -97,7 +134,7 @@ def _disk_capacity_gb() -> float:
 
         return round(_shutil.disk_usage("/").total / (1000**3), 0)
     except OSError:
-        return 0.0
+        return None
 
 
 @dataclass
@@ -168,10 +205,22 @@ async def measure(
     max_tokens: int = 64,
     cold: bool = True,
 ) -> list[LatencySample]:
-    """One sample per frontier.
+    """One sample per frontier, straight against the backend.
 
     TTFT is measured to the first non-empty delta, so a backend that emits an empty
     priming chunk does not report an artificially good number.
+
+    **This calls `backend.stream` directly and does not go through `Pipeline`.** No
+    compaction, no replay-aware render, no prompt-cache probe — so every sample
+    re-prefills its whole frontier from scratch. That is the floor, and it is the
+    number this suite is meant to produce: sec 10.5 wants a figure that cannot fail in
+    the flattering direction, and a cache hit measures the cache rather than the model.
+    A Pipeline-level companion measurement is a different suite, not a flag here.
+
+    `cold` is therefore a **label the caller supplies**, not an observed cache state.
+    Nothing is evicted between passes. The only real difference a second pass sees is
+    resident weights and already-compiled Metal kernels, which on hardware is worth
+    ~9 s at the smallest frontier and is exactly what the label is for.
     """
     samples: list[LatencySample] = []
     for frontier in frontiers:
@@ -234,7 +283,20 @@ def check_contract(samples: Sequence[LatencySample]) -> dict[str, Any]:
 
 
 def m0_gate_a(samples: Sequence[LatencySample], toolcall_failure_rate: float) -> dict[str, Any]:
-    """M0 Gate A (sec 11): tier-0 warm TTFT <5 s at >=30 tok/s, tool-call failures <5%.
+    """M0 Gate A (sec 11): tier-0 TTFT <5 s at >=30 tok/s, tool-call failures <5%.
+
+    Reads the samples labelled `cold=False`. Per `measure`, that label means *second
+    pass, weights resident* — **not** a warm prompt cache. So the TTFT this gate judges
+    is full re-prefill of the frontier, and it is `max()` across frontiers, i.e. the
+    32k column decides. TTFT ~= frontier / prefill_rate is then arithmetic: no local
+    model prefills 32k in 5 s, so this criterion is a statement about how much fresh
+    context reaches the model per turn, which is compaction's and the KV cache's job
+    upstream. Read a red TTFT here as "the mitigations are not being measured", and
+    only as the kill condition once they exist and it is still red.
+
+    `toolcall_failure_rate` is **passed in, not measured** — it comes from
+    `tandem gate toolcall`, and defaults to 0.0, which passes. A Gate A report is not
+    evidence about tool calls unless that gate was run and its number handed here.
 
     The kill condition attaches here: if Gate A fails badly the interactive premise
     is wrong and the product pivots to async review-assist. That is a decision worth

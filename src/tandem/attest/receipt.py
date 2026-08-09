@@ -123,10 +123,22 @@ class Tier1Attestation:
     # a receipt that did not say so would let a customer read a base-model verdict
     # as a streamed-verifier one.
     rung: str | None = None
-    # Expert-cache occupancy at call time. G2 (sec 9.3) requires output to be
-    # invariant to this; recording it is what makes a violation detectable after
-    # the fact rather than only under a deliberate test.
-    expert_cache_bytes: int | None = None
+    # The *configured* expert-cache budget — explicitly not occupancy at call time,
+    # which is what this field used to claim.
+    #
+    # It cannot be occupancy. The engine sits behind a process boundary (sec 5.4),
+    # reports no cache state on any endpoint it serves, and as of mlx-optiq 0.4.18
+    # has no expert LRU at all: `--stream-experts-cache` is accepted and discarded
+    # before it reaches the shard reader, so every expert is `pread` per call and the
+    # only cache is the OS page cache. See `backends.mlx_tier1.expert_cache_provenance`.
+    #
+    # The rename is the fix. G2 (sec 9.3) requires output to be invariant to cache
+    # state, and the old name implied this field evidenced that — while holding a
+    # config constant identical in every receipt, cold or hot, so a G2 violation
+    # would have been exactly as invisible with it as without it. A field that reads
+    # as evidence and is not is worse than no field, so the name now says "configured",
+    # and G2 remains what the deliberate test proves.
+    expert_cache_configured_bytes: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -134,7 +146,7 @@ class Tier1Attestation:
             "invoked": self.invoked,
             "call": self.call,
             "rung": self.rung,
-            "expert_cache_bytes": self.expert_cache_bytes,
+            "expert_cache_configured_bytes": self.expert_cache_configured_bytes,
         }
 
 

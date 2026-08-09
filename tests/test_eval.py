@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import platform
+
 import pytest
 
 from tandem.backends.mock import Fault, MockBackend
@@ -12,7 +14,7 @@ from tandem.eval.gates import (
     g2_placement_invariance,
     toolcall_gate,
 )
-from tandem.eval.latency import LatencySample, m0_gate_a, measure
+from tandem.eval.latency import Environment, LatencySample, m0_gate_a, measure
 from tandem.eval.merge_eval import (
     Arm,
     ArmSummary,
@@ -458,3 +460,23 @@ def test_m0_gate_a_needs_warm_samples():
                       decode_tok_per_s=44.0, prefill_tok_per_s=800.0)
     ]
     assert not m0_gate_a(cold, toolcall_failure_rate=0.0)["pass"]
+
+
+def test_environment_reports_unknown_as_none_never_zero():
+    """Sec 10.5: an undetected hardware fact must be absent, not zero.
+
+    A published report saying `"memory_bandwidth_gb_s": 0.0` is a claim about the
+    machine; `null` is the absence of one. Bandwidth is never detected — it is a bin
+    fact the operator supplies — so it pins the contract on every platform.
+    """
+    env = Environment.detect().as_dict()
+    assert env["memory_bandwidth_gb_s"] is None
+    for key in ("cpu_cores", "gpu_cores", "ram_gb", "ssd_capacity_gb"):
+        assert env[key] is None or env[key] > 0, f"{key} reported a falsy non-None"
+
+
+@pytest.mark.skipif(platform.system() != "Darwin", reason="IORegistry is macOS-only")
+def test_environment_detects_apple_silicon_gpu_cores():
+    env = Environment.detect()
+    assert env.gpu_cores is not None and env.gpu_cores > 0
+    assert env.cpu_cores is not None and env.ram_gb is not None

@@ -320,7 +320,12 @@ def test_the_filler_still_looks_like_source():
 @pytest.mark.asyncio
 async def test_gate_b_reports_the_cache_size_the_number_depends_on():
     """Streamed prefill throughput is a function of how much of the expert set is
-    already resident (sec 10.5). A rate quoted without it cannot be reproduced."""
+    already resident (sec 10.5). A rate quoted without it cannot be reproduced.
+
+    The configured budget still rides on the report — but as provenance, never as a
+    bare number. It does not reach the engine, so a receipt that stated it flatly
+    would attest a cache that was not in force.
+    """
     handler, _ = _answering()
     backend, original = _endpoint(handler, expert_cache_bytes=32 << 30)
     try:
@@ -330,6 +335,11 @@ async def test_gate_b_reports_the_cache_size_the_number_depends_on():
         await backend.close()
         await original.aclose()
 
-    assert report["expert_cache_bytes"] == 32 << 30
+    cache = report["expert_cache"]
+    assert cache["configured_bytes"] == 32 << 30
+    assert cache["reached_engine"] is False
+    assert "page cache" in cache["engine_mechanism"]
+    # The bare field is the thing being prevented: it read as the engine's setting.
+    assert "expert_cache_bytes" not in report
     assert report["model"] == DEEPSEEK
     assert report["threshold_tok_per_s"] == 200.0

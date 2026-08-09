@@ -658,7 +658,9 @@ class Pipeline:
                 rung=self.cfg.tier1.rung if self.tier1 else None,
                 invoked=cinfo.tier1_invoked,
                 call=cinfo.tier1_call,
-                expert_cache_bytes=self.cfg.tier1.expert_cache_bytes if self.tier1 else None,
+                expert_cache_configured_bytes=(
+                    self.cfg.tier1.expert_cache_bytes if self.tier1 else None
+                ),
             ),
             compaction_template=req.compaction_template,
             sampling=req.sampling,

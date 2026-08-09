@@ -1,0 +1,72 @@
+# Tandem, on this host: MacBook Pro M4 Max, 36 GB unified memory, ~488 GB free SSD.
+#
+# The docs derive every budget for 64 GB / 1 TB (HANDOFF sec 1, DEEPSEEK_V4 sec 5).
+# This machine is 36 GB, so the numbers below are re-derived, not copied. The one
+# structural consequence: tier 0 (24.7 GB on disk) and a streamed tier 1 (~12 GB
+# resident) do not co-reside in 36 GB. Gate A and Gate B are each run standalone,
+# which is what they measure anyway; a *serving* deployment on this host is rung 3.
+# tandem.toml.example already predicted this case in the rung list.
+
+backend = "mlx"
+
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[tier0]
+# 24.7 GB on disk, measured from the HF blob listing, not the card.
+model = "mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit"
+# The resolved snapshot, not the repo id. hash_artefact() takes a filesystem path
+# and answers None for anything that is not one, so with only the repo id above the
+# receipt reports no container hash at all - honest, and useless for attestation.
+container_path = "/Users/vmehera/.cache/huggingface/hub/models--mlx-community--Qwen3.6-35B-A3B-OptiQ-4bit/snapshots/70a3aa32c7feef511182bf16aa332f37e8d82014"
+adapter_dir = "adapters"
+mtp = true
+# 32k KV on top of 24.7 GB of weights leaves nothing on a 36 GB box once the ~8 GB
+# macOS floor is taken. 16k is the Gate A working figure; raise it only against a
+# measured resident-set number, never against this comment.
+max_kv_tokens = 16384
+
+[tier1]
+# Off until Gate A has an answer. Gate B is run by flipping this to true; see
+# specs/HOST_BRINGUP.md for the exact sequence and why the two gates do not overlap.
+# (That path is gitignored - if it is missing, the durable copy is docs/HANDOFF.md.)
+enabled = true
+rung = "streamed"
+# Resolved snapshot, for the same reason tier 0 needs one: hash_artefact() answers
+# None for anything that is not a filesystem path, and a Gate B number quoted with no
+# container hash is not reproducible (sec 10.5).
+container_path = "/Users/vmehera/.cache/huggingface/hub/models--mlx-community--Qwen3.5-122B-A10B-OptiQ-2bit/snapshots/1081c89e171447884d329abd7232566ebd38737c"
+# The 122B, not the DeepSeek. Two reasons, both measured today rather than assumed:
+# mlx-community/DeepSeek-V4-Flash-0731-OptiQ-2bit-mixed answers 401 (gated or absent)
+# so it cannot be fetched at all, and at 92.5 GB it is budgeted for 64 GB. The 122B
+# 2-bit is 46.9 GB on disk and mlx-optiq's own README documents it running on a
+# 36 GB Mac at ~12 GB resident with experts streamed - this exact configuration.
+model = "mlx-community/Qwen3.5-122B-A10B-OptiQ-2bit"
+endpoint = "http://127.0.0.1:8081/v1"
+stream_experts = true
+# 12 GB, re-derived for 36 GB: ~8 OS + ~12 non-routed resident + ~4 activations
+# leaves ~12. The 18 GB default is the 64 GB budget and does not fit here.
+# Sweep 8/12/16 once Gate B has a number; do not tune it from this comment.
+expert_cache_bytes = 12884901888
+# 300 s, not the 180 s default. DEEPSEEK_V4 sec 4.3: at Gate B's 200 tok/s floor a
+# 30k review costs ~150 s of prefill plus decode, and would degrade to a failed
+# verdict on a gate that passed.
+request_timeout_s = 300.0
+reasoning_control = "auto"
+swap_budget_s = 0.0
+remote_transport = "tools/remote_tier1.py"
+remote_api_key_env = "TANDEM_REMOTE_API_KEY"
+remote_consent = ""
+
+[router]
+candidates = 3
+candidate_temperature = 0.6
+rerank_enabled = true
+max_escalations_per_turn = 1
+degrade_after_s = 45.0
+
+[compaction]
+enabled = true
+strip_tool_schemas = true
+keep_original = true

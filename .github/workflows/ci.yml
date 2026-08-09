@@ -61,6 +61,17 @@ jobs:
   smoke:
     name: cli and gateway smoke
     runs-on: ubuntu-latest
+    # The committed `tandem.toml` is the baseline M4 Max profile — `backend =
+    # "mlx"`, a tier-0 snapshot path under a home directory — and every step below
+    # resolves config the same way the CLI does, from the working directory. A
+    # Linux runner cannot build that backend, so `doctor` exits 1 and both gates
+    # fail behind it. The shipped example is the same schema with `backend =
+    # "mock"`; pointing the whole job at it keeps serve and `audit verify` on one
+    # `audit_log` (they must agree, or verify reports an absent chain and exits 1)
+    # and makes CI fail if the example ever drifts out of the schema, since
+    # unknown keys are a hard error.
+    env:
+      TANDEM_CONFIG: tandem.toml.example
     steps:
       - uses: actions/checkout@v7
         with:

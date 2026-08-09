@@ -140,6 +140,56 @@ def prefill_filler(target_chars: int) -> str:
     return "".join(out)[:target_chars]
 
 
+def expert_cache_provenance(
+    configured_bytes: int | None, *, engine_version: str = ""
+) -> dict[str, Any]:
+    """What a Gate B receipt may honestly say about the expert cache (sec 10.5).
+
+    Sec 10.5 wants the cache size reported *with* the throughput, because streamed
+    prefill is a function of how much of the expert set is already in RAM. The trap
+    is that `tier1.expert_cache_bytes` looks like that number and is not.
+
+    Two separate reasons, and the second is the one that bites:
+
+    1. It is never sent. Nothing in this client puts it in a request payload — the
+       engine is a process we do not launch, so its configuration is the operator's
+       command line, which this process cannot see.
+    2. **There is nothing to send it to.** `optiq serve --stream-experts-cache N` is
+       accepted and threaded through `install_streaming_experts` → `load_streaming`
+       → `StreamedSwitchLinear`, then dropped: `_ShardWeightReader.__init__` takes
+       `cache_experts` and never stores it, so `read()` issues an `os.pread` per
+       expert on every call. Read off the installed source at 0.4.18. The flag is
+       also a *count*, not a byte budget, so even implemented it would not take this
+       value. The only expert cache in the streamed path is the OS page cache, sized
+       by free RAM, which no flag sets and no receipt can pin.
+
+    So the receipt records the configured value as tandem-side config that did not
+    reach the engine, names the mechanism that actually served the reads, and says
+    the engine's own setting is unknown to this process. Printing a bare
+    `expert_cache_bytes: 12884901888` beside a throughput would attest a 12 GB cache
+    that does not exist — confidently wrong rather than merely silent, which is the
+    failure shape HANDOFF §5 exists to prevent, and worse than reporting nothing.
+
+    `claim_verified_for` is pinned deliberately: if the operator runs a newer engine
+    that does implement the LRU, the receipt shows the version skew instead of
+    repeating a stale claim as fact.
+    """
+    return {
+        "configured_bytes": configured_bytes,
+        "reached_engine": False,
+        "engine_mechanism": "OS page cache; engine has no expert LRU",
+        "engine_version": engine_version or "unknown",
+        "claim_verified_for": "mlx-optiq 0.4.18",
+        "note": (
+            "tier1.expert_cache_bytes is not plumbed to the engine and has no engine "
+            "counterpart: --stream-experts-cache is accepted, is a per-projection "
+            "count rather than a byte budget, and is discarded before it reaches the "
+            "shard reader. Treat streamed prefill here as page-cache-backed, and "
+            "re-verify this note against the engine version above before quoting it."
+        ),
+    }
+
+
 @dataclass
 class PrefillSample:
     """One measurement of streamed prefill throughput — M0 Gate B (sec 11)."""
@@ -290,7 +340,12 @@ class OptiqTier1Backend(Backend):
             # cache already holds, so a rate quoted without the model and the cache
             # size is not a measurement anyone can reproduce or compare.
             "model": self.model,
-            "expert_cache_bytes": self.expert_cache_bytes,
+            # Provenance, not a bare number: the configured byte budget never
+            # reaches the engine and has no engine-side counterpart. See
+            # `expert_cache_provenance`.
+            "expert_cache": expert_cache_provenance(
+                self.expert_cache_bytes, engine_version=self.pinned_version
+            ),
             "samples": [s.as_dict() for s in self.prefill_samples],
             "note": (
                 "Below 200 tok/s the engine is not doing batch-union prefill; "
