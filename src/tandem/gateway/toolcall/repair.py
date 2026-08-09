@@ -41,10 +41,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any
 
-from ...types import ToolCall, ToolDef
+from tandem.types import ToolCall, ToolDef
 
 # --- text normalisation -----------------------------------------------------
 
@@ -101,7 +102,9 @@ _QUOTE_PAIRS = (
     ("«", "»"),
 )
 
-_FENCE_RE = re.compile(r"```(?:json|tool_call|python|xml)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
+_FENCE_RE = re.compile(
+    r"```(?:json|tool_call|python|xml)?\s*(.*?)```", re.DOTALL | re.IGNORECASE
+)
 _TRAILING_COMMA_RE = re.compile(r",\s*([}\]])")
 
 
@@ -159,7 +162,11 @@ def desmarten_structural(text: str) -> str:
 def _unquote(s: str) -> str | None:
     """Strip one matching pair of value delimiters, or None if there is no pair."""
     for open_q, close_q in _QUOTE_PAIRS:
-        if len(s) >= len(open_q) + len(close_q) and s.startswith(open_q) and s.endswith(close_q):
+        if (
+            len(s) >= len(open_q) + len(close_q)
+            and s.startswith(open_q)
+            and s.endswith(close_q)
+        ):
             return s[len(open_q) : -len(close_q)]
     return None
 
@@ -230,9 +237,12 @@ def _balance(text: str) -> str:
             continue
         if ch in "{[":
             stack.append(ch)
-        elif ch in "}]":
-            if stack and ((ch == "}" and stack[-1] == "{") or (ch == "]" and stack[-1] == "[")):
-                stack.pop()
+        elif (
+            ch in "}]"
+            and stack
+            and ((ch == "}" and stack[-1] == "{") or (ch == "]" and stack[-1] == "["))
+        ):
+            stack.pop()
     out = text
     if in_str:
         out += '"'
@@ -319,9 +329,14 @@ def find_json_objects(text: str) -> list[str]:
 
 _XML_OPEN_RE = re.compile(r"<(?:tool_call|function_call|invoke)\b[^>]*>", re.IGNORECASE)
 _XML_CLOSE_RE = re.compile(r"</(?:tool_call|function_call|invoke)\s*>", re.IGNORECASE)
-_XML_NAME_ATTR_RE = re.compile(r"""<(?:invoke|tool_call|function_call)\b[^>]*\bname\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+_XML_NAME_ATTR_RE = re.compile(
+    r"""<(?:invoke|tool_call|function_call)\b[^>]*\bname\s*=\s*["']([^"']+)["']""",
+    re.IGNORECASE,
+)
 _XML_NAME_OPEN_RE = re.compile(r"<(?:tool_name|function_name|name)\s*>", re.IGNORECASE)
-_XML_NAME_CLOSE_RE = re.compile(r"</(?:tool_name|function_name|name)\s*>", re.IGNORECASE)
+_XML_NAME_CLOSE_RE = re.compile(
+    r"</(?:tool_name|function_name|name)\s*>", re.IGNORECASE
+)
 _XML_PARAM_OPEN_RE = re.compile(
     r"""<parameter\b[^>]*\bname\s*=\s*["']([^"']+)["']\s*>""", re.IGNORECASE
 )
@@ -398,7 +413,9 @@ def _declared_type(schema: dict[str, Any] | None) -> str | None:
     if isinstance(declared, list):
         # ["string", "null"] — the nullable spelling. A scalar has to satisfy the
         # non-null branch.
-        declared = next((t for t in declared if isinstance(t, str) and t != "null"), None)
+        declared = next(
+            (t for t in declared if isinstance(t, str) and t != "null"), None
+        )
     return declared if isinstance(declared, str) else None
 
 
@@ -477,7 +494,9 @@ def _coerce_scalar(raw: str, schema: dict[str, Any] | None = None) -> Any:
     return s
 
 
-def _schemas_for(raw_name: str | None, tools: tuple[ToolDef, ...]) -> dict[str, dict[str, Any]]:
+def _schemas_for(
+    raw_name: str | None, tools: tuple[ToolDef, ...]
+) -> dict[str, dict[str, Any]]:
     """Declared parameter schemas to coerce this call's arguments against.
 
     Coercion happens before name resolution, so a mangled name has no tool yet.
@@ -494,7 +513,11 @@ def _schemas_for(raw_name: str | None, tools: tuple[ToolDef, ...]) -> dict[str, 
         tool = matches[0] if len(matches) == 1 else None
     if tool is not None:
         props = tool.parameters.get("properties")
-        return {k: v for k, v in props.items() if isinstance(v, dict)} if isinstance(props, dict) else {}
+        return (
+            {k: v for k, v in props.items() if isinstance(v, dict)}
+            if isinstance(props, dict)
+            else {}
+        )
 
     merged: dict[str, dict[str, Any]] = {}
     conflicting: set[str] = set()
@@ -537,7 +560,9 @@ def _args_from_xml(block: str, schemas: dict[str, dict[str, Any]]) -> dict[str, 
     return args
 
 
-def _split_kwargs(body: str, schemas: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+def _split_kwargs(
+    body: str, schemas: dict[str, dict[str, Any]] | None = None
+) -> dict[str, Any]:
     """Split `a=1, b="x,y"` respecting quotes, brackets and escapes."""
     schemas = schemas or {}
     args: dict[str, Any] = {}
@@ -614,7 +639,9 @@ class NameResolution:
     reason: str = ""
 
 
-def _checked(tool: ToolDef, args: dict[str, Any], how: str, reason: str = "") -> NameResolution:
+def _checked(
+    tool: ToolDef, args: dict[str, Any], how: str, reason: str = ""
+) -> NameResolution:
     """Accept only a call the tool would actually accept.
 
     The required-parameter check used to run on the inference path alone, so
@@ -665,7 +692,12 @@ def resolve_name(
         norm = _normalise_name(raw_name)
         matches = [n for n in by_name if _normalise_name(n) == norm]
         if len(matches) == 1:
-            return _checked(by_name[matches[0]], args, "normalised", f"{raw_name!r} -> {matches[0]!r}")
+            return _checked(
+                by_name[matches[0]],
+                args,
+                "normalised",
+                f"{raw_name!r} -> {matches[0]!r}",
+            )
 
         # A *clean* unknown name is an invention, not a mangling: the model believes
         # a tool exists that does not. Inferring a substitute from the argument keys
@@ -695,7 +727,9 @@ def resolve_name(
     keys = set(args)
     if not keys:
         return NameResolution(
-            None, "rejected", f"unknown tool {raw_name!r} and no arguments to infer from"
+            None,
+            "rejected",
+            f"unknown tool {raw_name!r} and no arguments to infer from",
         )
     scored: list[tuple[float, str]] = []
     for name, tool in by_name.items():
@@ -713,7 +747,11 @@ def resolve_name(
         union = len(keys | params)
         scored.append((overlap / union, name))
     if not scored:
-        return NameResolution(None, "rejected", f"unknown tool {raw_name!r}; no tool matches its arguments")
+        return NameResolution(
+            None,
+            "rejected",
+            f"unknown tool {raw_name!r}; no tool matches its arguments",
+        )
     scored.sort(reverse=True)
     if len(scored) > 1 and abs(scored[0][0] - scored[1][0]) < 1e-9:
         return NameResolution(
@@ -722,7 +760,10 @@ def resolve_name(
             f"arguments match {scored[0][1]!r} and {scored[1][1]!r} equally; refusing to guess",
         )
     return _checked(
-        by_name[scored[0][1]], args, "inferred", f"inferred from argument keys {sorted(keys)}"
+        by_name[scored[0][1]],
+        args,
+        "inferred",
+        f"inferred from argument keys {sorted(keys)}",
     )
 
 
@@ -764,8 +805,12 @@ def _record(
     out: RepairOutcome,
     strategy: str,
 ) -> None:
-    call = ToolCall(id=_call_id(res.name or "", args, str(len(out.calls))), name=res.name or "", arguments=args)
-    out.calls = out.calls + (call,)
+    call = ToolCall(
+        id=_call_id(res.name or "", args, str(len(out.calls))),
+        name=res.name or "",
+        arguments=args,
+    )
+    out.calls = (*out.calls, call)
     # Sliced out of the sampled text rather than passed in, so the recorded block
     # cannot drift from the span that produced it.
     out.raw_blocks[call.id] = text[span[0] : span[1]]
@@ -786,7 +831,9 @@ def _accept(
     may_infer: bool = True,
     strict_keys: bool = False,
 ) -> bool:
-    res = resolve_name(raw_name, args, tools, may_infer=may_infer, strict_keys=strict_keys)
+    res = resolve_name(
+        raw_name, args, tools, may_infer=may_infer, strict_keys=strict_keys
+    )
     if res.name is None:
         out.rejected.append(res.reason)
         return False
@@ -921,7 +968,14 @@ def _try_json_payload(
     return False
 
 
-_NAME_KEYS = ("name", "tool", "tool_name", "function", "function_name", "recipient_name")
+_NAME_KEYS = (
+    "name",
+    "tool",
+    "tool_name",
+    "function",
+    "function_name",
+    "recipient_name",
+)
 _ARG_KEYS = ("arguments", "args", "parameters", "params", "input", "tool_input")
 # Keys that are call envelope rather than argument — unless the tool declares a
 # parameter of that name, see `_bare_args`.
@@ -940,7 +994,9 @@ def _carries_name(obj: Any) -> bool:
     return any(isinstance(obj.get(key), str) and obj.get(key) for key in _NAME_KEYS)
 
 
-def _bare_args(obj: dict[str, Any], name_key: str | None, declared: Iterable[str]) -> dict[str, Any]:
+def _bare_args(
+    obj: dict[str, Any], name_key: str | None, declared: Iterable[str]
+) -> dict[str, Any]:
     """Arguments read off a bare object's top level.
 
     Envelope keys are dropped only when the tool does not declare a parameter of

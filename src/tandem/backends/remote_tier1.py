@@ -38,17 +38,18 @@ which is what tells a reader the null is a property and not a gap.
 from __future__ import annotations
 
 import time
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
-from ..types import GenRequest, GenResult, StopReason, Usage
-from .base import Backend
-from .tier1_call import (
+from tandem.backends.base import Backend
+from tandem.backends.tier1_call import (
     Tier1Unavailable,
     build_payload,
     read_completion,
     resolve_reasoning_control,
     validate_or_raise,
 )
+from tandem.types import GenRequest, GenResult, StopReason, Usage
 
 RUNG = "remote"
 
@@ -122,11 +123,13 @@ class RemoteTier1Backend(Backend):
             body = await self._transport(payload)
         except Tier1Unavailable:
             raise
-        except Exception as exc:  # noqa: BLE001 - the transport is not ours
+        except Exception as exc:
             raise Tier1Unavailable(f"remote tier 1 call failed: {exc}") from exc
         total_s = time.perf_counter() - t0
         if not isinstance(body, dict):
-            raise Tier1Unavailable("remote tier 1 transport did not return a JSON object")
+            raise Tier1Unavailable(
+                "remote tier 1 transport did not return a JSON object"
+            )
 
         text, in_tok, out_tok = read_completion(body, payload, self.count_tokens)
         # Validated on this side of the boundary as well, because "the endpoint

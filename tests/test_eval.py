@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import platform
+from typing import ClassVar
 
 import pytest
 
@@ -14,7 +15,14 @@ from tandem.eval.gates import (
     g2_placement_invariance,
     toolcall_gate,
 )
-from tandem.eval.latency import Environment, LatencySample, m0_gate_a, measure
+from tandem.eval.latency import (
+    Environment,
+    LatencyReport,
+    LatencySample,
+    check_contract,
+    m0_gate_a,
+    measure,
+)
 from tandem.eval.merge_eval import (
     Arm,
     ArmSummary,
@@ -32,7 +40,7 @@ from tandem.eval.merge_eval import (
 from tandem.eval.worktree import PatchOutcome
 from tandem.gateway.pipeline import Pipeline
 from tandem.tier1.verifier import Tier1Verifier
-from tandem.types import GenRequest, ToolDef
+from tandem.types import GenRequest
 
 REF_DIFF = (
     "diff --git a/src/app.py b/src/app.py\n"
@@ -91,13 +99,23 @@ def test_blast_accuracy_penalises_both_directions():
 
 def test_m3_gate_needs_three_of_five_metrics():
     base = ArmSummary(
-        arm="base", n=10, test_pass_rate=0.4, convention_rate=0.5,
-        mean_proximity=0.30, mean_blast_files=2.0, mean_blast_lines=2.0,
+        arm="base",
+        n=10,
+        test_pass_rate=0.4,
+        convention_rate=0.5,
+        mean_proximity=0.30,
+        mean_blast_files=2.0,
+        mean_blast_lines=2.0,
         mean_review_proxy=0.6,
     )
     better = ArmSummary(
-        arm="+A1", n=10, test_pass_rate=0.6, convention_rate=0.7,
-        mean_proximity=0.55, mean_blast_files=1.1, mean_blast_lines=1.1,
+        arm="+A1",
+        n=10,
+        test_pass_rate=0.6,
+        convention_rate=0.7,
+        mean_proximity=0.55,
+        mean_blast_files=1.1,
+        mean_blast_lines=1.1,
         mean_review_proxy=0.3,
     )
     result = compare_arms(base, better)
@@ -105,8 +123,13 @@ def test_m3_gate_needs_three_of_five_metrics():
     assert len(result["wins"]) >= 3
 
     worse = ArmSummary(
-        arm="+A1", n=10, test_pass_rate=0.2, convention_rate=0.3,
-        mean_proximity=0.10, mean_blast_files=4.0, mean_blast_lines=4.0,
+        arm="+A1",
+        n=10,
+        test_pass_rate=0.2,
+        convention_rate=0.3,
+        mean_proximity=0.10,
+        mean_blast_files=4.0,
+        mean_blast_lines=4.0,
         mean_review_proxy=0.9,
     )
     assert not compare_arms(base, worse)["pass"]
@@ -114,10 +137,12 @@ def test_m3_gate_needs_three_of_five_metrics():
 
 def test_m3_gate_says_so_when_metrics_are_unmeasured():
     """A pass on two measurable metrics is not the M3 gate."""
-    base = ArmSummary(arm="base", n=5, mean_proximity=0.2, mean_blast_files=2.0,
-                      mean_blast_lines=2.0)
-    cand = ArmSummary(arm="+A1", n=5, mean_proximity=0.5, mean_blast_files=1.0,
-                      mean_blast_lines=1.0)
+    base = ArmSummary(
+        arm="base", n=5, mean_proximity=0.2, mean_blast_files=2.0, mean_blast_lines=2.0
+    )
+    cand = ArmSummary(
+        arm="+A1", n=5, mean_proximity=0.5, mean_blast_files=1.0, mean_blast_lines=1.0
+    )
     result = compare_arms(base, cand)
     assert not result["pass"]
     assert "test_pass_rate" in result["unmeasured"]
@@ -126,7 +151,10 @@ def test_m3_gate_says_so_when_metrics_are_unmeasured():
 
 @pytest.mark.asyncio
 async def test_merge_eval_runs_four_bars():
-    cases = [EvalCase(sha=f"s{i}", prompt=f"task {i}", reference_diff=REF_DIFF) for i in range(4)]
+    cases = [
+        EvalCase(sha=f"s{i}", prompt=f"task {i}", reference_diff=REF_DIFF)
+        for i in range(4)
+    ]
 
     async def gen_base(_req):
         return ""
@@ -136,7 +164,10 @@ async def test_merge_eval_runs_four_bars():
 
     report = await run(
         cases,
-        [Arm(name="tier0 base", generate=gen_base), Arm(name="tier0 + A1", generate=gen_a1)],
+        [
+            Arm(name="tier0 base", generate=gen_base),
+            Arm(name="tier0 + A1", generate=gen_a1),
+        ],
     )
     assert report.n_cases == 4
     assert [a.arm for a in report.arms] == ["tier0 base", "tier0 + A1"]
@@ -155,7 +186,9 @@ async def test_a_failing_case_does_not_void_the_run():
             raise RuntimeError("backend hiccup")
         return REF_DIFF
 
-    cases = [EvalCase(sha=f"s{i}", prompt="t", reference_diff=REF_DIFF) for i in range(3)]
+    cases = [
+        EvalCase(sha=f"s{i}", prompt="t", reference_diff=REF_DIFF) for i in range(3)
+    ]
     report = await run(cases, [Arm(name="arm", generate=flaky)])
     assert report.arms[0].n == 2
     assert report.arms[0].errors == 1
@@ -187,7 +220,9 @@ async def test_the_worktree_metrics_reach_the_arm_summary(tmp_path):
         repo = "/repo"
         measures_tests = True
         measures_lint = True
-        seen: list[str] = []
+        # Shared across instances on purpose — the assertion below reads it off the
+        # class, not off whichever instance the eval happened to construct.
+        seen: ClassVar[list[str]] = []
 
         async def evaluate(self, diff, *, base_rev=""):
             self.seen.append(base_rev)
@@ -195,7 +230,9 @@ async def test_the_worktree_metrics_reach_the_arm_summary(tmp_path):
 
     runner = StubRunner()
     cases = [EvalCase(sha="abc123", prompt="t", reference_diff=REF_DIFF)]
-    report = await run(cases, [Arm(name="arm", generate=_returns(REF_DIFF))], runner=runner)
+    report = await run(
+        cases, [Arm(name="arm", generate=_returns(REF_DIFF))], runner=runner
+    )
 
     assert report.arms[0].test_pass_rate == 1.0
     assert report.arms[0].convention_rate == 1.0
@@ -222,7 +259,9 @@ async def test_all_five_metrics_measured_makes_the_gate_answerable():
     async def scored(case, diff):
         return 0.1 if diff.strip() else 0.9
 
-    cases = [EvalCase(sha=f"s{i}", prompt="t", reference_diff=REF_DIFF) for i in range(3)]
+    cases = [
+        EvalCase(sha=f"s{i}", prompt="t", reference_diff=REF_DIFF) for i in range(3)
+    ]
     report = await run(
         cases,
         [
@@ -242,9 +281,13 @@ async def test_all_five_metrics_measured_makes_the_gate_answerable():
 async def test_a_review_proxy_may_leave_a_case_unscored():
     """A human pass that covered half the cases has measured half of them."""
     proxy = scored_review_proxy({"s0": 0.2})
-    cases = [EvalCase(sha="s0", prompt="t", reference_diff=REF_DIFF),
-             EvalCase(sha="s1", prompt="t", reference_diff=REF_DIFF)]
-    report = await run(cases, [Arm(name="arm", generate=_returns(REF_DIFF))], review_proxy=proxy)
+    cases = [
+        EvalCase(sha="s0", prompt="t", reference_diff=REF_DIFF),
+        EvalCase(sha="s1", prompt="t", reference_diff=REF_DIFF),
+    ]
+    report = await run(
+        cases, [Arm(name="arm", generate=_returns(REF_DIFF))], review_proxy=proxy
+    )
     assert report.arms[0].mean_review_proxy == 0.2
 
 
@@ -252,17 +295,25 @@ async def test_a_review_proxy_may_leave_a_case_unscored():
 async def test_tier1_review_proxy_scores_a_verdict():
     verifier = Tier1Verifier(MockBackend(tier=1, use_tools=False))
     proxy = tier1_review_proxy(verifier)
-    score = await proxy(EvalCase(sha="s0", prompt="t", reference_diff=REF_DIFF), REF_DIFF)
+    score = await proxy(
+        EvalCase(sha="s0", prompt="t", reference_diff=REF_DIFF), REF_DIFF
+    )
+    assert score is not None
     assert 0.0 <= score <= 1.0
     # No patch at all reliably draws a comment, and costs no verifier call.
-    assert await proxy(EvalCase(sha="s1", prompt="t", reference_diff=REF_DIFF), "") == 1.0
+    assert (
+        await proxy(EvalCase(sha="s1", prompt="t", reference_diff=REF_DIFF), "") == 1.0
+    )
 
 
 @pytest.mark.asyncio
 async def test_an_unusable_tier1_verdict_is_unmeasured_not_neutral():
     """A verifier declining to answer is not evidence the patch is middling."""
     proxy = tier1_review_proxy(Tier1Verifier(None))
-    assert await proxy(EvalCase(sha="s0", prompt="t", reference_diff=REF_DIFF), REF_DIFF) is None
+    assert (
+        await proxy(EvalCase(sha="s0", prompt="t", reference_diff=REF_DIFF), REF_DIFF)
+        is None
+    )
 
 
 def _returns(text: str):
@@ -395,7 +446,9 @@ async def test_isolation_gate_is_vacuously_true_with_no_adapters():
 
 @pytest.mark.asyncio
 async def test_g1_passes_for_equivalent_backends():
-    result = await g1_backend_equivalence(MockBackend(use_tools=False), MockBackend(use_tools=False))
+    result = await g1_backend_equivalence(
+        MockBackend(use_tools=False), MockBackend(use_tools=False)
+    )
     assert result.passed
 
 
@@ -412,7 +465,9 @@ async def test_g1_catches_a_divergent_kernel():
 @pytest.mark.asyncio
 async def test_g2_passes_when_placement_does_not_change_the_model():
     """The most important gate: cache occupancy must not change the answer."""
-    result = await g2_placement_invariance(lambda _bytes: MockBackend(tier=1, use_tools=False))
+    result = await g2_placement_invariance(
+        lambda _bytes: MockBackend(tier=1, use_tools=False)
+    )
     assert result.passed
 
 
@@ -421,7 +476,9 @@ async def test_g2_catches_placement_dependent_output():
     def factory(cache_bytes: int):
         # A backend whose weights differ by cache size — exactly the failure that
         # would invalidate every determinism claim in the receipt.
-        return MockBackend(tier=1, use_tools=False, container=f"container@{cache_bytes}")
+        return MockBackend(
+            tier=1, use_tools=False, container=f"container@{cache_bytes}"
+        )
 
     result = await g2_placement_invariance(factory)
     assert not result.passed
@@ -433,21 +490,39 @@ async def test_g2_catches_placement_dependent_output():
 
 @pytest.mark.asyncio
 async def test_latency_measure_reports_per_frontier():
-    samples = await measure(MockBackend(use_tools=False), frontiers=(2_000, 4_000), max_tokens=8)
+    samples = await measure(
+        MockBackend(use_tools=False), frontiers=(2_000, 4_000), max_tokens=8
+    )
     assert [s.frontier_tokens for s in samples] == [2_000, 4_000]
     assert all(s.prefill_tok_per_s > 0 for s in samples)
 
 
 def test_m0_gate_a_thresholds():
     good = [
-        LatencySample(2000, 0, False, ttft_s=1.0, total_s=2.0, output_tokens=64,
-                      decode_tok_per_s=44.0, prefill_tok_per_s=800.0)
+        LatencySample(
+            2000,
+            0,
+            False,
+            ttft_s=1.0,
+            total_s=2.0,
+            output_tokens=64,
+            decode_tok_per_s=44.0,
+            prefill_tok_per_s=800.0,
+        )
     ]
     assert m0_gate_a(good, toolcall_failure_rate=0.01)["pass"]
 
     slow = [
-        LatencySample(2000, 0, False, ttft_s=6.0, total_s=9.0, output_tokens=64,
-                      decode_tok_per_s=20.0, prefill_tok_per_s=300.0)
+        LatencySample(
+            2000,
+            0,
+            False,
+            ttft_s=6.0,
+            total_s=9.0,
+            output_tokens=64,
+            decode_tok_per_s=20.0,
+            prefill_tok_per_s=300.0,
+        )
     ]
     failed = m0_gate_a(slow, toolcall_failure_rate=0.10)
     assert not failed["pass"]
@@ -456,10 +531,125 @@ def test_m0_gate_a_thresholds():
 
 def test_m0_gate_a_needs_warm_samples():
     cold = [
-        LatencySample(2000, 0, True, ttft_s=1.0, total_s=2.0, output_tokens=64,
-                      decode_tok_per_s=44.0, prefill_tok_per_s=800.0)
+        LatencySample(
+            2000,
+            0,
+            True,
+            ttft_s=1.0,
+            total_s=2.0,
+            output_tokens=64,
+            decode_tok_per_s=44.0,
+            prefill_tok_per_s=800.0,
+        )
     ]
     assert not m0_gate_a(cold, toolcall_failure_rate=0.0)["pass"]
+
+
+# --- host-relative thresholds (sec 11) ---------------------------------------
+#
+# The risk these cover is not that relaxing a floor fails to work. It is that it
+# works too well: a green Gate A on a host judged against its own numbers, read six
+# weeks later as a met specification. Every one of these asserts that the spec figure
+# survives in the record.
+
+
+def _slow_host_sample():
+    """The measured M4 Max 32k frontier: 30.47 s TTFT, constrained decode 27.1."""
+    return [
+        LatencySample(
+            32_000,
+            0,
+            False,
+            ttft_s=30.47,
+            total_s=40.0,
+            output_tokens=64,
+            decode_tok_per_s=27.1,
+            prefill_tok_per_s=963.0,
+        )
+    ]
+
+
+def test_gate_a_defaults_are_the_spec_figures():
+    """An absent [gates] block and a [gates] block full of spec values agree."""
+    from tandem import thresholds
+    from tandem.config import GatesConfig
+
+    g = GatesConfig()
+    assert g.gate_a_ttft_s == thresholds.SPEC_GATE_A_TTFT_S == 5.0
+    assert g.gate_a_decode_tok_per_s == thresholds.SPEC_GATE_A_DECODE_TOK_PER_S == 30.0
+    assert (
+        g.gate_b_prefill_tok_per_s == thresholds.SPEC_GATE_B_PREFILL_TOK_PER_S == 200.0
+    )
+
+    report = m0_gate_a(_slow_host_sample(), toolcall_failure_rate=0.0)
+    assert report["pass"] is False
+    assert report["meets_spec"] is False
+    assert report["relaxed_criteria"] == []
+
+
+def test_relaxed_gate_a_passes_but_still_reports_the_spec_shortfall():
+    report = m0_gate_a(
+        _slow_host_sample(),
+        toolcall_failure_rate=0.0,
+        ttft_s=35.0,
+        decode_tok_per_s=25.0,
+    )
+    assert report["pass"] is True
+    # The whole point: green against the host, red against sec 11, and it says so.
+    assert report["meets_spec"] is False
+    assert report["relaxed_criteria"] == ["decode_tok_per_s", "ttft_s"]
+    assert report["ttft_s"] == {
+        "worst": 30.47,
+        "budget": 35.0,
+        "spec_budget": 5.0,
+        "pass": True,
+        "meets_spec": False,
+        "relaxed": True,
+    }
+    # A passing gate has no kill condition even when the spec is missed — the
+    # operator who lowered the floor already made that call.
+    assert report["kill_condition"] == ""
+
+
+def test_an_unrelaxed_criterion_is_never_marked_relaxed():
+    """Only the rows actually overridden may claim to be."""
+    report = m0_gate_a(_slow_host_sample(), toolcall_failure_rate=0.0, ttft_s=35.0)
+    assert report["ttft_s"]["relaxed"] is True
+    assert report["decode_tok_per_s"]["relaxed"] is False
+    # decode is still judged against the spec's 30.0 and 27.1 does not clear it.
+    assert report["decode_tok_per_s"]["pass"] is False
+    assert report["pass"] is False
+    # `relaxed_criteria` lists rows that are green *because* a floor was lowered, so
+    # ttft_s belongs there and the failing decode row does not — a red row was not
+    # helped by anything.
+    assert report["relaxed_criteria"] == ["ttft_s"]
+
+
+def test_contract_relaxation_is_independent_of_gate_a():
+    report = check_contract(_slow_host_sample(), ttft_s=35.0)
+    assert report["chat_ttft_s"]["pass"] is True
+    assert report["chat_ttft_s"]["spec_budget"] == 2.0
+    # tok_per_s was left at the spec's 40.0 and honestly fails at 27.1.
+    assert report["chat_tok_per_s"]["pass"] is False
+    assert report["chat_tok_per_s"]["relaxed"] is False
+
+
+def test_latency_report_records_the_budgets_that_produced_its_verdicts():
+    """A recorded JSON must not depend on what tandem.toml says when it is read back."""
+    report = LatencyReport(samples=_slow_host_sample(), contract_ttft_s=35.0)
+    contract = report.as_dict()["contract"]
+    assert contract["chat_ttft_s"]["budget"] == 35.0
+    assert contract["chat_ttft_s"]["spec_budget"] == 2.0
+
+
+def test_gates_config_rejects_an_unknown_key(tmp_path):
+    """Sec-11 knobs get the same typo discipline as everything else in the file."""
+    from tandem.config import Config
+
+    p = tmp_path / "tandem.toml"
+    p.write_text("[gates]\ngate_a_ttft_ms = 35000\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"GatesConfig\.gate_a_ttft_ms"):
+        Config.load(p)
 
 
 def test_environment_reports_unknown_as_none_never_zero():

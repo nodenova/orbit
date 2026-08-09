@@ -14,6 +14,7 @@ from __future__ import annotations
 import hmac
 import json
 import uuid
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -21,12 +22,12 @@ from fastapi import APIRouter, FastAPI, Header, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from ..attest.audit import AuditLog, verify_chain
-from ..backends import build_tier0, build_tier1
-from ..config import Config
-from ..types import GenRequest
-from . import wire
-from .pipeline import Pipeline
+from tandem.attest.audit import AuditLog, verify_chain
+from tandem.backends import build_tier0, build_tier1
+from tandem.config import Config
+from tandem.gateway import wire
+from tandem.gateway.pipeline import Pipeline
+from tandem.types import GenRequest
 
 # Header a harness can set per request to bypass compaction (sec 8.2 escape hatch).
 NO_COMPACT_HEADER = "x-tandem-no-compact"
@@ -44,17 +45,24 @@ def create_app(cfg: Config | None = None, pipeline: Pipeline | None = None) -> F
         tier0 = build_tier0(cfg)
         tier1 = build_tier1(cfg, tier0)
         pipeline = Pipeline(
-            cfg, tier0, tier1, audit=AuditLog(cfg.attest.audit_log, fsync=cfg.attest.fsync)
+            cfg,
+            tier0,
+            tier1,
+            audit=AuditLog(cfg.attest.audit_log, fsync=cfg.attest.fsync),
         )
     built = pipeline
 
     @asynccontextmanager
-    async def lifespan(_app: FastAPI):
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         yield
         await built.close()
 
     app = FastAPI(
-        title="Tandem", version="0.1.0", docs_url=None, redoc_url=None, lifespan=lifespan
+        title="Tandem",
+        version="0.1.0",
+        docs_url=None,
+        redoc_url=None,
+        lifespan=lifespan,
     )
     # Host allow-list, not CORS. A browser will not send a cross-origin POST here
     # without a preflight, and we answer no preflight — but DNS rebinding does not
@@ -67,7 +75,9 @@ def create_app(cfg: Config | None = None, pipeline: Pipeline | None = None) -> F
     # the way of an unauthenticated coding agent.
     app.add_middleware(
         TrustedHostMiddleware,
-        allowed_hosts=list(getattr(cfg.server, "allowed_hosts", _DEFAULT_ALLOWED_HOSTS)),
+        allowed_hosts=list(
+            getattr(cfg.server, "allowed_hosts", _DEFAULT_ALLOWED_HOSTS)
+        ),
     )
     app.state.cfg = cfg
     app.state.pipeline = built
@@ -100,9 +110,12 @@ def _unauthorised(module: Any = None) -> JSONResponse:
     """The 401 body, in the caller's protocol shape where there is one."""
     if module is not None:
         return JSONResponse(
-            status_code=401, content=module.error(401, "invalid api key", "authentication_error")
+            status_code=401,
+            content=module.error(401, "invalid api key", "authentication_error"),
         )
-    return JSONResponse(status_code=401, content={"error": {"message": "invalid api key"}})
+    return JSONResponse(
+        status_code=401, content={"error": {"message": "invalid api key"}}
+    )
 
 
 def _build_routes(cfg: Config, pipeline: Pipeline) -> APIRouter:
@@ -117,11 +130,13 @@ def _build_routes(cfg: Config, pipeline: Pipeline) -> APIRouter:
             body = await request.json()
         except (json.JSONDecodeError, ValueError):
             return JSONResponse(
-                status_code=400, content=module.error(400, "request body is not valid JSON")
+                status_code=400,
+                content=module.error(400, "request body is not valid JSON"),
             )
         if not isinstance(body, dict):
             return JSONResponse(
-                status_code=400, content=module.error(400, "request body must be an object")
+                status_code=400,
+                content=module.error(400, "request body must be an object"),
             )
 
         try:
@@ -132,10 +147,16 @@ def _build_routes(cfg: Config, pipeline: Pipeline) -> APIRouter:
             # `{"messages": ["hello"]}` reaches `.get` on a str. That is a client
             # error and has to arrive as this protocol's 400, not as a bare 500
             # text/plain that no harness knows how to read.
-            return JSONResponse(status_code=400, content=module.error(400, f"malformed request: {exc}"))
+            return JSONResponse(
+                status_code=400, content=module.error(400, f"malformed request: {exc}")
+            )
 
         no_compact = _flag(request.headers.get(NO_COMPACT_HEADER))
-        adapter = request.headers.get(ADAPTER_HEADER) or req.adapter or cfg.tier0.default_adapter
+        adapter = (
+            request.headers.get(ADAPTER_HEADER)
+            or req.adapter
+            or cfg.tier0.default_adapter
+        )
         unknown = _unknown_adapter(pipeline, adapter)
         if unknown is not None:
             return JSONResponse(status_code=400, content=module.error(400, unknown))
@@ -165,9 +186,14 @@ def _build_routes(cfg: Config, pipeline: Pipeline) -> APIRouter:
             result, _trace = await pipeline.run(req, no_compact=no_compact)
         except Exception as exc:  # noqa: BLE001 - never leak a traceback to a harness
             return JSONResponse(
-                status_code=500, content=module.error(500, f"generation failed: {exc}", "api_error")
+                status_code=500,
+                content=module.error(500, f"generation failed: {exc}", "api_error"),
             )
-        return JSONResponse(content=module.from_canonical(result, model=model, request_id=req.request_id))
+        return JSONResponse(
+            content=module.from_canonical(
+                result, model=model, request_id=req.request_id
+            )
+        )
 
     @router.post("/v1/messages")
     async def messages(
@@ -196,13 +222,15 @@ def _build_routes(cfg: Config, pipeline: Pipeline) -> APIRouter:
             )
         if not isinstance(body, dict):
             return JSONResponse(
-                status_code=400, content=wire.anthropic.error(400, "request body must be an object")
+                status_code=400,
+                content=wire.anthropic.error(400, "request body must be an object"),
             )
         try:
             req = wire.anthropic.to_canonical(body)
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             return JSONResponse(
-                status_code=400, content=wire.anthropic.error(400, f"malformed request: {exc}")
+                status_code=400,
+                content=wire.anthropic.error(400, f"malformed request: {exc}"),
             )
 
         # Counted against the prompt that would actually be sent, which means
@@ -218,7 +246,9 @@ def _build_routes(cfg: Config, pipeline: Pipeline) -> APIRouter:
         n = pipeline.count_prompt_tokens(req, no_compact=no_compact)
         # Scaled, because the harness compares this against its assumed window
         # exactly as it does the usage it gets back from a completion (sec 8.3).
-        return JSONResponse(content=wire.anthropic.count_tokens_response(pipeline.scaler.scale(n)))
+        return JSONResponse(
+            content=wire.anthropic.count_tokens_response(pipeline.scaler.scale(n))
+        )
 
     @router.post("/v1/chat/completions")
     async def chat_completions(
@@ -254,7 +284,12 @@ def _build_routes(cfg: Config, pipeline: Pipeline) -> APIRouter:
         ]
         if cfg.tier1.enabled:
             listing.append(
-                {"id": cfg.tier1.model, "object": "model", "owned_by": "tandem", "tier": 1}
+                {
+                    "id": cfg.tier1.model,
+                    "object": "model",
+                    "owned_by": "tandem",
+                    "tier": 1,
+                }
             )
         for name in pipeline.tier0.mounted_adapters():
             listing.append(
@@ -371,7 +406,7 @@ def _unknown_adapter(pipeline: Pipeline, adapter: str | None) -> str | None:
 
 
 def _flag(value: str | None) -> bool:
-    return bool(value) and value.strip().lower() in ("1", "true", "yes", "on")
+    return value is not None and value.strip().lower() in ("1", "true", "yes", "on")
 
 
 async def _sse(
@@ -381,7 +416,7 @@ async def _sse(
     *,
     model: str,
     no_compact: bool,
-):
+) -> AsyncIterator[str]:
     """Drive one wire protocol's encoder off the pipeline's deltas.
 
     A streaming response has already sent its status line by the time the model
@@ -419,4 +454,6 @@ def serve(cfg: Config | None = None) -> None:  # pragma: no cover - process entr
     import uvicorn
 
     cfg = cfg or Config.load()
-    uvicorn.run(create_app(cfg), host=cfg.server.host, port=cfg.server.port, log_level="info")
+    uvicorn.run(
+        create_app(cfg), host=cfg.server.host, port=cfg.server.port, log_level="info"
+    )

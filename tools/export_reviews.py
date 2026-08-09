@@ -42,7 +42,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Callable, Iterable
+from collections.abc import Callable, Iterable
+from typing import Any
 
 API = "https://api.github.com"
 USER_AGENT = "tandem-export-reviews/1.0"
@@ -65,7 +66,13 @@ def origin_of(url: str) -> tuple[str, str]:
 
 def _is_loopback(netloc: str) -> bool:
     host = netloc.rsplit("@", 1)[-1]
-    host = host[1 : host.find("]")] if host.startswith("[") else host.rsplit(":", 1)[0] if ":" in host else host
+    host = (
+        host[1 : host.find("]")]
+        if host.startswith("[")
+        else host.rsplit(":", 1)[0]
+        if ":" in host
+        else host
+    )
     return host in ("localhost", "127.0.0.1", "::1") or host.endswith(".localhost")
 
 
@@ -105,7 +112,7 @@ class _SameOriginRedirect(urllib.request.HTTPRedirectHandler):
     def __init__(self, origin: tuple[str, str]):
         self.origin = origin
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
         if origin_of(newurl) != self.origin:
             raise urllib.error.HTTPError(
                 newurl,
@@ -162,7 +169,9 @@ def _is_author(item: dict[str, Any], author_login: str | None) -> bool:
     return str(user.get("login", "")).lower() == author_login.lower()
 
 
-def build_records(pulls: Iterable[dict[str, Any]], fetch: Fetch) -> list[dict[str, Any]]:
+def build_records(
+    pulls: Iterable[dict[str, Any]], fetch: Fetch
+) -> list[dict[str, Any]]:
     """One record per merged PR that has a merge commit and a real review."""
     out: list[dict[str, Any]] = []
     for pr in pulls:
@@ -217,7 +226,9 @@ class GitHub:
                 # permission or policy 403 will never succeed, so retrying it five
                 # times with backoff wastes a minute and then reports throttling as
                 # the cause when the real answer was in the first response body.
-                if exc.code == 429 or (exc.code == 403 and _is_rate_limit(exc.headers, body)):
+                if exc.code == 429 or (
+                    exc.code == 403 and _is_rate_limit(exc.headers, body)
+                ):
                     wait = _retry_after(exc.headers, attempt)
                     print(f"  rate limited, waiting {wait}s", file=sys.stderr)
                     time.sleep(wait)
@@ -230,7 +241,7 @@ class GitHub:
                     f"GitHub returned {exc.code} for {url}\n"
                     f"  {exc.reason}\n  {body.strip()[:400]}"
                 ) from exc
-            except urllib.error.URLError as exc:
+            except urllib.error.URLError:
                 if attempt == 4:
                     raise
                 time.sleep(2**attempt)
@@ -248,9 +259,11 @@ class GitHub:
 
     def get(self, path: str) -> Any:
         """A single paginated resource, concatenated."""
-        url = f"{self.prefix}{path}"
-        sep = "&" if "?" in url else "?"
-        url = f"{url}{sep}per_page=100"
+        first = f"{self.prefix}{path}"
+        sep = "&" if "?" in first else "?"
+        # Optional because `_next_page` returns None at the last page, which is
+        # what ends the loop below.
+        url: str | None = f"{first}{sep}per_page=100"
         items: list[Any] = []
         while url:
             body, headers = self._request(url)
@@ -331,7 +344,7 @@ def _retry_after(headers: Any, attempt: int) -> int:
             return max(1, int(reset) - int(time.time()) + 1)
     except (TypeError, ValueError):
         pass
-    return min(60, 2 ** (attempt + 1))
+    return min(60, 1 << (attempt + 1))
 
 
 # --- entry point ------------------------------------------------------------
@@ -342,7 +355,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--owner", required=True)
     p.add_argument("--repo", required=True)
     p.add_argument("--out", default="reviews.json")
-    p.add_argument("--limit", type=int, default=0, help="stop after N merged PRs (0 = all)")
+    p.add_argument(
+        "--limit", type=int, default=0, help="stop after N merged PRs (0 = all)"
+    )
 
     # The token is read from the environment and from nowhere else. It used to be
     # accepted on argv too, which puts it in shell history and in `/proc/*/cmdline`
@@ -370,7 +385,9 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     gh = GitHub(args.owner, args.repo, args.token)
-    print(f"listing merged pull requests for {args.owner}/{args.repo}…", file=sys.stderr)
+    print(
+        f"listing merged pull requests for {args.owner}/{args.repo}…", file=sys.stderr
+    )
     pulls = gh.get("/pulls?state=closed&sort=updated&direction=desc")
     merged = [pr for pr in pulls if pr.get("merged_at")]
     if args.limit:

@@ -21,12 +21,22 @@ import platform
 import re
 import subprocess
 import time
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
-from ..backends.base import Backend
-from ..types import GenRequest, Message, Role, Sampling
+from tandem.backends.base import Backend
+from tandem.thresholds import (
+    SPEC_CHAT_DECODE_TOK_PER_S,
+    SPEC_CHAT_TTFT_S,
+    SPEC_GATE_A_DECODE_TOK_PER_S,
+    SPEC_GATE_A_TOOLCALL_FAILURE_RATE,
+    SPEC_GATE_A_TTFT_S,
+    judge,
+    relaxations,
+)
+from tandem.types import GenRequest, Message, Role, Sampling
 
 # Fixed, and deliberately not derived from `tier0.max_kv_tokens`: the frontiers are
 # the axis a measurement is plotted against, so a host that lowers its KV budget must
@@ -35,9 +45,12 @@ from ..types import GenRequest, Message, Role, Sampling
 # — it is what the backend does when asked for more than it was sized for.
 FRONTIERS: tuple[int, ...] = (2_000, 4_000, 8_000, 16_000, 32_000)
 
-# Latency contract (sec 7.3), asserted by `check_contract`.
+# Latency contract (sec 7.3), asserted by `check_contract`. The chat row reads its
+# numbers from `thresholds` because that row is the one an operator may relax per
+# host; the other three have no measurement in this suite yet and are the spec's
+# figures verbatim.
 CONTRACT = {
-    "chat": {"ttft_s": 2.0, "tok_per_s": 40.0},
+    "chat": {"ttft_s": SPEC_CHAT_TTFT_S, "tok_per_s": SPEC_CHAT_DECODE_TOK_PER_S},
     "read_only": {"ttft_s": 3.0},
     "code_change": {"total_s": 30.0},
     "failed_test": {"total_s": 90.0},
@@ -67,7 +80,7 @@ class Environment:
 
     @classmethod
     def detect(cls) -> Environment:
-        from ..attest.receipt import engine_commit
+        from tandem.attest.receipt import engine_commit
 
         env = cls(os_version=platform.platform(), python=platform.python_version())
         env.engine_commit = engine_commit()
@@ -94,7 +107,11 @@ class Environment:
 def _sysctl(key: str) -> str:
     try:
         out = subprocess.run(
-            ["sysctl", "-n", key], capture_output=True, text=True, timeout=5, check=False
+            ["sysctl", "-n", key],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
         )
         return out.stdout.strip()
     except (OSError, subprocess.SubprocessError):
@@ -164,6 +181,11 @@ class LatencyReport:
     adapter_hash: str | None = None
     command: str = ""
     samples: list[LatencySample] = field(default_factory=list)
+    # Effective sec 7.3 chat budgets. Carried on the report rather than read from a
+    # config here, so a recorded JSON says which numbers produced its verdicts —
+    # `tandem.toml` may have moved by the time anyone reads the file back.
+    contract_ttft_s: float = SPEC_CHAT_TTFT_S
+    contract_tok_per_s: float = SPEC_CHAT_DECODE_TOK_PER_S
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -172,7 +194,11 @@ class LatencyReport:
             "adapter_hash": self.adapter_hash,
             "command": self.command,
             "samples": [s.as_dict() for s in self.samples],
-            "contract": check_contract(self.samples),
+            "contract": check_contract(
+                self.samples,
+                ttft_s=self.contract_ttft_s,
+                tok_per_s=self.contract_tok_per_s,
+            ),
         }
 
     def write(self, path: str | Path) -> Path:
@@ -260,29 +286,51 @@ async def measure(
     return samples
 
 
-def check_contract(samples: Sequence[LatencySample]) -> dict[str, Any]:
-    """Sec 7.3 latency contract, per tier-0 chat expectations."""
+def check_contract(
+    samples: Sequence[LatencySample],
+    *,
+    ttft_s: float = SPEC_CHAT_TTFT_S,
+    tok_per_s: float = SPEC_CHAT_DECODE_TOK_PER_S,
+) -> dict[str, Any]:
+    """Sec 7.3 latency contract, per tier-0 chat expectations.
+
+    The two budgets default to the spec's and may be relaxed per host by the caller
+    (`[gates]` in `tandem.toml`). Each row carries the spec figure and a `meets_spec`
+    verdict beside the effective one — see `tandem.thresholds`.
+    """
     tier0 = [s for s in samples if s.tier == 0 and not s.cold]
     if not tier0:
         return {"checked": False, "reason": "no warm tier-0 samples"}
     worst_ttft = max(s.ttft_s for s in tier0)
     worst_decode = min(s.decode_tok_per_s for s in tier0)
-    return {
+    report = {
         "checked": True,
-        "chat_ttft_s": {
-            "worst": round(worst_ttft, 2),
-            "budget": CONTRACT["chat"]["ttft_s"],
-            "pass": worst_ttft <= CONTRACT["chat"]["ttft_s"],
-        },
-        "chat_tok_per_s": {
-            "worst": round(worst_decode, 1),
-            "budget": CONTRACT["chat"]["tok_per_s"],
-            "pass": worst_decode >= CONTRACT["chat"]["tok_per_s"],
-        },
+        "chat_ttft_s": judge(
+            worst_ttft,
+            target=ttft_s,
+            spec_target=SPEC_CHAT_TTFT_S,
+            higher_is_better=False,
+        ),
+        "chat_tok_per_s": judge(
+            worst_decode,
+            target=tok_per_s,
+            spec_target=SPEC_CHAT_DECODE_TOK_PER_S,
+            higher_is_better=True,
+            digits=1,
+        ),
     }
+    report["relaxed_criteria"] = relaxations(report)
+    return report
 
 
-def m0_gate_a(samples: Sequence[LatencySample], toolcall_failure_rate: float) -> dict[str, Any]:
+def m0_gate_a(
+    samples: Sequence[LatencySample],
+    toolcall_failure_rate: float,
+    *,
+    ttft_s: float = SPEC_GATE_A_TTFT_S,
+    decode_tok_per_s: float = SPEC_GATE_A_DECODE_TOK_PER_S,
+    toolcall_failure_budget: float = SPEC_GATE_A_TOOLCALL_FAILURE_RATE,
+) -> dict[str, Any]:
     """M0 Gate A (sec 11): tier-0 TTFT <5 s at >=30 tok/s, tool-call failures <5%.
 
     Reads the samples labelled `cold=False`. Per `measure`, that label means *second
@@ -301,28 +349,49 @@ def m0_gate_a(samples: Sequence[LatencySample], toolcall_failure_rate: float) ->
     The kill condition attaches here: if Gate A fails badly the interactive premise
     is wrong and the product pivots to async review-assist. That is a decision worth
     reaching in three days, which is the only reason this function is this simple.
+
+    The three budgets default to the spec's and may be relaxed per host by the caller.
+    A relaxed budget changes `pass`, never `meets_spec`, and the kill condition fires
+    on `pass` — deliberately: an operator who lowered a floor has decided that this
+    host's shortfall is arithmetic rather than a reason to pivot the product, and the
+    spec verdict is still in the record to argue with. `relaxed_criteria` names every
+    row that is green only because of that decision.
     """
     warm = [s for s in samples if s.tier == 0 and not s.cold]
     if not warm:
         return {"pass": False, "reason": "no warm tier-0 samples"}
-    worst_ttft = max(s.ttft_s for s in warm)
-    worst_decode = min(s.decode_tok_per_s for s in warm)
-    ttft_ok = worst_ttft < 5.0
-    decode_ok = worst_decode >= 30.0
-    tools_ok = toolcall_failure_rate < 0.05
+    report = {
+        "ttft_s": judge(
+            max(s.ttft_s for s in warm),
+            target=ttft_s,
+            spec_target=SPEC_GATE_A_TTFT_S,
+            higher_is_better=False,
+        ),
+        "decode_tok_per_s": judge(
+            min(s.decode_tok_per_s for s in warm),
+            target=decode_tok_per_s,
+            spec_target=SPEC_GATE_A_DECODE_TOK_PER_S,
+            higher_is_better=True,
+            digits=1,
+        ),
+        "toolcall_failure_rate": judge(
+            toolcall_failure_rate,
+            target=toolcall_failure_budget,
+            spec_target=SPEC_GATE_A_TOOLCALL_FAILURE_RATE,
+            higher_is_better=False,
+            digits=4,
+        ),
+    }
+    ok = all(row["pass"] for row in report.values())
     return {
-        "pass": ttft_ok and decode_ok and tools_ok,
-        "ttft_s": {"worst": round(worst_ttft, 2), "budget": 5.0, "pass": ttft_ok},
-        "decode_tok_per_s": {"worst": round(worst_decode, 1), "budget": 30.0, "pass": decode_ok},
-        "toolcall_failure_rate": {
-            "value": round(toolcall_failure_rate, 4),
-            "budget": 0.05,
-            "pass": tools_ok,
-        },
+        "pass": ok,
+        **report,
+        "relaxed_criteria": relaxations(report),
+        "meets_spec": all(row["meets_spec"] for row in report.values()),
         "kill_condition": (
             "Gate A failed. The interactive premise may be wrong — consider pivoting "
             "to async review-assist before building further (sec 11)."
-            if not (ttft_ok and decode_ok and tools_ok)
+            if not ok
             else ""
         ),
     }

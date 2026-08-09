@@ -19,7 +19,8 @@ import time
 import uuid
 from typing import Any
 
-from ...types import (
+from tandem.gateway.wire import check_bounds, size_of
+from tandem.types import (
     GenRequest,
     GenResult,
     Message,
@@ -30,7 +31,6 @@ from ...types import (
     ToolDef,
     ToolResult,
 )
-from . import check_bounds, size_of
 
 _STOP_REASON = {
     StopReason.END_TURN: "end_turn",
@@ -67,7 +67,11 @@ def to_canonical(body: dict[str, Any]) -> GenRequest:
 
     messages: list[Message] = []
     for raw in raw_messages:
-        role = Role(raw.get("role", "user")) if raw.get("role") in ("user", "assistant") else Role.USER
+        role = (
+            Role(raw.get("role", "user"))
+            if raw.get("role") in ("user", "assistant")
+            else Role.USER
+        )
         content = raw.get("content")
 
         calls: list[ToolCall] = []
@@ -141,13 +145,20 @@ def to_canonical(body: dict[str, Any]) -> GenRequest:
     )
 
 
-def from_canonical(result: GenResult, *, model: str, request_id: str = "") -> dict[str, Any]:
+def from_canonical(
+    result: GenResult, *, model: str, request_id: str = ""
+) -> dict[str, Any]:
     content: list[dict[str, Any]] = []
     if result.text:
         content.append({"type": "text", "text": result.text})
     for call in result.tool_calls:
         content.append(
-            {"type": "tool_use", "id": call.id, "name": call.name, "input": call.arguments}
+            {
+                "type": "tool_use",
+                "id": call.id,
+                "name": call.name,
+                "input": call.arguments,
+            }
         )
     body: dict[str, Any] = {
         "id": request_id or f"msg_{uuid.uuid4().hex[:24]}",
@@ -246,7 +257,8 @@ class StreamEncoder:
         out: list[str] = []
         if self._text_open:
             out += self._emit(
-                "content_block_stop", {"type": "content_block_stop", "index": self._index}
+                "content_block_stop",
+                {"type": "content_block_stop", "index": self._index},
             )
             self._text_open = False
             self._index += 1
@@ -270,11 +282,15 @@ class StreamEncoder:
                 {
                     "type": "content_block_delta",
                     "index": self._index,
-                    "delta": {"type": "input_json_delta", "partial_json": call.arguments_json()},
+                    "delta": {
+                        "type": "input_json_delta",
+                        "partial_json": call.arguments_json(),
+                    },
                 },
             )
             out += self._emit(
-                "content_block_stop", {"type": "content_block_stop", "index": self._index}
+                "content_block_stop",
+                {"type": "content_block_stop", "index": self._index},
             )
             self._index += 1
 
@@ -282,7 +298,10 @@ class StreamEncoder:
             "message_delta",
             {
                 "type": "message_delta",
-                "delta": {"stop_reason": _STOP_REASON[result.stop_reason], "stop_sequence": None},
+                "delta": {
+                    "stop_reason": _STOP_REASON[result.stop_reason],
+                    "stop_sequence": None,
+                },
                 "usage": {"output_tokens": result.usage.output_tokens},
             },
         )
@@ -306,7 +325,8 @@ class StreamEncoder:
         out: list[str] = []
         if self._text_open:
             out += self._emit(
-                "content_block_stop", {"type": "content_block_stop", "index": self._index}
+                "content_block_stop",
+                {"type": "content_block_stop", "index": self._index},
             )
             self._text_open = False
             self._index += 1
@@ -318,7 +338,9 @@ def count_tokens_response(n: int) -> dict[str, Any]:
     return {"input_tokens": n}
 
 
-def error(status: int, message: str, err_type: str = "invalid_request_error") -> dict[str, Any]:
+def error(
+    status: int, message: str, err_type: str = "invalid_request_error"
+) -> dict[str, Any]:
     return {"type": "error", "error": {"type": err_type, "message": message}}
 
 

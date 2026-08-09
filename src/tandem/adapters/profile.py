@@ -25,9 +25,10 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 # Architectures whose routing mass and routing count disagree enough that ranking by
 # count picks the wrong experts (sec 6.4).
@@ -81,7 +82,9 @@ class RoutingProfile:
     def write(self, path: str | Path) -> Path:
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(self.as_dict(), separators=(",", ":")) + "\n", encoding="utf-8")
+        p.write_text(
+            json.dumps(self.as_dict(), separators=(",", ":")) + "\n", encoding="utf-8"
+        )
         return p
 
     @classmethod
@@ -159,7 +162,9 @@ def build(
     covered = 0
     for layer_idx, layer_counts in enumerate(counts):
         if layer_idx < len(sel):
-            covered += sum(layer_counts[e] for e in sel[layer_idx] if e < len(layer_counts))
+            covered += sum(
+                layer_counts[e] for e in sel[layer_idx] if e < len(layer_counts)
+            )
     return RoutingProfile(
         model_hash=model_hash,
         model_name=model_name,
@@ -181,7 +186,9 @@ def jaccard(a: Sequence[int], b: Sequence[int]) -> float:
     return len(sa & sb) / len(sa | sb) if (sa | sb) else 0.0
 
 
-def compare(p: RoutingProfile, q: RoutingProfile, percent: str = "25") -> dict[str, Any]:
+def compare(
+    p: RoutingProfile, q: RoutingProfile, percent: str = "25"
+) -> dict[str, Any]:
     """Mean per-layer Jaccard between two profiles' top-k sets.
 
     Used two ways: to check that a 10% subsample reproduces the full pass

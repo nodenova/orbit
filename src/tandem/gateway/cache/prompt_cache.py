@@ -90,7 +90,9 @@ class PrefixHit:
         return self.entry.state is not None
 
 
-def chunk_digests(text: str, chunk_bytes: int = DEFAULT_CHUNK_BYTES) -> list[tuple[int, str]]:
+def chunk_digests(
+    text: str, chunk_bytes: int = DEFAULT_CHUNK_BYTES
+) -> list[tuple[int, str]]:
     """Digest of every chunk-aligned prefix, in one streaming pass.
 
     Returns [(prefix_byte_length, sha256_hex), ...] in ascending order. Boundaries
@@ -114,7 +116,9 @@ def chunk_digests(text: str, chunk_bytes: int = DEFAULT_CHUNK_BYTES) -> list[tup
     return out
 
 
-def aligned_mark(text: str, chunk_bytes: int = DEFAULT_CHUNK_BYTES) -> tuple[int, str] | None:
+def aligned_mark(
+    text: str, chunk_bytes: int = DEFAULT_CHUNK_BYTES
+) -> tuple[int, str] | None:
     """The longest prefix mark of `text` that a *longer* prompt reproduces.
 
     Returns `(prefix_byte_length, digest)`, or None when `text` holds less than one
@@ -191,7 +195,9 @@ def _refusal(entry: CacheEntry, state_key: str, prefix_bytes: int) -> str | None
 class PromptCache:
     """LRU over a byte budget, indexed by (backend identity, chunk-aligned digest)."""
 
-    def __init__(self, budget_bytes: int = 2 << 30, chunk_bytes: int = DEFAULT_CHUNK_BYTES):
+    def __init__(
+        self, budget_bytes: int = 2 << 30, chunk_bytes: int = DEFAULT_CHUNK_BYTES
+    ):
         self.budget_bytes = budget_bytes
         self.chunk_bytes = chunk_bytes
         # Keyed on (state_key, digest), never on the digest alone: the same bytes
@@ -249,7 +255,9 @@ class PromptCache:
             self.misses += 1
             return None
 
-    def store(self, rendered_prefix: str, entry: CacheEntry, *, state_key: str = "") -> str | None:
+    def store(
+        self, rendered_prefix: str, entry: CacheEntry, *, state_key: str = ""
+    ) -> str | None:
         """Cache a state covering `rendered_prefix` under `state_key`.
 
         The prefix is aligned *down* to a chunk boundary before storing: a state

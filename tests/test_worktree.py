@@ -96,7 +96,9 @@ def runner(repo, tmp_path):
 
 
 def test_extract_diff_from_a_fenced_reply():
-    reply = f"Here is the change:\n\n```diff\n{PATCH}```\n\nIt keeps the existing style."
+    reply = (
+        f"Here is the change:\n\n```diff\n{PATCH}```\n\nIt keeps the existing style."
+    )
     assert extract_diff(reply) == PATCH
 
 
@@ -189,7 +191,9 @@ async def test_a_missing_linter_is_unmeasured_rather_than_failed(repo, tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_the_checkout_is_untouched_and_no_worktree_survives(runner, repo, tmp_path):
+async def test_the_checkout_is_untouched_and_no_worktree_survives(
+    runner, repo, tmp_path
+):
     await runner.evaluate(PATCH)
     assert (repo / "mod.py").read_text(encoding="utf-8") == "VALUE = 1\n"
     assert _git(repo, "status", "--porcelain") == ""
@@ -254,7 +258,9 @@ async def test_test_runner_does_not_escalate_on_a_reply_with_no_patch(runner):
 async def test_apply_failure_only_escalates_when_asked(runner):
     passed, _ = await runner.as_test_runner()(DOES_NOT_APPLY)
     assert passed is True
-    passed, _ = await runner.as_test_runner(escalate_on_apply_failure=True)(DOES_NOT_APPLY)
+    passed, _ = await runner.as_test_runner(escalate_on_apply_failure=True)(
+        DOES_NOT_APPLY
+    )
     assert passed is False
 
 

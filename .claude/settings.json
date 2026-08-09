@@ -5,14 +5,73 @@
     "sessionUrl": false
   },
   "includeCoAuthoredBy": false,
+  "permissions": {
+    "allow": [
+      "Bash(pytest:*)",
+      "Bash(ruff:*)",
+      "Bash(mypy:*)",
+      "Bash(tandem audit verify:*)",
+      "Bash(tandem extract:*)",
+      "Bash(tandem profile:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git blame:*)",
+      "Bash(hf cache list:*)",
+      "Bash(ollama list:*)",
+      "Bash(ollama ps:*)",
+      "Bash(lsof:*)",
+      "Bash(vm_stat:*)",
+      "Bash(sysctl:*)",
+      "Bash(memory_pressure:*)"
+    ],
+    "deny": [
+      "Bash(git checkout -b:*)",
+      "Bash(git checkout -B:*)",
+      "Bash(git switch -c:*)",
+      "Bash(git switch -C:*)",
+      "Read(./.env)"
+    ],
+    "ask": []
+  },
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -m pip install --quiet --root-user-action=ignore -e '.[dev,constrain]' 2>&1 | tail -2 || true",
+            "command": "VIRTUAL_ENV=\"${CLAUDE_PROJECT_DIR}/.venv\" uv pip install --quiet -e '.[dev,constrain]' 2>&1 | tail -2 || \"${CLAUDE_PROJECT_DIR}/.venv/bin/python3\" -m pip install --quiet -e '.[dev,constrain]' 2>&1 | tail -2 || true",
+            "statusMessage": "Syncing the editable install",
             "timeout": 300
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(git *)",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/no-branch.sh",
+            "args": [],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/ruff-touched.sh",
+            "args": ["${tool_input.file_path}"],
+            "statusMessage": "ruff format + check",
+            "timeout": 60
           }
         ]
       }

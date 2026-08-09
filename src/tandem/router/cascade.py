@@ -26,14 +26,15 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any
 
-from ..backends.base import Backend
-from ..config import RouterConfig
-from ..tier1.verifier import Candidate, Tier1Verifier, Verdict
-from ..types import GenRequest, GenResult, Message, Role, TurnClass
-from .classify import Classification, classify
+from tandem.backends.base import Backend
+from tandem.config import RouterConfig
+from tandem.router.classify import Classification, classify
+from tandem.tier1.verifier import Candidate, Tier1Verifier, Verdict
+from tandem.types import GenRequest, GenResult, Message, Role, TurnClass
 
 
 @dataclass
@@ -126,7 +127,9 @@ class Cascade:
 
     # --- turn shapes --------------------------------------------------------
 
-    async def _plan_turn(self, req: GenRequest, info: CascadeInfo) -> tuple[GenResult, CascadeInfo]:
+    async def _plan_turn(
+        self, req: GenRequest, info: CascadeInfo
+    ) -> tuple[GenResult, CascadeInfo]:
         result = await self.tier0.generate(req)
         if not self._tier1_usable():
             return result, info
@@ -220,16 +223,14 @@ class Cascade:
         info.escalated = True
         critique = _format_issues(verdict)
         regen_req = req.with_(
-            messages=req.messages
-            + [
+            messages=[
+                *req.messages,
                 Message(role=Role.ASSISTANT, content=result.text),
                 Message(
                     role=Role.USER,
-                    content=(
-                        "The repository's tests fail on that patch.\n\n"
-                        f"Test output:\n```\n{output.strip()[:4000]}\n```\n\n"
-                        f"Review:\n{critique}\n\nProduce a corrected patch."
-                    ),
+                    content="The repository's tests fail on that patch.\n\n"
+                    f"Test output:\n```\n{output.strip()[:4000]}\n```\n\n"
+                    f"Review:\n{critique}\n\nProduce a corrected patch.",
                 ),
             ]
         )
@@ -302,7 +303,9 @@ def _format_issues(verdict: Verdict) -> str:
     lines = [f"verdict: {verdict.data.get('verdict', 'revise')}"]
     for issue in issues:
         where = issue.get("where", "")
-        lines.append(f"- [{issue.get('severity', 'minor')}] {where} {issue.get('what', '')}".rstrip())
+        lines.append(
+            f"- [{issue.get('severity', 'minor')}] {where} {issue.get('what', '')}".rstrip()
+        )
     return "\n".join(lines)
 
 

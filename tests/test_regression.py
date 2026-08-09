@@ -8,8 +8,6 @@ that instruction survives contact with a future contributor who wants a number.
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from tandem.backends.mock import MockBackend
@@ -24,13 +22,14 @@ from tandem.eval.regression import (
 from tandem.eval.regression_items import SUITE, Item, by_category
 from tandem.types import GenResult
 
-
 # --- the shape of the suite -------------------------------------------------
 
 
 def test_suite_is_about_ninety_items_across_three_categories():
     assert 85 <= len(SUITE) <= 95
-    counts = {c: len(by_category(c)) for c in ("reasoning", "maths", "code_localisation")}
+    counts = {
+        c: len(by_category(c)) for c in ("reasoning", "maths", "code_localisation")
+    }
     assert all(n >= 25 for n in counts.values()), counts
     assert sum(counts.values()) == len(SUITE)
 
@@ -60,17 +59,35 @@ def test_the_maths_answers_are_arithmetically_correct():
         return b
 
     expected = {
-        "maths-01": 47 * 23, "maths-02": 1024 / 16, "maths-03": 0.17 * 250,
-        "maths-04": 2**12, "maths-05": (31 - 7) / 3, "maths-06": sum(range(1, 101)),
-        "maths-07": 987 - 654, "maths-08": 14 * 9, "maths-09": math.gcd(84, 126),
-        "maths-10": math.factorial(15) / math.factorial(13), "maths-11": 0xFF,
-        "maths-12": 0b101101, "maths-13": 144 % 13, "maths-14": 80 * 0.65,
-        "maths-15": math.lcm(12, 18), "maths-16": 240 / 3, "maths-17": fib(10),
-        "maths-18": math.isqrt(1369), "maths-19": 3 * 3600 + 25 * 60, "maths-20": 3 / 8,
-        "maths-21": 20 / 2, "maths-22": sum([2, 3, 5, 7, 11, 13, 17, 19]),
-        "maths-23": 7 * 2, "maths-24": math.factorial(6), "maths-25": 1000 - 37 * 12,
-        "maths-26": 4 * 1024 * 8, "maths-27": sorted([3, 9, 4, 1, 7])[2],
-        "maths-28": 5, "maths-29": float(Fraction(2, 3) + Fraction(1, 6)),
+        "maths-01": 47 * 23,
+        "maths-02": 1024 / 16,
+        "maths-03": 0.17 * 250,
+        "maths-04": 2**12,
+        "maths-05": (31 - 7) / 3,
+        "maths-06": sum(range(1, 101)),
+        "maths-07": 987 - 654,
+        "maths-08": 14 * 9,
+        "maths-09": math.gcd(84, 126),
+        "maths-10": math.factorial(15) / math.factorial(13),
+        "maths-11": 0xFF,
+        "maths-12": 0b101101,
+        "maths-13": 144 % 13,
+        "maths-14": 80 * 0.65,
+        "maths-15": math.lcm(12, 18),
+        "maths-16": 240 / 3,
+        "maths-17": fib(10),
+        "maths-18": math.isqrt(1369),
+        "maths-19": 3 * 3600 + 25 * 60,
+        "maths-20": 3 / 8,
+        "maths-21": 20 / 2,
+        "maths-22": sum([2, 3, 5, 7, 11, 13, 17, 19]),
+        "maths-23": 7 * 2,
+        "maths-24": math.factorial(6),
+        "maths-25": 1000 - 37 * 12,
+        "maths-26": 4 * 1024 * 8,
+        "maths-27": sorted([3, 9, 4, 1, 7])[2],
+        "maths-28": 5,
+        "maths-29": float(Fraction(2, 3) + Fraction(1, 6)),
         "maths-30": 4 * math.isqrt(81),
     }
     by_id = {i.id: i for i in by_category("maths")}
@@ -97,7 +114,11 @@ def test_the_report_has_no_score_field():
         Baseline(items={"maths-01": True, "maths-02": True}),
     )
     keys = set(report.as_dict())
-    forbidden = {k for k in keys if any(w in k.lower() for w in ("score", "rate", "percent", "accuracy"))}
+    forbidden = {
+        k
+        for k in keys
+        if any(w in k.lower() for w in ("score", "rate", "percent", "accuracy"))
+    }
     assert not forbidden, forbidden
 
 
@@ -137,9 +158,7 @@ def test_a_regression_is_detected_and_named():
 
 
 def test_a_fix_is_reported_but_is_not_a_regression():
-    report = compare(
-        [ItemResult("a", "maths", True)], Baseline(items={"a": False})
-    )
+    report = compare([ItemResult("a", "maths", True)], Baseline(items={"a": False}))
     assert report.clean
     assert report.fixes == ["a"]
 
@@ -158,7 +177,9 @@ def test_new_and_missing_items_are_reported_separately():
 def test_baseline_round_trips(tmp_path):
     path = tmp_path / "baseline.json"
     Baseline(
-        container_hash="abc", adapter="a1", engine_commit="deadbeef",
+        container_hash="abc",
+        adapter="a1",
+        engine_commit="deadbeef",
         items={"maths-01": True, "maths-02": False},
     ).write(path)
     loaded = Baseline.load(path)
@@ -264,9 +285,10 @@ async def test_end_to_end_detects_a_real_regression():
     items = by_category("maths")[:5]
     answers = {i.prompt: i.expected[0] for i in items}
 
-    good = MockBackend(use_tools=False, responder=lambda req: GenResult(
-        text=answers.get(req.messages[0].content, "")
-    ))
+    good = MockBackend(
+        use_tools=False,
+        responder=lambda req: GenResult(text=answers.get(req.messages[0].content, "")),
+    )
     before = await run(good, items)
     assert all(r.passed for r in before), [r.id for r in before if not r.passed]
 

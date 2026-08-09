@@ -48,8 +48,10 @@ TOOLS = (READ, BASH)
     [
         (
             "xml_hybrid",
-            "<tool_call>\n<tool_name>read_file</tool_name>\n"
-            "<arguments><path>src/a.py</path><limit>10</limit></arguments>\n</tool_call>",
+            (
+                "<tool_call>\n<tool_name>read_file</tool_name>\n"
+                "<arguments><path>src/a.py</path><limit>10</limit></arguments>\n</tool_call>"
+            ),
             "read_file",
             {"path": "src/a.py", "limit": 10},
         ),
@@ -61,8 +63,10 @@ TOOLS = (READ, BASH)
         ),
         (
             "xml_json_args",
-            '<tool_call><tool_name>read_file</tool_name>'
-            '<arguments>{"path": "x.py"}</arguments></tool_call>',
+            (
+                "<tool_call><tool_name>read_file</tool_name>"
+                '<arguments>{"path": "x.py"}</arguments></tool_call>'
+            ),
             "read_file",
             {"path": "x.py"},
         ),
@@ -104,8 +108,10 @@ TOOLS = (READ, BASH)
         ),
         (
             "openai_envelope",
-            '{"type":"function","function":{"name":"run_bash",'
-            '"arguments":"{\\"command\\": \\"echo hi\\"}"}}',
+            (
+                '{"type":"function","function":{"name":"run_bash",'
+                '"arguments":"{\\"command\\": \\"echo hi\\"}"}}'
+            ),
             "run_bash",
             {"command": "echo hi"},
         ),
@@ -126,7 +132,9 @@ def test_repair_recovers_malformed_shapes(label, text, expect_name, expect_args)
 
 def test_mangled_name_is_inferred_from_argument_keys():
     """Sec 8.5.3: infer tool names from parameter keys when the name is mangled."""
-    out = repair('{"name": "tool‑call‑???", "arguments": {"command": "make test"}}', TOOLS)
+    out = repair(
+        '{"name": "tool‑call‑???", "arguments": {"command": "make test"}}', TOOLS
+    )
     assert out.ok
     assert out.calls[0].name == "run_bash"
 
@@ -139,8 +147,14 @@ def test_unknown_tool_is_rejected_not_invented():
 
 
 def test_ambiguous_arguments_refuse_rather_than_guess():
-    a = ToolDef(name="alpha", parameters={"type": "object", "properties": {"x": {"type": "string"}}})
-    b = ToolDef(name="beta", parameters={"type": "object", "properties": {"x": {"type": "string"}}})
+    a = ToolDef(
+        name="alpha",
+        parameters={"type": "object", "properties": {"x": {"type": "string"}}},
+    )
+    b = ToolDef(
+        name="beta",
+        parameters={"type": "object", "properties": {"x": {"type": "string"}}},
+    )
     res = resolve_name(None, {"x": "1"}, (a, b))
     assert res.name is None
     assert "refusing to guess" in res.reason
@@ -199,7 +213,9 @@ def test_tool_call_schema_closes_the_name_enum():
 def test_replay_preserves_exact_sampled_bytes():
     replay = ReplayMap(max_size=4)
     call = ToolCall(id="c1", name="read_file", arguments={"path": "a.py"})
-    sampled = '{"name":"read_file",  "arguments":{"path":"a.py"}}'  # note the double space
+    sampled = (
+        '{"name":"read_file",  "arguments":{"path":"a.py"}}'  # note the double space
+    )
     replay.put("c1", sampled)
     assert render_call(call, replay) == sampled
 

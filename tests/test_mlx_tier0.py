@@ -78,7 +78,9 @@ def _backend(mlx, container, *, adapter_dir=None):
 
 
 def _req(text: str = "Fix the pagination helper.", **kw) -> GenRequest:
-    kw.setdefault("sampling", Sampling(temperature=0.0, top_p=1.0, seed=0, max_tokens=32))
+    kw.setdefault(
+        "sampling", Sampling(temperature=0.0, top_p=1.0, seed=0, max_tokens=32)
+    )
     return GenRequest(messages=[Message(role=Role.USER, content=text)], **kw)
 
 
@@ -133,7 +135,9 @@ def test_mount_all_picks_up_every_adapter_directory(mlx, container, adapters):
 def test_an_adapter_matching_no_layer_is_a_mount_failure(mlx, container, tmp_path):
     """The key-naming mismatch between trainer and served model. Silence here
     means a receipt naming an adapter that contributed nothing."""
-    bad = fake_mlx.write_adapter(tmp_path / "wrong-names", ["transformer.h.0.attn.c_attn"])
+    bad = fake_mlx.write_adapter(
+        tmp_path / "wrong-names", ["transformer.h.0.attn.c_attn"]
+    )
     backend = _backend(mlx, container)
     with pytest.raises(ValueError, match="matched no target layer"):
         backend.mount("wrong-names", bad)
@@ -149,7 +153,9 @@ def test_an_adapter_covers_only_its_own_layers(mlx, container, adapters):
     assert k0.deltas == {}
 
 
-def test_the_scale_comes_from_the_adapter_config_not_a_default(mlx, container, tmp_path):
+def test_the_scale_comes_from_the_adapter_config_not_a_default(
+    mlx, container, tmp_path
+):
     path = fake_mlx.write_adapter(tmp_path / "a1", A1_KEYS, rank=2, alpha=8)
     backend = _backend(mlx, container)
     spec = backend.mount("a1", path)
@@ -238,7 +244,9 @@ async def test_selection_is_read_at_call_time_and_is_per_task(mlx, container, ad
 
 
 @pytest.mark.asyncio
-async def test_the_contextvar_is_reset_when_a_stream_is_abandoned(mlx, container, adapters):
+async def test_the_contextvar_is_reset_when_a_stream_is_abandoned(
+    mlx, container, adapters
+):
     """A client disconnecting mid-stream is the ordinary case, not the exotic one.
 
     A binding leaked on the way out makes the *next* request on this task adapted
@@ -258,7 +266,9 @@ async def test_the_contextvar_is_reset_when_a_stream_is_abandoned(mlx, container
 
 
 @pytest.mark.asyncio
-async def test_adapter_isolation_gate_passes_against_the_real_tier0(mlx, container, adapters):
+async def test_adapter_isolation_gate_passes_against_the_real_tier0(
+    mlx, container, adapters
+):
     """`tandem gate isolation`, against `MLXTier0Backend` rather than the mock.
 
     This is the sec 4.2 blocking gate — greedy output under adapter *i* with N
@@ -318,7 +328,9 @@ async def test_the_isolation_gate_catches_a_leak(mlx, container, adapters):
 
 
 @pytest.mark.asyncio
-async def test_unload_then_load_comes_back_with_the_same_identity(mlx, container, adapters):
+async def test_unload_then_load_comes_back_with_the_same_identity(
+    mlx, container, adapters
+):
     """Rung 2 evicts tier 0 to admit the 80B. A tier 0 that came back with a
     different adapter set would produce receipts naming what did not run."""
     backend = _backend(mlx, container, adapter_dir=str(adapters))
@@ -396,7 +408,9 @@ def test_tool_calls_and_results_reach_the_prompt(mlx, container):
     assert "print(1)" in rendered
 
 
-def test_two_conversations_differing_only_in_tool_calls_render_differently(mlx, container):
+def test_two_conversations_differing_only_in_tool_calls_render_differently(
+    mlx, container
+):
     """The cache-key half of the bug above, stated as the property that matters."""
     backend = _backend(mlx, container)
 
@@ -407,7 +421,11 @@ def test_two_conversations_differing_only_in_tool_calls_render_differently(mlx, 
                     Message(role=Role.USER, content="look"),
                     Message(
                         role=Role.ASSISTANT,
-                        tool_calls=(ToolCall(id="c1", name="read_file", arguments={"path": path}),),
+                        tool_calls=(
+                            ToolCall(
+                                id="c1", name="read_file", arguments={"path": path}
+                            ),
+                        ),
                     ),
                 ],
                 sampling=Sampling(temperature=0.0, max_tokens=8),
@@ -432,7 +450,9 @@ def test_the_model_s_own_sampled_bytes_go_back_into_the_prompt(mlx, container):
             Message(role=Role.USER, content="look"),
             Message(
                 role=Role.ASSISTANT,
-                tool_calls=(ToolCall(id="c1", name="read_file", arguments={"path": "a.py"}),),
+                tool_calls=(
+                    ToolCall(id="c1", name="read_file", arguments={"path": "a.py"}),
+                ),
             ),
         ],
         sampling=Sampling(temperature=0.0, max_tokens=8),
@@ -452,7 +472,11 @@ def test_a_failed_tool_result_does_not_render_as_a_successful_one(mlx, container
                     Message(
                         role=Role.TOOL,
                         tool_results=(
-                            ToolResult(tool_call_id="c1", content="no such file", is_error=is_error),
+                            ToolResult(
+                                tool_call_id="c1",
+                                content="no such file",
+                                is_error=is_error,
+                            ),
                         ),
                     )
                 ],
@@ -496,7 +520,11 @@ async def test_a_stop_sequence_ends_the_turn_and_is_reported_as_one(mlx, contain
     marker = free.text.split()[1]
 
     stopped = await backend.generate(
-        _req(sampling=Sampling(temperature=0.0, top_p=1.0, seed=0, max_tokens=32, stop=(marker + " ",)))
+        _req(
+            sampling=Sampling(
+                temperature=0.0, top_p=1.0, seed=0, max_tokens=32, stop=(marker + " ",)
+            )
+        )
     )
     assert stopped.stop_reason.value == "stop_sequence"
     assert stopped.usage.output_tokens < free.usage.output_tokens
@@ -553,7 +581,9 @@ async def test_a_logits_processor_is_called_once_per_sampled_token(mlx, containe
     backend._logits_processors = lambda req: [record]
     result = await backend.generate(_req())
 
-    assert seen[0] == [], "the prompt's tokens are prefilled without invoking processors"
+    assert seen[0] == [], (
+        "the prompt's tokens are prefilled without invoking processors"
+    )
     assert [len(s) for s in seen] == list(range(len(seen))), "one token added per step"
     # One call more than there are emitted tokens: the last one masked the step that
     # sampled the stop token. That is the call that has to happen — a mask which

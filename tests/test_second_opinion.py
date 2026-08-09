@@ -10,7 +10,12 @@ from __future__ import annotations
 
 import pytest
 
-from tandem.backends import SECOND_OPINION_RUNG, SecondOpinionBackend, build_tier0, build_tier1
+from tandem.backends import (
+    SECOND_OPINION_RUNG,
+    SecondOpinionBackend,
+    build_tier0,
+    build_tier1,
+)
 from tandem.backends.mock import MockBackend
 from tandem.config import Config
 from tandem.gateway.pipeline import Pipeline
@@ -18,7 +23,10 @@ from tandem.router.cascade import Cascade
 from tandem.tier1.verifier import Candidate, Tier1Verifier
 from tandem.types import GenRequest, Message, Role, ToolDef
 
-EDIT = ToolDef(name="edit_file", parameters={"type": "object", "properties": {"p": {"type": "string"}}})
+EDIT = ToolDef(
+    name="edit_file",
+    parameters={"type": "object", "properties": {"p": {"type": "string"}}},
+)
 
 
 @pytest.fixture
@@ -40,7 +48,10 @@ async def test_the_adapter_is_unmounted_for_every_verdict():
     tier0 = MockBackend(use_tools=False, adapters=("a1-myrepo",))
     verifier = SecondOpinionBackend(tier0)
     await verifier.generate(
-        GenRequest(messages=[Message(role=Role.USER, content="judge this")], adapter="a1-myrepo")
+        GenRequest(
+            messages=[Message(role=Role.USER, content="judge this")],
+            adapter="a1-myrepo",
+        )
     )
     assert tier0.calls[-1].adapter is None
 
@@ -60,7 +71,9 @@ async def test_the_strip_does_not_mutate_the_caller_s_request():
 async def test_base_and_adapted_output_actually_differ():
     """If the mock ignored the adapter, every test above would pass vacuously."""
     tier0 = MockBackend(use_tools=False, adapters=("a1",))
-    req = GenRequest(messages=[Message(role=Role.USER, content="same prompt")], adapter="a1")
+    req = GenRequest(
+        messages=[Message(role=Role.USER, content="same prompt")], adapter="a1"
+    )
     adapted = await tier0.generate(req)
     base = await SecondOpinionBackend(tier0).generate(req)
     assert adapted.text != base.text
@@ -152,7 +165,10 @@ async def test_the_receipt_names_the_rung(cfg):
     tier0 = build_tier0(cfg)
     pipeline = Pipeline(cfg, tier0, build_tier1(cfg, tier0))
     result, _trace = await pipeline.run(
-        GenRequest(messages=[Message(role=Role.USER, content="Fix the retry loop")], tools=(EDIT,))
+        GenRequest(
+            messages=[Message(role=Role.USER, content="Fix the retry loop")],
+            tools=(EDIT,),
+        )
     )
     assert result.receipt["tier1"]["rung"] == SECOND_OPINION_RUNG
 

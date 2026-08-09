@@ -18,9 +18,10 @@ import json
 import os
 import re
 import subprocess
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 # Sec 8.6. Emitted by `env_exports()` and asserted by `check_env()`.
 HARNESS_ENV: dict[str, str] = {
@@ -34,14 +35,33 @@ HARNESS_ENV: dict[str, str] = {
 # reported, not silently tolerated.
 ALLOWED_DEPENDENCIES = frozenset(
     {
-        "fastapi", "starlette", "uvicorn", "pydantic", "pydantic_core", "httpx",
-        "httpcore", "h11", "anyio", "sniffio", "idna", "certifi", "click",
-        "typing_extensions", "annotated_types", "blake3", "lmformatenforcer",
-        "interegular", "mlx", "mlx_lm", "tandem",
+        "fastapi",
+        "starlette",
+        "uvicorn",
+        "pydantic",
+        "pydantic_core",
+        "httpx",
+        "httpcore",
+        "h11",
+        "anyio",
+        "sniffio",
+        "idna",
+        "certifi",
+        "click",
+        "typing_extensions",
+        "annotated_types",
+        "blake3",
+        "lmformatenforcer",
+        "interegular",
+        "mlx",
+        "mlx_lm",
+        "tandem",
     }
 )
 
-_LSOF_LINE = re.compile(r"\S+\s+(\d+)\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+(TCP|UDP)\s+(\S+)")
+_LSOF_LINE = re.compile(
+    r"\S+\s+(\d+)\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+(TCP|UDP)\s+(\S+)"
+)
 
 # `observe_connections(ALL_PROCESSES)` snapshots every socket on the machine. It is
 # not the default, and the reason is that it does not answer the question: a browser
@@ -157,7 +177,9 @@ def observe_connections(pid: int | None = None) -> tuple[list[Connection], str]:
         # which is how the pid argument came to have no effect at all.
         cmd += ["-a", "-p", str(pid)]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=30, check=False
+        )
     except FileNotFoundError:
         return [], "lsof not available on this machine; cannot verify offline posture"
     except subprocess.SubprocessError as exc:
@@ -170,7 +192,11 @@ def observe_connections(pid: int | None = None) -> tuple[list[Connection], str]:
             continue
         conn_pid, proto, endpoint = int(m.group(1)), m.group(2), m.group(3)
         local, remote = _split_endpoint(endpoint)
-        out.append(Connection(pid=conn_pid, proto=proto, endpoint=endpoint, local=local, remote=remote))
+        out.append(
+            Connection(
+                pid=conn_pid, proto=proto, endpoint=endpoint, local=local, remote=remote
+            )
+        )
     return out, "ok"
 
 
@@ -255,7 +281,9 @@ def audit_dependencies() -> list[str]:
     return sorted(
         top
         for top in seen
-        if top not in ALLOWED_DEPENDENCIES and top not in stdlib and not top.startswith("_")
+        if top not in ALLOWED_DEPENDENCIES
+        and top not in stdlib
+        and not top.startswith("_")
     )
 
 

@@ -41,7 +41,7 @@ class ContextScaler:
         """
         if not self.enabled:
             return tokens
-        return int(math.ceil(tokens * self.factor))
+        return math.ceil(tokens * self.factor)
 
     def headroom_tokens(self) -> int:
         """Real tokens left before the harness ought to have compacted."""

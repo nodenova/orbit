@@ -37,9 +37,10 @@ import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Sequence
+from typing import Any
 
 # Same neutralisation as `adapters.gitwalk`: a customer with `diff.external` set
 # would otherwise silently produce nonsense.
@@ -52,9 +53,12 @@ from typing import Any, Awaitable, Callable, Sequence
 # configuration an operator chose precisely to avoid executing repository code.
 _GIT = [
     "git",
-    "-c", "core.quotepath=false",
-    "-c", "diff.external=",
-    "-c", "core.hooksPath=/dev/null",
+    "-c",
+    "core.quotepath=false",
+    "-c",
+    "diff.external=",
+    "-c",
+    "core.hooksPath=/dev/null",
     "--no-pager",
 ]
 
@@ -90,7 +94,9 @@ def _reject_option(value: str, what: str) -> str:
     no revision or path this module legitimately handles starts with one.
     """
     if value.startswith("-"):
-        raise ValueError(f"refusing to pass {what} {value!r} to git: it would be read as an option")
+        raise ValueError(
+            f"refusing to pass {what} {value!r} to git: it would be read as an option"
+        )
     return value
 
 
@@ -108,7 +114,9 @@ def extract_diff(text: str) -> str:
     """
     if not text or not text.strip():
         return ""
-    blocks = [b for b in (m.group(1) for m in _FENCE.finditer(text)) if looks_like_diff(b)]
+    blocks = [
+        b for b in (m.group(1) for m in _FENCE.finditer(text)) if looks_like_diff(b)
+    ]
     if blocks:
         return "\n".join(b.strip("\n") for b in blocks) + "\n"
     # Unfenced: take from the first diff header to the end. Trailing prose after a
@@ -163,7 +171,7 @@ class _BoundedTail:
     Truncating at read time bounds it by construction instead.
     """
 
-    __slots__ = ("limit", "_buf", "dropped")
+    __slots__ = ("_buf", "dropped", "limit")
 
     def __init__(self, limit: int):
         self.limit = max(0, limit)
@@ -294,7 +302,9 @@ class WorktreeRunner:
                 output="reply carried no patch",
             )
         async with self._lock:
-            return await asyncio.to_thread(self._evaluate, diff, base_rev or self.base_rev)
+            return await asyncio.to_thread(
+                self._evaluate, diff, base_rev or self.base_rev
+            )
 
     async def verify_base(self, *, base_rev: str | None = None) -> PatchOutcome:
         """Run the checks on an unpatched worktree.
@@ -304,7 +314,9 @@ class WorktreeRunner:
         discriminating. Worth one run before an eval that takes hours.
         """
         async with self._lock:
-            return await asyncio.to_thread(self._evaluate, None, base_rev or self.base_rev)
+            return await asyncio.to_thread(
+                self._evaluate, None, base_rev or self.base_rev
+            )
 
     def as_test_runner(
         self, *, base_rev: str | None = None, escalate_on_apply_failure: bool = False
@@ -452,7 +464,9 @@ class WorktreeRunner:
         mine = {str(work), str(work / ".git")}
         for entry in admin_root.iterdir():
             try:
-                recorded = (entry / "gitdir").read_text(encoding="utf-8", errors="replace")
+                recorded = (entry / "gitdir").read_text(
+                    encoding="utf-8", errors="replace"
+                )
             except OSError:
                 continue
             if recorded.strip() in mine:
@@ -536,7 +550,7 @@ class WorktreeRunner:
         of bytes instead of the machine.
         """
         try:
-            proc = subprocess.Popen(  # noqa: S603 - operator-declared command (sec 10.1)
+            proc = subprocess.Popen(
                 list(cmd),
                 cwd=cwd,
                 stdout=subprocess.PIPE,
@@ -582,6 +596,7 @@ class WorktreeRunner:
                 encoding="utf-8",
                 errors="replace",
                 timeout=self.git_timeout_s if timeout is None else timeout,
+                check=False,
             )
         except subprocess.TimeoutExpired:
             limit = self.git_timeout_s if timeout is None else timeout
@@ -593,7 +608,10 @@ class WorktreeRunner:
             )
         except OSError as exc:
             return subprocess.CompletedProcess(
-                args=list(args), returncode=127, stdout="", stderr=f"could not run git: {exc}"
+                args=list(args),
+                returncode=127,
+                stdout="",
+                stderr=f"could not run git: {exc}",
             )
 
     def _tail(self, text: str) -> str:

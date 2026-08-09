@@ -19,7 +19,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from ..types import Sampling
+from tandem.types import Sampling
 
 # The floating-point reduction order the engine is pinned to. G1/G2 (sec 9.3) assert
 # that both backends compute the same function; this string names which pinning was

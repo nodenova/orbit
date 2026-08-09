@@ -46,6 +46,7 @@ Layout (little-endian, single sequential read):
 from __future__ import annotations
 
 import array
+import contextlib
 import json
 import os
 import struct
@@ -63,7 +64,11 @@ from typing import Any
 # the set of digests lookup probes — entries written forever, never read once. The
 # boundary now has a single implementation, next to the index it has to agree with,
 # and is re-exported here because this is where callers import it from.
-from .prompt_cache import align_down as align_down
+#
+# The redundant-looking alias is the explicit re-export form. mypy runs with
+# `no_implicit_reexport` (strict), under which plain `import align_down` is private
+# to this module and every caller becomes an attr-defined error.
+from tandem.gateway.cache.prompt_cache import align_down as align_down  # noqa: PLC0414
 
 MAGIC = b"TANDEMKV"
 # v2 added `state_key`. A v1 entry carries no backend identity, so there is no way
@@ -147,7 +152,7 @@ class DiskKVCache:
         """
         try:
             return self._put(snap)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # Deliberately broad: see the docstring. Anything that reaches here is,
             # by definition, something the caller cannot do anything about — it has
             # already produced its answer.
@@ -217,10 +222,8 @@ class DiskKVCache:
         except BaseException:
             # Includes cancellation. An abandoned temp is bytes on the disk that
             # nothing accounts for, so it goes out with the failure that made it.
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(tmp)
-            except OSError:
-                pass
             raise
         self._enforce_budget(added_bytes=size)
         return path
@@ -275,15 +278,20 @@ class DiskKVCache:
                 tokens.frombytes(token_bytes)
                 if sys_is_big_endian():
                     tokens.byteswap()
-        except (OSError, TypeError, ValueError, KeyError, struct.error, json.JSONDecodeError):
+        except (
+            OSError,
+            TypeError,
+            ValueError,
+            KeyError,
+            struct.error,
+            json.JSONDecodeError,
+        ):
             # A corrupt entry is a cache miss, never an error to the caller.
             return None
 
         # Touch for LRU. Best-effort: a read-only cache directory is still usable.
-        try:
+        with contextlib.suppress(OSError):
             os.utime(path, None)
-        except OSError:
-            pass
 
         return KVSnapshot(
             digest=digest,
@@ -419,10 +427,8 @@ def _own_dir(path: Path) -> None:
     is still a usable cache.
     """
     path.mkdir(parents=True, exist_ok=True)
-    try:
+    with contextlib.suppress(OSError):
         path.chmod(0o700)
-    except OSError:
-        pass
 
 
 def sys_is_big_endian() -> bool:

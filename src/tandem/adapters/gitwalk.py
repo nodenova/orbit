@@ -13,17 +13,21 @@ would otherwise silently produce a corpus of nonsense.
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator
 
 # Neutralise user config that would change diff output under us.
 _GIT_BASE = [
     "git",
-    "-c", "core.quotepath=false",
-    "-c", "diff.noprefix=false",
-    "-c", "diff.external=",
-    "-c", "diff.renames=true",
+    "-c",
+    "core.quotepath=false",
+    "-c",
+    "diff.noprefix=false",
+    "-c",
+    "diff.external=",
+    "-c",
+    "diff.renames=true",
     "--no-pager",
 ]
 
@@ -41,6 +45,9 @@ def run_git(repo: Path, *args: str, check: bool = True) -> str:
         capture_output=True,
         text=True,
         errors="replace",
+        # Not subprocess's `check`: this function's own `check` below raises
+        # GitError carrying git's stderr, which CalledProcessError discards.
+        check=False,
     )
     if check and proc.returncode != 0:
         raise GitError(f"git {' '.join(args[:3])} failed: {proc.stderr.strip()[:300]}")
@@ -97,11 +104,15 @@ def default_branch(repo: Path) -> str:
     branch because that is where *merged* work lives (sec 6.2) — a feature branch's
     history includes work that was rejected.
     """
-    out = run_git(repo, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD", check=False).strip()
+    out = run_git(
+        repo, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD", check=False
+    ).strip()
     if out:
         return out.rsplit("/", 1)[-1]
     for candidate in ("main", "master"):
-        if run_git(repo, "rev-parse", "--verify", "--quiet", candidate, check=False).strip():
+        if run_git(
+            repo, "rev-parse", "--verify", "--quiet", candidate, check=False
+        ).strip():
             return candidate
     return run_git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip() or "HEAD"
 
@@ -185,11 +196,21 @@ def _parse_numstat_z(raw: str) -> list[FileChange]:
         if path == "" and i + 2 < len(fields):
             old_path, new_path = fields[i + 1], fields[i + 2]
             out.append(
-                FileChange(path=new_path, old_path=old_path, status="R", added=added, deleted=deleted)
+                FileChange(
+                    path=new_path,
+                    old_path=old_path,
+                    status="R",
+                    added=added,
+                    deleted=deleted,
+                )
             )
             i += 3
             continue
-        out.append(FileChange(path=path, old_path=None, status="M", added=added, deleted=deleted))
+        out.append(
+            FileChange(
+                path=path, old_path=None, status="M", added=added, deleted=deleted
+            )
+        )
         i += 1
     return out
 
@@ -199,6 +220,7 @@ def file_at(repo: Path, rev: str, path: str) -> str | None:
     proc = subprocess.run(
         [*_GIT_BASE, "-C", str(repo), "show", f"{rev}:{path}"],
         capture_output=True,
+        check=False,
     )
     if proc.returncode != 0:
         return None
@@ -213,6 +235,7 @@ def is_repo(path: Path) -> bool:
         subprocess.run(
             [*_GIT_BASE, "-C", str(path), "rev-parse", "--git-dir"],
             capture_output=True,
+            check=False,
         ).returncode
         == 0
     )

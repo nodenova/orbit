@@ -31,17 +31,23 @@ import json
 import os
 import threading
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, BinaryIO, IO, Iterator
+from typing import IO, TYPE_CHECKING, Any, BinaryIO
 
 if TYPE_CHECKING:  # only for an annotation — see receipt_fields()
-    from .receipt import Receipt
+    from tandem.attest.receipt import Receipt
 
 try:  # POSIX only. Both targets (macOS for Metal, Linux for CI) have it.
     import fcntl
+
+    _HAVE_FCNTL = True
 except ImportError:  # pragma: no cover - no Windows target (sec 2.1)
-    fcntl = None  # type: ignore[assignment]
+    # A bool rather than rebinding `fcntl` to None: under `# type: ignore` the name
+    # keeps its module type, every `if fcntl is None` below reads as unreachable to
+    # a type checker, and the Windows degradation path silently stops being checked.
+    _HAVE_FCNTL = False
 
 GENESIS = "0" * 64
 
@@ -168,13 +174,13 @@ def _lock_file(fh: IO[Any], *, exclusive: bool) -> None:
     machine we have — we degrade to the process-local lock, which is exactly right
     for the single-process case Windows would be.
     """
-    if fcntl is None:  # pragma: no cover - no Windows target
+    if not _HAVE_FCNTL:  # pragma: no cover - no Windows target
         return
     fcntl.flock(fh.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
 
 
 def _unlock_file(fh: IO[Any]) -> None:
-    if fcntl is None:  # pragma: no cover - no Windows target
+    if not _HAVE_FCNTL:  # pragma: no cover - no Windows target
         return
     fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
@@ -206,7 +212,13 @@ def _read_tip(fh: BinaryIO) -> ChainTip:
                 if isinstance(seq, bool) or not isinstance(seq, int):
                     raise TypeError("seq is not an integer")
                 return ChainTip(seq + 1, str(rec["link"]))
-            except (json.JSONDecodeError, UnicodeDecodeError, KeyError, TypeError, ValueError):
+            except (
+                json.JSONDecodeError,
+                UnicodeDecodeError,
+                KeyError,
+                TypeError,
+                ValueError,
+            ):
                 # A torn final line (crash mid-write) must not silently reroot the
                 # chain — skip it, continue from the last complete record, and
                 # leave the torn bytes in place for verify_chain() to report.
@@ -255,36 +267,35 @@ class AuditLog:
     def append(self, record: AuditRecord) -> str:
         """Append one record, returning its link — which is the log's new tip."""
         payload_base = record.as_dict()
-        with self._lock:
-            # Binary + append mode: text mode cannot seek to a byte offset, and
-            # O_APPEND makes the write land at the true end of the file even if
-            # another process grew it while we were looking.
-            with open(self.path, "ab+") as fh:
-                _lock_file(fh, exclusive=True)
-                try:
-                    tip = _read_tip(fh)
-                    payload = {**payload_base, "seq": tip.records}
-                    link = _link(payload, tip.link)
-                    line = json.dumps(
-                        {**payload, "prev": tip.link, "link": link},
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    )
-                    fh.write(line.encode("utf-8") + b"\n")
-                    fh.flush()
-                    if self._fsync:
-                        os.fsync(fh.fileno())
-                finally:
-                    # After the flush, never before: releasing the lock with the
-                    # record still in a buffer lets the next writer read a tip that
-                    # is about to move.
-                    _unlock_file(fh)
+        # Binary + append mode: text mode cannot seek to a byte offset, and
+        # O_APPEND makes the write land at the true end of the file even if
+        # another process grew it while we were looking.
+        with self._lock, open(self.path, "ab+") as fh:
+            _lock_file(fh, exclusive=True)
+            try:
+                tip = _read_tip(fh)
+                payload = {**payload_base, "seq": tip.records}
+                link = _link(payload, tip.link)
+                line = json.dumps(
+                    {**payload, "prev": tip.link, "link": link},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                fh.write(line.encode("utf-8") + b"\n")
+                fh.flush()
+                if self._fsync:
+                    os.fsync(fh.fileno())
+            finally:
+                # After the flush, never before: releasing the lock with the
+                # record still in a buffer lets the next writer read a tip that
+                # is about to move.
+                _unlock_file(fh)
         return link
 
     def read(self) -> Iterator[dict[str, Any]]:
         if not self.path.exists():
             return
-        with open(self.path, "r", encoding="utf-8") as fh:
+        with open(self.path, encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
                 if line:
@@ -341,7 +352,7 @@ def verify_chain(
 
     prev = GENESIS
     n = 0
-    with open(p, "r", encoding="utf-8") as fh:
+    with open(p, encoding="utf-8") as fh:
         # Shared lock: a reader that catches a writer mid-append would report a torn
         # line as tampering. Blocks only for the duration of one append.
         _lock_file(fh, exclusive=False)
@@ -355,15 +366,27 @@ def verify_chain(
                 except json.JSONDecodeError:
                     return False, f"line {lineno}: not JSON"
                 if rec.get("prev") != prev:
-                    return False, f"line {lineno}: broken link (record removed or reordered)"
+                    return (
+                        False,
+                        f"line {lineno}: broken link (record removed or reordered)",
+                    )
                 seq = rec.get("seq")
                 if seq is None:
-                    return False, f"line {lineno}: no sequence number (log predates the format)"
+                    return (
+                        False,
+                        f"line {lineno}: no sequence number (log predates the format)",
+                    )
                 if isinstance(seq, bool) or not isinstance(seq, int) or seq != n:
-                    return False, f"line {lineno}: sequence number {seq!r}, expected {n}"
+                    return (
+                        False,
+                        f"line {lineno}: sequence number {seq!r}, expected {n}",
+                    )
                 payload = {k: v for k, v in rec.items() if k not in ("prev", "link")}
                 if _link(payload, prev) != rec.get("link"):
-                    return False, f"line {lineno}: record content does not match its link"
+                    return (
+                        False,
+                        f"line {lineno}: record content does not match its link",
+                    )
                 prev = rec["link"]
                 n += 1
         finally:

@@ -19,10 +19,11 @@ from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Callable
+from typing import Any
 
-from ..types import GenRequest, GenResult, Message, Role, ToolCall
+from tandem.types import GenRequest, GenResult, Message, Role, ToolCall
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,7 +142,9 @@ class Backend(ABC):
     def accepts_state(self, state: Any, adapter: str | None) -> bool:
         return bool(state) and state.key == self.state_key(adapter)
 
-    def export_state(self, req: GenRequest, rendered_prefix: str, result: GenResult) -> Any:
+    def export_state(
+        self, req: GenRequest, rendered_prefix: str, result: GenResult
+    ) -> Any:
         """Snapshot the KV cache covering `rendered_prefix`, or None.
 
         Returning None is the honest default: most backends cannot do this, and a
@@ -199,7 +202,11 @@ def render_tools(req: GenRequest) -> str:
         {"name": t.name, "description": t.description, "parameters": t.parameters}
         for t in req.tools
     ]
-    return "<|tools|>\n" + json.dumps(spec, sort_keys=True, separators=(",", ":")) + "\n<|/tools|>\n"
+    return (
+        "<|tools|>\n"
+        + json.dumps(spec, sort_keys=True, separators=(",", ":"))
+        + "\n<|/tools|>\n"
+    )
 
 
 def render_default(req: GenRequest, render_tool_call: ToolCallRenderer = None) -> str:

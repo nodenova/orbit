@@ -22,17 +22,50 @@ import asyncio
 import hashlib
 import json
 import random
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Callable
+from typing import Any
 
-from ..types import GenRequest, GenResult, KVState, StopReason, ToolCall, Usage
-from .base import Backend, Delta
+from tandem.backends.base import Backend, Delta
+from tandem.types import GenRequest, GenResult, KVState, StopReason, ToolCall, Usage
 
-_WORDS = (
-    "patch applies cleanly the helper already exists in utils so reuse it rather "
-    "than adding a second one guard the empty case and keep the error type the "
-    "module already raises tests cover the boundary"
-).split()
+_WORDS = [
+    "patch",
+    "applies",
+    "cleanly",
+    "the",
+    "helper",
+    "already",
+    "exists",
+    "in",
+    "utils",
+    "so",
+    "reuse",
+    "it",
+    "rather",
+    "than",
+    "adding",
+    "a",
+    "second",
+    "one",
+    "guard",
+    "the",
+    "empty",
+    "case",
+    "and",
+    "keep",
+    "the",
+    "error",
+    "type",
+    "the",
+    "module",
+    "already",
+    "raises",
+    "tests",
+    "cover",
+    "the",
+    "boundary",
+]
 
 
 class Fault:
@@ -110,7 +143,9 @@ class MockBackend(Backend):
             if req.tools and self.use_tools and _is_tool_call_instance(instance, req):
                 call = ToolCall(
                     id="call_"
-                    + hashlib.sha256(f"{text}{req.sampling.seed}".encode()).hexdigest()[:16],
+                    + hashlib.sha256(f"{text}{req.sampling.seed}".encode()).hexdigest()[
+                        :16
+                    ],
                     name=instance["name"],
                     arguments=instance.get("arguments") or {},
                 )
@@ -118,13 +153,21 @@ class MockBackend(Backend):
                     text="",
                     tool_calls=(call,),
                     stop_reason=StopReason.TOOL_USE,
-                    usage=Usage(cached_input_tokens=cached_tokens, input_tokens=in_tokens, output_tokens=self.count_tokens(text)),
+                    usage=Usage(
+                        cached_input_tokens=cached_tokens,
+                        input_tokens=in_tokens,
+                        output_tokens=self.count_tokens(text),
+                    ),
                     raw_blocks={call.id: text},
                 )
             return GenResult(
                 text=text,
                 stop_reason=StopReason.END_TURN,
-                usage=Usage(cached_input_tokens=cached_tokens, input_tokens=in_tokens, output_tokens=self.count_tokens(text)),
+                usage=Usage(
+                    cached_input_tokens=cached_tokens,
+                    input_tokens=in_tokens,
+                    output_tokens=self.count_tokens(text),
+                ),
             )
 
         if self.script:
@@ -132,7 +175,11 @@ class MockBackend(Backend):
             return GenResult(
                 text=text,
                 stop_reason=StopReason.END_TURN,
-                usage=Usage(cached_input_tokens=cached_tokens, input_tokens=in_tokens, output_tokens=self.count_tokens(text)),
+                usage=Usage(
+                    cached_input_tokens=cached_tokens,
+                    input_tokens=in_tokens,
+                    output_tokens=self.count_tokens(text),
+                ),
             )
 
         if req.tools and self.use_tools:
@@ -144,7 +191,11 @@ class MockBackend(Backend):
         return GenResult(
             text=text,
             stop_reason=StopReason.END_TURN,
-            usage=Usage(cached_input_tokens=cached_tokens, input_tokens=in_tokens, output_tokens=self.count_tokens(text)),
+            usage=Usage(
+                cached_input_tokens=cached_tokens,
+                input_tokens=in_tokens,
+                output_tokens=self.count_tokens(text),
+            ),
         )
 
     async def stream(self, req: GenRequest) -> AsyncIterator[Delta]:
@@ -170,7 +221,9 @@ class MockBackend(Backend):
     def supports_state(self) -> bool:
         return True
 
-    def export_state(self, req: GenRequest, rendered_prefix: str, result: GenResult) -> KVState:
+    def export_state(
+        self, req: GenRequest, rendered_prefix: str, result: GenResult
+    ) -> KVState:
         data = rendered_prefix.encode("utf-8")
         return KVState(
             key=self.state_key(req.adapter),
@@ -219,15 +272,22 @@ class MockBackend(Backend):
         return " ".join(rng.choice(_WORDS) for _ in range(n))
 
     def _tool_result(
-        self, req: GenRequest, rng: random.Random, in_tokens: int, cached_tokens: int = 0
+        self,
+        req: GenRequest,
+        rng: random.Random,
+        in_tokens: int,
+        cached_tokens: int = 0,
     ) -> GenResult:
         tool = req.tools[rng.randrange(len(req.tools))]
-        args = {name: _sample_param(tool, name, rng) for name in tool.required_names()} or {
-            name: _sample_param(tool, name, rng) for name in tool.param_names()[:1]
-        }
-        call_id = "call_" + hashlib.sha256(
-            f"{tool.name}{json.dumps(args, sort_keys=True)}{req.sampling.seed}".encode()
-        ).hexdigest()[:16]
+        args = {
+            name: _sample_param(tool, name, rng) for name in tool.required_names()
+        } or {name: _sample_param(tool, name, rng) for name in tool.param_names()[:1]}
+        call_id = (
+            "call_"
+            + hashlib.sha256(
+                f"{tool.name}{json.dumps(args, sort_keys=True)}{req.sampling.seed}".encode()
+            ).hexdigest()[:16]
+        )
 
         raw = _render_fault(self.fault, tool.name, args)
         if self.fault in (Fault.NONE,):
@@ -236,14 +296,22 @@ class MockBackend(Backend):
                 text="",
                 tool_calls=(call,),
                 stop_reason=StopReason.TOOL_USE,
-                usage=Usage(cached_input_tokens=cached_tokens, input_tokens=in_tokens, output_tokens=self.count_tokens(raw)),
+                usage=Usage(
+                    cached_input_tokens=cached_tokens,
+                    input_tokens=in_tokens,
+                    output_tokens=self.count_tokens(raw),
+                ),
                 raw_blocks={call_id: raw},
             )
         # Faulted: emit as raw text with no parsed call. The repair layer's job.
         return GenResult(
             text=raw,
             stop_reason=StopReason.END_TURN,
-            usage=Usage(cached_input_tokens=cached_tokens, input_tokens=in_tokens, output_tokens=self.count_tokens(raw)),
+            usage=Usage(
+                cached_input_tokens=cached_tokens,
+                input_tokens=in_tokens,
+                output_tokens=self.count_tokens(raw),
+            ),
         )
 
 
@@ -273,7 +341,7 @@ def _sample_typed(schema: dict[str, Any], rng: random.Random, hint: str = "") ->
     # never have.
     if "const" in schema:
         return schema["const"]
-    if "enum" in schema and schema["enum"]:
+    if schema.get("enum"):
         return schema["enum"][rng.randrange(len(schema["enum"]))]
     branches = schema.get("anyOf") or schema.get("oneOf")
     if isinstance(branches, list) and branches:
@@ -289,16 +357,21 @@ def _sample_typed(schema: dict[str, Any], rng: random.Random, hint: str = "") ->
         high = int(schema.get("maximum", low + 3))
         return rng.randint(low, max(low, high))
     if t == "number":
-        low = float(schema.get("minimum", 0.0))
-        high = float(schema.get("maximum", low + 1.0))
-        return round(rng.uniform(low, max(low, high)), 3)
+        # Separate names from the integer branch above: same role, different type,
+        # and reusing `low`/`high` makes the function's own bounds int-typed.
+        lo = float(schema.get("minimum", 0.0))
+        hi = float(schema.get("maximum", lo + 1.0))
+        return round(rng.uniform(lo, max(lo, hi)), 3)
     if t == "boolean":
         return bool(rng.getrandbits(1))
     if t == "array":
         item = schema.get("items", {"type": "string"})
         low = int(schema.get("minItems", 1))
         high = int(schema.get("maxItems", max(low, 2)))
-        return [_sample_typed(item, rng, hint) for _ in range(rng.randint(low, max(low, high)))]
+        return [
+            _sample_typed(item, rng, hint)
+            for _ in range(rng.randint(low, max(low, high)))
+        ]
     if t == "object":
         props = schema.get("properties", {})
         return {k: _sample_typed(v, rng, k) for k, v in props.items()}
@@ -330,7 +403,7 @@ def _render_fault(fault: str, name: str, args: dict[str, Any]) -> str:
         return f'{{"name": "{name}", "arguments": {body[:-1]}{"," if len(body) > 2 else ""}}},'
     if fault == Fault.SMART_QUOTES:
         return (
-            f'{{“name”: “{name}”, “arguments”: '
+            f"{{“name”: “{name}”, “arguments”: "
             + body.replace('"', "“", 1).replace('"', "”", 1)
             + "}"
         )

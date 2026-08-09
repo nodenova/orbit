@@ -26,10 +26,11 @@ from __future__ import annotations
 import difflib
 import re
 from collections import deque
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable
+from typing import Any
 
-from ..types import GenRequest, ToolDef
+from tandem.types import GenRequest, ToolDef
 
 
 @dataclass(frozen=True)
@@ -104,7 +105,9 @@ class CompactionResult:
         a = (self.original_system or "").splitlines(keepends=True)
         b = (self.compacted_system or "").splitlines(keepends=True)
         return "".join(
-            difflib.unified_diff(a, b, fromfile="harness-system", tofile="compacted-system", n=2)
+            difflib.unified_diff(
+                a, b, fromfile="harness-system", tofile="compacted-system", n=2
+            )
         )
 
 
@@ -176,9 +179,9 @@ TEMPLATES: tuple[CompactionTemplate, ...] = (
 )
 
 
-def detect(system: str | None, templates: Iterable[CompactionTemplate] = TEMPLATES) -> tuple[
-    CompactionTemplate | None, int
-]:
+def detect(
+    system: str | None, templates: Iterable[CompactionTemplate] = TEMPLATES
+) -> tuple[CompactionTemplate | None, int]:
     """Best-matching template and its marker score, or (None, 0)."""
     if not system:
         return None, 0
@@ -230,7 +233,11 @@ def strip_tool(tool: ToolDef) -> ToolDef:
     """
     props = tool.parameters.get("properties")
     if not isinstance(props, dict):
-        return ToolDef(name=tool.name, description=one_line(tool.description), parameters=tool.parameters)
+        return ToolDef(
+            name=tool.name,
+            description=one_line(tool.description),
+            parameters=tool.parameters,
+        )
 
     slim: dict[str, Any] = {}
     for name, schema in props.items():
@@ -246,7 +253,9 @@ def strip_tool(tool: ToolDef) -> ToolDef:
     req = tool.parameters.get("required")
     if isinstance(req, list) and req:
         params["required"] = req
-    return ToolDef(name=tool.name, description=one_line(tool.description), parameters=params)
+    return ToolDef(
+        name=tool.name, description=one_line(tool.description), parameters=params
+    )
 
 
 # --- the pipeline stage -----------------------------------------------------
@@ -279,7 +288,7 @@ class Compactor:
     # The most recent `history_limit` results, for the M1 gate report and the diff
     # view. A deque so retention is enforced by the container rather than by every
     # call site remembering to trim.
-    history: "deque[CompactionResult]" = field(default_factory=deque, repr=False)
+    history: deque[CompactionResult] = field(default_factory=deque, repr=False)
     # Population counts over *every* turn, not just the retained window: a median
     # taken from 256 samples out of 10k turns is fine, but reporting n=256 would
     # understate the evidence behind the gate.
@@ -358,7 +367,9 @@ class Compactor:
             )
             return req, result
 
-        tools = tuple(strip_tool(t) for t in req.tools) if self.strip_schemas else req.tools
+        tools = (
+            tuple(strip_tool(t) for t in req.tools) if self.strip_schemas else req.tools
+        )
         compacted_tokens = self._tokens_for(tmpl.replacement, tools)
         stale = score < tmpl.stale_below_ratio * len(tmpl.markers)
 
@@ -401,7 +412,11 @@ class Compactor:
         for t in tools:
             n += self.count_tokens(
                 json.dumps(
-                    {"name": t.name, "description": t.description, "parameters": t.parameters},
+                    {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                    },
                     sort_keys=True,
                 )
             )

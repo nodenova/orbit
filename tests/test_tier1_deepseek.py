@@ -55,8 +55,12 @@ def _endpoint(handler, *, model: str = DEEPSEEK, **kw):
     return backend, original
 
 
-def _answering(body: str = RERANK_BODY, *, message_extra: dict | None = None,
-               usage: dict | None = None):
+def _answering(
+    body: str = RERANK_BODY,
+    *,
+    message_extra: dict | None = None,
+    usage: dict | None = None,
+):
     seen: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -151,9 +155,12 @@ def test_the_clamp_and_the_schema_still_ride_along_on_deepseek():
 
     assert payload["max_tokens"] == 128
     assert payload["temperature"] == 0.0
-    assert payload["response_format"]["json_schema"]["schema"]["properties"]["choice"][
-        "maximum"
-    ] == 2
+    assert (
+        payload["response_format"]["json_schema"]["schema"]["properties"]["choice"][
+            "maximum"
+        ]
+        == 2
+    )
 
 
 def test_an_explicit_dialect_overrides_a_name_the_guess_misses():

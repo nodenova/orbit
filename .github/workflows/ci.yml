@@ -20,6 +20,69 @@ env:
   PYTHON_VERSION: "3.14"
 
 jobs:
+  # Ruff is a static binary and reads `target-version = "py311"` from pyproject, so
+  # its answer does not depend on the interpreter it runs under. One job, not a
+  # matrix entry — and first in the file because it is the one that finishes in
+  # seconds and explains the most failures.
+  lint:
+    name: ruff (lint and format)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # `.[dev]` rather than the bare tool: the floor and ceiling on ruff live in
+      # pyproject, and `required-version` under [tool.ruff] makes a mismatch an
+      # error. Installing `ruff` unpinned here would defeat both.
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      - name: Lint
+        run: ruff check --output-format github
+
+      # Separate step, so "code needs reformatting" and "code has a defect" are two
+      # different red X's rather than one.
+      - name: Format
+        run: ruff format --check --diff
+
+  types:
+    name: mypy (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Matrixed for the same reason the tests are, and for one more: the mypy
+        # config deliberately sets no `python_version`, so each entry type-checks
+        # against the semantics of the interpreter it runs under. A single job would
+        # leave one end of `requires-python` unchecked.
+        python-version: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # [constrain] so lm-format-enforcer resolves; the [mlx] extra is
+      # Apple-Silicon-only and is pinned to `follow_imports = "skip"` in pyproject
+      # precisely so this job and a workstation agree.
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev,constrain]'
+
+      - name: Types
+        run: mypy
+
   test:
     name: tests (py${{ matrix.python-version }})
     runs-on: ubuntu-latest

@@ -16,21 +16,35 @@ import importlib.util
 from pathlib import Path
 from typing import Any
 
-from ..config import Config
-from ..offline import is_loopback_endpoint
-from .base import Backend, BackendUnavailable, Delta, render_default
-from .mock import Fault, MockBackend
-from .remote_tier1 import RUNG as REMOTE_RUNG
-from .remote_tier1 import RemoteConsentMissing, RemoteTier1Backend, check_consent
-from .resident_swap import RUNG as RESIDENT_SWAP_RUNG
-from .resident_swap import Occupant, ResidencySwitch, ResidentSwapBackend, SwapGuard
-from .second_opinion import RUNG as SECOND_OPINION_RUNG
-from .second_opinion import SecondOpinionBackend
+from tandem.backends.base import Backend, BackendUnavailable, Delta, render_default
+from tandem.backends.mock import Fault, MockBackend
+from tandem.backends.remote_tier1 import RUNG as REMOTE_RUNG
+from tandem.backends.remote_tier1 import (
+    RemoteConsentMissing,
+    RemoteTier1Backend,
+    check_consent,
+)
+from tandem.backends.resident_swap import RUNG as RESIDENT_SWAP_RUNG
+from tandem.backends.resident_swap import (
+    Occupant,
+    ResidencySwitch,
+    ResidentSwapBackend,
+    SwapGuard,
+)
+from tandem.backends.second_opinion import RUNG as SECOND_OPINION_RUNG
+from tandem.backends.second_opinion import SecondOpinionBackend
+from tandem.config import Config
+from tandem.offline import is_loopback_endpoint
 
 STREAMED_RUNG = "streamed"
 RUNGS = (STREAMED_RUNG, RESIDENT_SWAP_RUNG, SECOND_OPINION_RUNG, REMOTE_RUNG)
 
 __all__ = [
+    "REMOTE_RUNG",
+    "RESIDENT_SWAP_RUNG",
+    "RUNGS",
+    "SECOND_OPINION_RUNG",
+    "STREAMED_RUNG",
     "Backend",
     "BackendUnavailable",
     "Delta",
@@ -43,14 +57,9 @@ __all__ = [
     "ResidentSwapBackend",
     "SecondOpinionBackend",
     "SwapGuard",
-    "REMOTE_RUNG",
-    "RESIDENT_SWAP_RUNG",
-    "SECOND_OPINION_RUNG",
-    "STREAMED_RUNG",
-    "RUNGS",
-    "render_default",
     "build_tier0",
     "build_tier1",
+    "render_default",
 ]
 
 
@@ -58,7 +67,7 @@ def build_tier0(cfg: Config) -> Backend:
     if cfg.backend == "mock":
         return MockBackend(adapters=_mock_adapter_names(cfg))
     if cfg.backend == "mlx":
-        from .mlx_tier0 import MLXTier0Backend
+        from tandem.backends.mlx_tier0 import MLXTier0Backend
 
         return MLXTier0Backend(
             cfg.tier0.container_path or cfg.tier0.model,
@@ -101,8 +110,10 @@ def build_tier1(cfg: Config, tier0: Backend | None = None) -> Backend | None:
 
     _require_loopback_endpoint(cfg)
     if cfg.backend == "mock":
-        return MockBackend(name="mock-tier1", tier=1, container="mock-tier1-container-v1")
-    from .mlx_tier1 import OptiqTier1Backend
+        return MockBackend(
+            name="mock-tier1", tier=1, container="mock-tier1-container-v1"
+        )
+    from tandem.backends.mlx_tier1 import OptiqTier1Backend
 
     return OptiqTier1Backend(
         cfg.tier1.endpoint,

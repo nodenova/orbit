@@ -27,14 +27,16 @@ which is the thing that actually proves it.
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, cast
 
-from ..attest.hashing import hash_artefact
-from ..types import GenRequest, GenResult, StopReason, Usage
-from .base import Backend, BackendUnavailable, Delta, ToolCallRenderer
+from tandem.attest.hashing import hash_artefact
+from tandem.backends.base import Backend, BackendUnavailable, Delta, ToolCallRenderer
+from tandem.types import GenRequest, GenResult, StopReason, Usage
 
 # The active adapter for the current request. Default None = base model.
 ACTIVE_ADAPTER: contextvars.ContextVar[str | None] = contextvars.ContextVar(
@@ -45,7 +47,7 @@ ACTIVE_ADAPTER: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 def _require_mlx() -> tuple[Any, Any]:
     try:
         import mlx.core as mx
-        import mlx.nn as nn
+        from mlx import nn
     except ImportError as exc:  # pragma: no cover - platform dependent
         raise BackendUnavailable(
             "MLX is not available on this machine. Tier 0 requires Apple Silicon "
@@ -75,7 +77,7 @@ def build_multi_adapter_linear(base_cls: Any, mx: Any, nn: Any) -> Any:
     Built lazily so this module imports on a machine with no MLX.
     """
 
-    class MultiAdapterLinear(nn.Module):
+    class MultiAdapterLinear(nn.Module):  # type: ignore[misc]
         """A frozen base Linear plus N resident LoRA deltas, selected per request."""
 
         def __init__(self, base: Any):
@@ -130,10 +132,24 @@ def build_logits_processor(token_filter: Any, mx: Any) -> Any:
       vocabulary; the model's output dimension is often padded to a different one.
       Scattering an out-of-range id writes outside the row.
 
-    Measured on this host at a 248k vocabulary: ~0.34 ms per token, against a ~14 ms
-    decode step. The obvious optimisation — caching the mask, since LMFE hands back
-    the same allowed-set object for a repeated parser state — is not worth keying a
-    cache on object identity for 0.3 ms.
+    **There is deliberately no mask cache here, and it was tried.** Profiled over a
+    real tool call against the 248k vocabulary the per-token split is: LMFE 3.30 ms,
+    building the id list 1.77 ms, `mx.array` 0.34 ms, scatter 0.59 ms. The middle
+    terms look cacheable — three consecutive steps inside a JSON string share one
+    parser state, so LMFE hands back the same list object and each rebuild costs
+    ~11 ms. Caching on `id()` (pinning the list so the address cannot be recycled)
+    measured **27.1 tok/s against 27.6 without**, i.e. nothing: on a 20-33 token
+    call those steps are ~3% of the work. It bought an identity-keyed cache and a
+    lifetime hazard for noise, so it is not here. Re-measure before adding it back;
+    a call with a long string argument is where it would finally pay.
+
+    The cost that does matter is not in this function. Constrained turns run at
+    ~27 tok/s against ~65 unconstrained, and only ~6 ms of that 21 ms/token gap is
+    above — the rest is the sync `tokens.tolist()` forces, which serialises the
+    decode loop MLX otherwise pipelines. That sync is not removable: the mask
+    depends on the token just sampled, so any Python-side constrained decode pays
+    it. 2.4x on tool-bearing turns only, against turns that previously emitted
+    prose 62% of the time, is the trade this makes.
     """
 
     def processor(tokens: Any, logits: Any) -> Any:
@@ -167,7 +183,7 @@ class MLXTier0Backend(Backend):
     ):
         self.mx, self.nn = _require_mlx()
         try:
-            from mlx_lm import load  # type: ignore
+            from mlx_lm import load
         except ImportError as exc:  # pragma: no cover
             raise BackendUnavailable("mlx-lm is required for tier 0") from exc
 
@@ -215,10 +231,8 @@ class MLXTier0Backend(Backend):
         self._constrain_vocab_failed = False
         for spec in self._adapters.values():
             spec.weights = {}
-        try:
+        with contextlib.suppress(AttributeError):  # pragma: no cover - older mlx
             self.mx.clear_cache()
-        except AttributeError:  # pragma: no cover - older mlx
-            pass
 
     async def load(self) -> None:
         """Re-admit the weights, with the same identity they had before.
@@ -231,7 +245,7 @@ class MLXTier0Backend(Backend):
         """
         if self.model is not None:
             return
-        from mlx_lm import load  # type: ignore
+        from mlx_lm import load
 
         self.model, self.tokenizer = load(self.model_path)
         self._wrap_targets()
@@ -318,10 +332,8 @@ class MLXTier0Backend(Backend):
         return False
 
     def _wire_base(self) -> None:
-        try:
+        with contextlib.suppress(Exception):  # pragma: no cover - best effort
             self.mx.eval(self.model.parameters())
-        except Exception:  # pragma: no cover - best effort
-            pass
 
     # --- attestation --------------------------------------------------------
 
@@ -363,7 +375,8 @@ class MLXTier0Backend(Backend):
             msgs.append({"role": "system", "content": req.system})
         for m in req.messages:
             blocks = [
-                render_tool_call(c) if render_tool_call is not None
+                render_tool_call(c)
+                if render_tool_call is not None
                 else f"{c.name}\n{c.arguments_json()}"
                 for c in m.tool_calls
             ]
@@ -381,14 +394,21 @@ class MLXTier0Backend(Backend):
                         "tool_call_id": res.tool_call_id,
                     }
                 )
-        tools = (
-            [{"type": "function", "function": {"name": t.name, "description": t.description,
-                                               "parameters": t.parameters}} for t in req.tools]
-            or None
-        )
-        return self.tokenizer.apply_chat_template(
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.parameters,
+                },
+            }
+            for t in req.tools
+        ] or None
+        rendered = self.tokenizer.apply_chat_template(
             msgs, tokenize=False, add_generation_prompt=True, tools=tools
         )
+        return cast(str, rendered)
 
     def count_tokens(self, text: str) -> int:
         return len(self.tokenizer.encode(text))
@@ -423,7 +443,7 @@ class MLXTier0Backend(Backend):
         """
         if req.json_schema is None or self._constrain_vocab_failed:
             return []
-        from ..gateway.toolcall.constrain import Constrainer
+        from tandem.gateway.toolcall.constrain import Constrainer
 
         constrainer = Constrainer()
         if self._constrain_vocab is None:
@@ -440,8 +460,8 @@ class MLXTier0Backend(Backend):
         return [build_logits_processor(token_filter, self.mx)]
 
     async def stream(self, req: GenRequest) -> AsyncIterator[Delta]:
-        from mlx_lm import stream_generate  # type: ignore
-        from mlx_lm.sample_utils import make_sampler  # type: ignore
+        from mlx_lm import stream_generate
+        from mlx_lm.sample_utils import make_sampler
 
         token = ACTIVE_ADAPTER.set(req.adapter)
         try:
@@ -489,8 +509,15 @@ class MLXTier0Backend(Backend):
 
 # --- helpers ----------------------------------------------------------------
 
-_ALWAYS_TARGETS = ("q_proj", "k_proj", "v_proj", "o_proj", "gate", "router",
-                   "shared_expert")
+_ALWAYS_TARGETS = (
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate",
+    "router",
+    "shared_expert",
+)
 
 
 def _is_target(key: str) -> bool:
@@ -503,12 +530,17 @@ def _is_target(key: str) -> bool:
     tail = key.rsplit(".", 1)[-1]
     if tail in ("q_proj", "k_proj", "v_proj", "o_proj"):
         return True
-    if any(t in key for t in ("router", "shared_expert", "gate_proj", "up_proj", "down_proj")):
-        return True
-    return False
+    return bool(
+        any(
+            t in key
+            for t in ("router", "shared_expert", "gate_proj", "up_proj", "down_proj")
+        )
+    )
 
 
-def _walk_linears(root: Any, nn: Any, prefix: str = ""):
+def _walk_linears(
+    root: Any, nn: Any, prefix: str = ""
+) -> Iterator[tuple[str, Any, str, Any]]:
     """Yield (dotted_key, parent_module, attr_name, linear) for every Linear."""
     children = getattr(root, "children", None)
     items = children().items() if callable(children) else []

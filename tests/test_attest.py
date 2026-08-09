@@ -37,18 +37,18 @@ from tandem.types import Sampling
 
 
 def _record(i: int, **kw) -> AuditRecord:
-    base = dict(
-        request_id=f"r{i}",
-        ts=float(i),
-        harness="claude_code",
-        tier0_hash="t0",
-        adapter_hash="a1",
-        tier1_hash=None,
-        prompt_sha256="p" * 64,
-        output_sha256="o" * 64,
-        tools_invoked=("read_file",),
-        escalated=False,
-    )
+    base = {
+        "request_id": f"r{i}",
+        "ts": float(i),
+        "harness": "claude_code",
+        "tier0_hash": "t0",
+        "adapter_hash": "a1",
+        "tier1_hash": None,
+        "prompt_sha256": "p" * 64,
+        "output_sha256": "o" * 64,
+        "tools_invoked": ("read_file",),
+        "escalated": False,
+    }
     base.update(kw)
     return AuditRecord(**base)
 
@@ -184,8 +184,16 @@ def test_audit_log_records_the_named_tuple(tmp_path):
     log.append(_record(0))
     row = json.loads((tmp_path / "a.jsonl").read_text().strip())
     for field in (
-        "request_id", "ts", "harness", "tier0_hash", "adapter_hash", "tier1_hash",
-        "prompt_sha256", "output_sha256", "tools_invoked", "escalated",
+        "request_id",
+        "ts",
+        "harness",
+        "tier0_hash",
+        "adapter_hash",
+        "tier1_hash",
+        "prompt_sha256",
+        "output_sha256",
+        "tools_invoked",
+        "escalated",
     ):
         assert field in row
 
@@ -298,7 +306,7 @@ def test_a_matching_anchor_verifies(tmp_path):
 
 
 def test_a_missing_log_does_not_verify(tmp_path):
-    """"No evidence" must not read as "verified" for a compliance artefact."""
+    """ "No evidence" must not read as "verified" for a compliance artefact."""
     missing = tmp_path / "nothing.jsonl"
     ok, reason = verify_chain(missing)
     assert not ok
@@ -335,7 +343,8 @@ def test_sequence_numbers_are_inside_the_hashed_payload(tmp_path):
 
     rows[1]["seq"] = 7  # renumbering is arithmetic, and caught as such
     path.write_text(
-        "\n".join(json.dumps(r, sort_keys=True, separators=(",", ":")) for r in rows) + "\n"
+        "\n".join(json.dumps(r, sort_keys=True, separators=(",", ":")) for r in rows)
+        + "\n"
     )
     ok, reason = verify_chain(path)
     assert not ok
@@ -355,8 +364,12 @@ def test_a_log_without_sequence_numbers_is_named_not_accepted(tmp_path):
     body = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     link = hashlib.sha256(f"{GENESIS}\n{body}".encode()).hexdigest()
     path.write_text(
-        json.dumps({**payload, "prev": GENESIS, "link": link}, sort_keys=True,
-                   separators=(",", ":")) + "\n"
+        json.dumps(
+            {**payload, "prev": GENESIS, "link": link},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
     )
     ok, reason = verify_chain(path)
     assert not ok
@@ -458,7 +471,9 @@ def test_the_determinism_fields_stay_optional(tmp_path):
 
 def test_receipt_has_the_spec_shape():
     receipt = Receipt(
-        tier0=Tier0Attestation(container_blake3="c0", adapter_blake3="a0", profile_blake3="p0"),
+        tier0=Tier0Attestation(
+            container_blake3="c0", adapter_blake3="a0", profile_blake3="p0"
+        ),
         tier1=Tier1Attestation(container_blake3="c1", invoked=True, call="rerank"),
         compaction_template="cc-2026.08@v3",
         sampling=Sampling(temperature=0.2, top_p=1.0, seed=7),
@@ -523,7 +538,7 @@ def test_engine_commit_never_attests_an_unrelated_repo(monkeypatch, tmp_path):
         raise AssertionError("git must not run outside this package's checkout")
 
     monkeypatch.setattr(receipt_mod, "__file__", str(installed))
-    monkeypatch.setattr(receipt_mod.subprocess, "run", _no_git)
+    monkeypatch.setattr("tandem.attest.receipt.subprocess.run", _no_git)
     monkeypatch.delenv("TANDEM_ENGINE_COMMIT", raising=False)
     engine_commit.cache_clear()
     assert engine_commit() == "unknown"
@@ -557,7 +572,9 @@ def test_provenance_round_trips(tmp_path):
 def test_source_kind_has_no_member_for_model_distillation():
     """Sec 9.4: never train on another model's outputs. Enforced, not remembered."""
     assert {k.value for k in SourceKind} == {
-        "customer_repo", "permissive_corpus", "synthetic_harness"
+        "customer_repo",
+        "permissive_corpus",
+        "synthetic_harness",
     }
     with pytest.raises(ValueError):
         SourceKind("frontier_model_traces")
@@ -565,8 +582,10 @@ def test_source_kind_has_no_member_for_model_distillation():
 
 def test_provenance_refuses_an_unattested_corpus():
     record = ProvenanceRecord(
-        adapter_name="x", source_kind=SourceKind.CUSTOMER_REPO,
-        source_repo="/r", base_model_hash="b",
+        adapter_name="x",
+        source_kind=SourceKind.CUSTOMER_REPO,
+        source_repo="/r",
+        base_model_hash="b",
     )
     with pytest.raises(ProvenanceError, match="corpus_hash"):
         record.as_dict()
@@ -574,8 +593,10 @@ def test_provenance_refuses_an_unattested_corpus():
 
 def test_provenance_refuses_a_string_source_kind():
     record = ProvenanceRecord(
-        adapter_name="x", source_kind="frontier_traces",  # type: ignore[arg-type]
-        corpus_hash="c", base_model_hash="b",
+        adapter_name="x",
+        source_kind="frontier_traces",
+        corpus_hash="c",
+        base_model_hash="b",
     )
     with pytest.raises(ProvenanceError, match="not a permitted source"):
         record.as_dict()

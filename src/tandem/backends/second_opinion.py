@@ -6,7 +6,8 @@
 The cheapest rung and the only one that needs no second model, no swap and no
 network. It runs on any machine that can run tier 0 at all, which makes it the
 rung that is actually available during M0–M3 — before the 122B container exists,
-and on any customer box that turns out not to fit both tiers in 64 GB.
+and on any box that turns out not to fit both tiers at once. That includes the
+baseline host, where it is the rung `tandem.toml` ships (`docs/BASELINE.md`).
 
 **The adapter strip is the whole mechanism.** A1 is trained on the repository's own
 merged diffs, so it has learned that repository's habits — including the bad ones,
@@ -24,10 +25,11 @@ which one served every verdict so a receipt never implies otherwise.
 
 from __future__ import annotations
 
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
-from ..types import GenRequest, GenResult
-from .base import Backend, Delta, ToolCallRenderer
+from tandem.backends.base import Backend, Delta, ToolCallRenderer
+from tandem.types import GenRequest, GenResult
 
 RUNG = "second_opinion"
 

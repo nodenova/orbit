@@ -1,6 +1,6 @@
 """Attestation (spec sec 9): hashes, receipts, audit log, provenance."""
 
-from .audit import (
+from tandem.attest.audit import (
     AuditLog,
     AuditRecord,
     ChainTip,
@@ -8,7 +8,7 @@ from .audit import (
     sha256_text,
     verify_chain,
 )
-from .hashing import (
+from tandem.attest.hashing import (
     PROVENANCE_FILENAME,
     hash_artefact,
     hash_bytes,
@@ -17,37 +17,43 @@ from .hashing import (
     hash_tree,
     short,
 )
-from .provenance import (
+from tandem.attest.provenance import (
     ProvenanceError,
     ProvenanceRecord,
     SourceKind,
     corpus_hash_for,
     redact_source_repo,
 )
-from .receipt import REDUCTION_ORDER, Receipt, Tier0Attestation, Tier1Attestation, engine_commit
+from tandem.attest.receipt import (
+    REDUCTION_ORDER,
+    Receipt,
+    Tier0Attestation,
+    Tier1Attestation,
+    engine_commit,
+)
 
 __all__ = [
+    "PROVENANCE_FILENAME",
+    "REDUCTION_ORDER",
     "AuditLog",
     "AuditRecord",
     "ChainTip",
-    "receipt_fields",
-    "sha256_text",
-    "verify_chain",
-    "PROVENANCE_FILENAME",
+    "ProvenanceError",
+    "ProvenanceRecord",
+    "Receipt",
+    "SourceKind",
+    "Tier0Attestation",
+    "Tier1Attestation",
+    "corpus_hash_for",
+    "engine_commit",
     "hash_artefact",
     "hash_bytes",
     "hash_file",
     "hash_text",
     "hash_tree",
-    "short",
-    "ProvenanceError",
-    "ProvenanceRecord",
-    "SourceKind",
-    "corpus_hash_for",
+    "receipt_fields",
     "redact_source_repo",
-    "REDUCTION_ORDER",
-    "Receipt",
-    "Tier0Attestation",
-    "Tier1Attestation",
-    "engine_commit",
+    "sha256_text",
+    "short",
+    "verify_chain",
 ]

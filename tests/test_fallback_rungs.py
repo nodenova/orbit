@@ -51,7 +51,8 @@ from tandem.tier1.verifier import Candidate, Tier1Verifier
 from tandem.types import GenRequest, Message, Role, Sampling, ToolDef
 
 EDIT = ToolDef(
-    name="edit_file", parameters={"type": "object", "properties": {"p": {"type": "string"}}}
+    name="edit_file",
+    parameters={"type": "object", "properties": {"p": {"type": "string"}}},
 )
 
 
@@ -70,7 +71,9 @@ def _cfg(tmp_path, rung: str) -> Config:
 class Occ:
     """A model that can leave memory and come back, and remembers whether it has."""
 
-    def __init__(self, name: str, *, resident: bool = False, fail_on_load: bool = False):
+    def __init__(
+        self, name: str, *, resident: bool = False, fail_on_load: bool = False
+    ):
         self.name = name
         self.resident = resident
         self.fail_on_load = fail_on_load
@@ -98,7 +101,7 @@ def _switch(**kw) -> tuple[ResidencySwitch, Occ, Occ]:
 
 @pytest.mark.asyncio
 async def test_admitting_one_model_evicts_the_other():
-    """The rung in one line: 64 GB does not fit both."""
+    """The rung in one line: unified memory does not fit both."""
     switch, tier0, tier1 = _switch()
     async with switch.hold(TIER1):
         assert switch.resident == TIER1
@@ -240,7 +243,9 @@ async def test_the_budget_guard_does_not_fire_before_it_has_a_measurement():
     """Declining on a guess would disable verification for a cost nobody observed."""
     switch, _t0, _t1 = _switch()
     backend = ResidentSwapBackend(MockBackend(tier=1), switch, budget_s=0.001)
-    result = await backend.generate(GenRequest(messages=[Message(role=Role.USER, content="x")]))
+    result = await backend.generate(
+        GenRequest(messages=[Message(role=Role.USER, content="x")])
+    )
     assert result.text
     assert switch.stats.declined == 0
 
@@ -254,7 +259,9 @@ async def test_an_over_budget_swap_declines_and_degrades_to_a_failed_verdict():
     switch.stats.record(TIER0, 11.0)
 
     with pytest.raises(SwapBudgetExceeded):
-        await backend.generate(GenRequest(messages=[Message(role=Role.USER, content="x")]))
+        await backend.generate(
+            GenRequest(messages=[Message(role=Role.USER, content="x")])
+        )
 
     # The ladder's contract: the turn survives it.
     verdict = await Tier1Verifier(backend).rerank(
@@ -271,7 +278,9 @@ async def test_a_zero_budget_never_declines():
     backend = ResidentSwapBackend(MockBackend(tier=1), switch, budget_s=0.0)
     switch.stats.record(TIER1, 999.0)
     switch.stats.record(TIER0, 999.0)
-    assert await backend.generate(GenRequest(messages=[Message(role=Role.USER, content="x")]))
+    assert await backend.generate(
+        GenRequest(messages=[Message(role=Role.USER, content="x")])
+    )
 
 
 @pytest.mark.asyncio
@@ -316,7 +325,10 @@ async def test_the_receipt_names_rung_2(tmp_path):
     tier0 = build_tier0(cfg)
     pipeline = Pipeline(cfg, tier0, build_tier1(cfg, tier0))
     result, _trace = await pipeline.run(
-        GenRequest(messages=[Message(role=Role.USER, content="Fix the retry loop")], tools=(EDIT,))
+        GenRequest(
+            messages=[Message(role=Role.USER, content="Fix the retry loop")],
+            tools=(EDIT,),
+        )
     )
     assert result.receipt["tier1"]["rung"] == RESIDENT_SWAP_RUNG
 
@@ -342,7 +354,9 @@ async def test_the_guard_holds_residency_for_the_whole_stream(tmp_path):
     switch, _t0, _t1 = _switch()
     guard = SwapGuard(MockBackend(use_tools=False), switch)
     seen: list[str] = []
-    async for delta in guard.stream(GenRequest(messages=[Message(role=Role.USER, content="hi")])):
+    async for delta in guard.stream(
+        GenRequest(messages=[Message(role=Role.USER, content="hi")])
+    ):
         seen.append(switch.resident or "none")
     assert seen and set(seen) == {TIER0}
 
@@ -463,7 +477,7 @@ def test_a_missing_transport_file_names_the_one_that_ships(tmp_path):
     cfg.tier1.remote_endpoint = "https://api.example.com/v1"
     cfg.tier1.remote_consent = CONSENT
     cfg.tier1.remote_transport = str(tmp_path / "nope.py")
-    with pytest.raises(ValueError, match="tools/remote_tier1.py"):
+    with pytest.raises(ValueError, match=r"tools/remote_tier1\.py"):
         build_tier1(cfg, build_tier0(cfg))
 
 
@@ -485,14 +499,18 @@ def _canned(body: dict) -> RemoteTier1Backend:
     async def transport(_payload):
         return body
 
-    return RemoteTier1Backend(transport, model="remote-m", endpoint_label="api.example.com")
+    return RemoteTier1Backend(
+        transport, model="remote-m", endpoint_label="api.example.com"
+    )
 
 
 @pytest.mark.asyncio
 async def test_a_remote_verdict_has_no_container_attestation():
     """None by construction, not by omission: you cannot attest to a model you do
     not hold. The rung in the receipt is what says the null is a property."""
-    backend = _canned({"choices": [{"message": {"content": '{"choice":1,"reason":"r"}'}}]})
+    backend = _canned(
+        {"choices": [{"message": {"content": '{"choice":1,"reason":"r"}'}}]}
+    )
     assert backend.container_hash() is None
     assert backend.adapter_hash("a1") is None
     assert backend.mounted_adapters() == ()
@@ -503,11 +521,14 @@ async def test_a_remote_verdict_has_no_container_attestation():
 async def test_a_remote_verdict_is_validated_on_this_side_of_the_boundary():
     """'The endpoint supports constrained decoding' is a claim about a machine we do
     not control and cannot check (sec 5.2)."""
-    backend = _canned({"choices": [{"message": {"content": '{"reason":"no choice field"}'}}]})
+    backend = _canned(
+        {"choices": [{"message": {"content": '{"reason":"no choice field"}'}}]}
+    )
     with pytest.raises(Tier1Unavailable, match="missing required fields"):
         await backend.generate(
             GenRequest(
-                messages=[Message(role=Role.USER, content="x")], json_schema=rerank_schema(2)
+                messages=[Message(role=Role.USER, content="x")],
+                json_schema=rerank_schema(2),
             )
         )
 
@@ -535,7 +556,7 @@ async def test_a_transport_that_returns_nonsense_is_rejected():
 
 
 def test_the_backend_holds_no_transport_of_its_own():
-    with pytest.raises(ValueError, match="tools/remote_tier1.py"):
+    with pytest.raises(ValueError, match=r"tools/remote_tier1\.py"):
         RemoteTier1Backend(None, model="m")
 
 
@@ -677,5 +698,5 @@ def test_every_rung_is_reachable_by_name(tmp_path, monkeypatch):
 
 def test_an_unknown_rung_lists_the_ones_that_exist(tmp_path):
     cfg = _cfg(tmp_path, "rung_five")
-    with pytest.raises(ValueError, match="unknown tier1.rung"):
+    with pytest.raises(ValueError, match=r"unknown tier1\.rung"):
         build_tier1(cfg, build_tier0(cfg))

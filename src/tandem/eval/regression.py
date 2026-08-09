@@ -24,13 +24,14 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any
 
-from ..backends.base import Backend
-from ..types import GenRequest, Message, Role, Sampling
-from .regression_items import SUITE, Item
+from tandem.backends.base import Backend
+from tandem.eval.regression_items import SUITE, Item
+from tandem.types import GenRequest, Message, Role, Sampling
 
 _NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
 _WORD_SPLIT = re.compile(r"[^a-z0-9_.@\-]+")
@@ -135,7 +136,10 @@ class Baseline:
     def write(self, path: str | Path) -> Path:
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(self.as_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        p.write_text(
+            json.dumps(self.as_dict(), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
         return p
 
     @classmethod
@@ -207,7 +211,9 @@ class RegressionReport:
             return f"no change across {self.unchanged} items"
         parts = []
         if self.regressions:
-            parts.append(f"{len(self.regressions)} regressed: {', '.join(self.regressions[:8])}")
+            parts.append(
+                f"{len(self.regressions)} regressed: {', '.join(self.regressions[:8])}"
+            )
         if self.fixes:
             parts.append(f"{len(self.fixes)} fixed")
         return "; ".join(parts)
@@ -230,18 +236,24 @@ async def run(
             req = GenRequest(
                 messages=[Message(role=Role.USER, content=item.prompt)],
                 adapter=adapter,
-                sampling=Sampling(temperature=0.0, top_p=1.0, seed=0, max_tokens=max_tokens),
+                sampling=Sampling(
+                    temperature=0.0, top_p=1.0, seed=0, max_tokens=max_tokens
+                ),
             )
             try:
                 result = await backend.generate(req)
             except Exception:  # noqa: BLE001 - one bad item must not void the run
                 return ItemResult(item.id, item.category, False, "")
-            return ItemResult(item.id, item.category, grade(item, result.text), result.text)
+            return ItemResult(
+                item.id, item.category, grade(item, result.text), result.text
+            )
 
     return list(await asyncio.gather(*(one(item) for item in items)))
 
 
-def compare(results: Sequence[ItemResult], baseline: Baseline | None) -> RegressionReport:
+def compare(
+    results: Sequence[ItemResult], baseline: Baseline | None
+) -> RegressionReport:
     """Diff this run against the baseline.
 
     With no baseline there is nothing to report — that is not a failure, it is the
@@ -282,7 +294,9 @@ def compare(results: Sequence[ItemResult], baseline: Baseline | None) -> Regress
     return report
 
 
-def check_comparable(baseline: Baseline | None, container_hash: str | None, adapter: str | None) -> str:
+def check_comparable(
+    baseline: Baseline | None, container_hash: str | None, adapter: str | None
+) -> str:
     """Is this baseline about the same model?
 
     A baseline from a different container or adapter is not a baseline for this one.

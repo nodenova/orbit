@@ -108,7 +108,9 @@ def test_tool_calls_survive_each_protocol(client):
     r = client.post(
         "/v1/messages",
         json={
-            "model": "t", "max_tokens": 64, "tools": [tool_a],
+            "model": "t",
+            "max_tokens": 64,
+            "tools": [tool_a],
             "messages": [{"role": "user", "content": "read a file"}],
         },
     )
@@ -120,7 +122,12 @@ def test_tool_calls_survive_each_protocol(client):
         json={
             "model": "t",
             "messages": [{"role": "user", "content": "read a file"}],
-            "tools": [{"type": "function", "function": {"name": "read_file", "parameters": SCHEMA}}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {"name": "read_file", "parameters": SCHEMA},
+                }
+            ],
         },
     )
     calls = r.json()["choices"][0]["message"]["tool_calls"]
@@ -131,7 +138,8 @@ def test_tool_calls_survive_each_protocol(client):
     r = client.post(
         "/v1/responses",
         json={
-            "model": "t", "input": "read a file",
+            "model": "t",
+            "input": "read a file",
             "tools": [{"type": "function", "name": "read_file", "parameters": SCHEMA}],
         },
     )
@@ -144,10 +152,27 @@ def test_tool_results_round_trip_from_each_protocol():
     a = anthropic.to_canonical(
         {
             "messages": [
-                {"role": "assistant", "content": [
-                    {"type": "tool_use", "id": "t1", "name": "read_file", "input": {"path": "a"}}]},
-                {"role": "user", "content": [
-                    {"type": "tool_result", "tool_use_id": "t1", "content": "file body"}]},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "t1",
+                            "name": "read_file",
+                            "input": {"path": "a"},
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "t1",
+                            "content": "file body",
+                        }
+                    ],
+                },
             ]
         }
     )
@@ -158,9 +183,19 @@ def test_tool_results_round_trip_from_each_protocol():
     c = openai_chat.to_canonical(
         {
             "messages": [
-                {"role": "assistant", "tool_calls": [
-                    {"id": "t1", "type": "function",
-                     "function": {"name": "read_file", "arguments": '{"path": "a"}'}}]},
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "t1",
+                            "type": "function",
+                            "function": {
+                                "name": "read_file",
+                                "arguments": '{"path": "a"}',
+                            },
+                        }
+                    ],
+                },
                 {"role": "tool", "tool_call_id": "t1", "content": "file body"},
             ]
         }
@@ -171,9 +206,17 @@ def test_tool_results_round_trip_from_each_protocol():
     o = openai_responses.to_canonical(
         {
             "input": [
-                {"type": "function_call", "call_id": "t1", "name": "read_file",
-                 "arguments": '{"path": "a"}'},
-                {"type": "function_call_output", "call_id": "t1", "output": "file body"},
+                {
+                    "type": "function_call",
+                    "call_id": "t1",
+                    "name": "read_file",
+                    "arguments": '{"path": "a"}',
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "t1",
+                    "output": "file body",
+                },
             ]
         }
     )
@@ -202,8 +245,13 @@ def test_responses_ignores_hosted_tools():
     from tandem.gateway.wire import openai_responses
 
     req = openai_responses.to_canonical(
-        {"input": "hi", "tools": [{"type": "web_search"}, {"type": "function", "name": "ok",
-                                                          "parameters": {}}]}
+        {
+            "input": "hi",
+            "tools": [
+                {"type": "web_search"},
+                {"type": "function", "name": "ok", "parameters": {}},
+            ],
+        }
     )
     assert [t.name for t in req.tools] == ["ok"]
 
@@ -211,10 +259,20 @@ def test_responses_ignores_hosted_tools():
 @pytest.mark.parametrize(
     "path,payload,marker",
     [
-        ("/v1/messages", {"max_tokens": 32, "stream": True,
-                          "messages": [{"role": "user", "content": "hi"}]}, "message_stop"),
-        ("/v1/chat/completions", {"stream": True,
-                                  "messages": [{"role": "user", "content": "hi"}]}, "[DONE]"),
+        (
+            "/v1/messages",
+            {
+                "max_tokens": 32,
+                "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            "message_stop",
+        ),
+        (
+            "/v1/chat/completions",
+            {"stream": True, "messages": [{"role": "user", "content": "hi"}]},
+            "[DONE]",
+        ),
         ("/v1/responses", {"stream": True, "input": "hi"}, "response.completed"),
     ],
 )
@@ -228,20 +286,31 @@ def test_streaming_emits_a_terminal_event(client, path, payload, marker):
 
 
 def _events(text: str) -> list[str]:
-    return [line[len("event: ") :] for line in text.splitlines() if line.startswith("event: ")]
+    return [
+        line[len("event: ") :]
+        for line in text.splitlines()
+        if line.startswith("event: ")
+    ]
 
 
 def _data(text: str) -> list[dict]:
-    return [json.loads(line[len("data: ") :]) for line in text.splitlines()
-            if line.startswith("data: ") and line[len("data: ") :].strip() != "[DONE]"]
+    return [
+        json.loads(line[len("data: ") :])
+        for line in text.splitlines()
+        if line.startswith("data: ") and line[len("data: ") :].strip() != "[DONE]"
+    ]
 
 
 def test_a_chat_turn_streams_token_by_token(client):
     """The sec 7.3 TTFT budget is only served if deltas arrive before the turn ends."""
     r = client.post(
         "/v1/messages",
-        json={"model": "t", "max_tokens": 128, "stream": True,
-              "messages": [{"role": "user", "content": "hello there"}]},
+        json={
+            "model": "t",
+            "max_tokens": 128,
+            "stream": True,
+            "messages": [{"role": "user", "content": "hello there"}],
+        },
     )
     events = _events(r.text)
     assert events.count("content_block_delta") > 1
@@ -254,16 +323,25 @@ def test_a_chat_turn_streams_token_by_token(client):
 def test_the_streamed_text_reassembles_into_the_completion(client):
     r = client.post(
         "/v1/messages",
-        json={"model": "t", "max_tokens": 128, "stream": True,
-              "messages": [{"role": "user", "content": "hello there"}]},
+        json={
+            "model": "t",
+            "max_tokens": 128,
+            "stream": True,
+            "messages": [{"role": "user", "content": "hello there"}],
+        },
     )
     streamed = "".join(
-        d["delta"]["text"] for d in _data(r.text) if d.get("type") == "content_block_delta"
+        d["delta"]["text"]
+        for d in _data(r.text)
+        if d.get("type") == "content_block_delta"
     )
     same = client.post(
         "/v1/messages",
-        json={"model": "t", "max_tokens": 128,
-              "messages": [{"role": "user", "content": "hello there"}]},
+        json={
+            "model": "t",
+            "max_tokens": 128,
+            "messages": [{"role": "user", "content": "hello there"}],
+        },
     ).json()
     assert streamed == same["content"][0]["text"]
 
@@ -272,8 +350,13 @@ def test_message_start_carries_the_scaled_input_tokens(client):
     """A harness reads its context meter off message_start, so 0 there is a bug."""
     r = client.post(
         "/v1/messages",
-        json={"model": "t", "max_tokens": 64, "stream": True, "system": CC_SYSTEM,
-              "messages": [{"role": "user", "content": "hello"}]},
+        json={
+            "model": "t",
+            "max_tokens": 64,
+            "stream": True,
+            "system": CC_SYSTEM,
+            "messages": [{"role": "user", "content": "hello"}],
+        },
     )
     start = next(d for d in _data(r.text) if d.get("type") == "message_start")
     assert start["message"]["usage"]["input_tokens"] > 0
@@ -283,9 +366,13 @@ def test_a_tool_bearing_turn_does_not_stream_incrementally(client):
     """The tool-call layer (sec 8.5) needs the whole reply before it can repair it."""
     r = client.post(
         "/v1/messages",
-        json={"model": "t", "max_tokens": 128, "stream": True,
-              "messages": [{"role": "user", "content": "fix the retry count"}],
-              "tools": [{"name": "edit_file", "input_schema": SCHEMA}]},
+        json={
+            "model": "t",
+            "max_tokens": 128,
+            "stream": True,
+            "messages": [{"role": "user", "content": "fix the retry count"}],
+            "tools": [{"name": "edit_file", "input_schema": SCHEMA}],
+        },
     )
     assert "tool_use" in r.text
     trace = client.get("/tandem/trace/last").json()
@@ -300,7 +387,9 @@ async def test_a_code_change_turn_runs_to_completion_before_emitting(cfg):
     pipeline = Pipeline(cfg, MockBackend(use_tools=False), MockBackend(tier=1))
     # No tools, so the turn is held back for the best-of-N reason and not the
     # tool-call one.
-    req = GenRequest(messages=[Message(role=Role.USER, content="refactor the retry helper")])
+    req = GenRequest(
+        messages=[Message(role=Role.USER, content="refactor the retry helper")]
+    )
     deltas = [d async for d in pipeline.stream(req)]
     # Prologue, one whole-result delta, terminator.
     assert deltas[0].result is not None and not deltas[0].done
@@ -348,8 +437,11 @@ async def test_a_backend_that_only_emits_on_the_final_delta_still_streams(cfg):
 
 
 def test_malformed_body_is_a_400_not_a_500(client):
-    r = client.post("/v1/messages", content=b"not json",
-                    headers={"content-type": "application/json"})
+    r = client.post(
+        "/v1/messages",
+        content=b"not json",
+        headers={"content-type": "application/json"},
+    )
     assert r.status_code == 400
     assert r.json()["type"] == "error"
 
@@ -359,7 +451,10 @@ def test_api_key_is_enforced_when_set(tmp_path):
     c.attest.audit_log = str(tmp_path / "audit.jsonl")
     c.server.api_key = "secret"
     client = build_client(c)
-    assert client.post("/v1/messages", json={"messages": [], "max_tokens": 8}).status_code == 401
+    assert (
+        client.post("/v1/messages", json={"messages": [], "max_tokens": 8}).status_code
+        == 401
+    )
     ok = client.post(
         "/v1/messages",
         json={"messages": [{"role": "user", "content": "hi"}], "max_tokens": 8},
@@ -398,7 +493,10 @@ def test_every_route_requires_the_api_key_when_set(tmp_path, method, path):
     assert unauth.status_code == 401, f"{path} served an unauthenticated caller"
 
     authed = client.request(
-        method, path, json={} if method == "post" else None, headers={"x-api-key": "secret"}
+        method,
+        path,
+        json={} if method == "post" else None,
+        headers={"x-api-key": "secret"},
     )
     assert authed.status_code != 401
 
@@ -508,7 +606,9 @@ def test_count_tokens_honours_the_no_compact_escape_hatch(client):
         "messages": [{"role": "user", "content": "hi"}],
         "max_tokens": 8,
     }
-    compacted = client.post("/v1/messages/count_tokens", json=body).json()["input_tokens"]
+    compacted = client.post("/v1/messages/count_tokens", json=body).json()[
+        "input_tokens"
+    ]
     raw = client.post(
         "/v1/messages/count_tokens", json=body, headers={"x-tandem-no-compact": "1"}
     ).json()["input_tokens"]
@@ -519,13 +619,19 @@ def test_count_tokens_probes_do_not_displace_the_diff_view(client):
     """A probe is not a served turn; the sec 8.2 view must still show the request."""
     client.post(
         "/v1/messages",
-        json={"system": CC_SYSTEM, "messages": [{"role": "user", "content": "served"}],
-              "max_tokens": 8},
+        json={
+            "system": CC_SYSTEM,
+            "messages": [{"role": "user", "content": "served"}],
+            "max_tokens": 8,
+        },
     )
     for _ in range(5):
         client.post(
             "/v1/messages/count_tokens",
-            json={"system": CC_SYSTEM, "messages": [{"role": "user", "content": "probe"}]},
+            json={
+                "system": CC_SYSTEM,
+                "messages": [{"role": "user", "content": "probe"}],
+            },
         )
     assert client.get("/tandem/compaction/last").status_code == 200
 
@@ -543,7 +649,9 @@ def test_the_response_id_is_the_audited_request_id(client, cfg):
     assert records[-1]["request_id"] == response_id
 
 
-def test_a_cache_store_failure_degrades_to_a_miss_and_still_audits(client, cfg, monkeypatch):
+def test_a_cache_store_failure_degrades_to_a_miss_and_still_audits(
+    client, cfg, monkeypatch
+):
     """C3: a cache must never fail a served request or suppress its audit record."""
     from tandem.gateway.cache.prompt_cache import PromptCache
 
@@ -586,7 +694,9 @@ def test_prose_on_a_tool_turn_is_not_counted_as_a_wellformed_tool_call(cfg):
         json={
             "messages": [{"role": "user", "content": "read the file"}],
             "max_tokens": 32,
-            "tools": [{"name": "read_file", "description": "read", "input_schema": SCHEMA}],
+            "tools": [
+                {"name": "read_file", "description": "read", "input_schema": SCHEMA}
+            ],
         },
     )
     rate = pipeline.tool_call_rate()
@@ -622,8 +732,12 @@ def test_unrecognised_harness_is_left_alone():
 def test_no_compact_escape_hatch_and_diff_view(client):
     r = client.post(
         "/v1/messages",
-        json={"model": "t", "max_tokens": 32, "system": CC_SYSTEM,
-              "messages": [{"role": "user", "content": "hi"}]},
+        json={
+            "model": "t",
+            "max_tokens": 32,
+            "system": CC_SYSTEM,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
         headers={"x-tandem-no-compact": "1"},
     )
     assert r.status_code == 200
@@ -664,8 +778,11 @@ def test_realistic_prompt_is_not_flagged_stale():
 
 
 def test_tool_schemas_strip_to_name_types_and_one_line():
-    tool = ToolDef(name="read_file", description="Read a file. Then do more. " * 20,
-                   parameters=SCHEMA)
+    tool = ToolDef(
+        name="read_file",
+        description="Read a file. Then do more. " * 20,
+        parameters=SCHEMA,
+    )
     slim = strip_tool(tool)
     assert slim.name == "read_file"
     assert len(slim.description) <= 121
@@ -707,7 +824,11 @@ def test_context_scaling_off_is_identity():
 def test_scaled_usage_reaches_the_wire(client):
     r = client.post(
         "/v1/messages",
-        json={"model": "t", "max_tokens": 32, "messages": [{"role": "user", "content": "hi" * 500}]},
+        json={
+            "model": "t",
+            "max_tokens": 32,
+            "messages": [{"role": "user", "content": "hi" * 500}],
+        },
     )
     reported = r.json()["usage"]["input_tokens"]
     scaler = ContextScaler()
@@ -718,8 +839,10 @@ def test_scaled_usage_reaches_the_wire(client):
 
 
 def test_count_tokens_endpoint_is_scaled(client):
-    r = client.post("/v1/messages/count_tokens",
-                    json={"messages": [{"role": "user", "content": "hello"}]})
+    r = client.post(
+        "/v1/messages/count_tokens",
+        json={"messages": [{"role": "user", "content": "hello"}]},
+    )
     assert r.status_code == 200
     assert r.json()["input_tokens"] > 0
 
@@ -745,8 +868,10 @@ def test_chunk_digests_never_split_a_codepoint():
 def test_prompt_cache_returns_longest_prefix():
     cache = PromptCache(chunk_bytes=1024)
     turn1 = "x" * 4000
-    cache.store(align_down(turn1, 1024),
-                CacheEntry(digest="", prefix_bytes=0, n_tokens=1000, size_bytes=4096))
+    cache.store(
+        align_down(turn1, 1024),
+        CacheEntry(digest="", prefix_bytes=0, n_tokens=1000, size_bytes=4096),
+    )
     turn2 = turn1 + "y" * 500
     hit = cache.lookup(turn2)
     assert hit is not None
@@ -757,8 +882,10 @@ def test_prompt_cache_returns_longest_prefix():
 def test_prompt_cache_evicts_under_budget():
     cache = PromptCache(budget_bytes=4096, chunk_bytes=1024)
     for i in range(4):
-        cache.store(chr(97 + i) * 3000,
-                    CacheEntry(digest="", prefix_bytes=0, n_tokens=1, size_bytes=2048))
+        cache.store(
+            chr(97 + i) * 3000,
+            CacheEntry(digest="", prefix_bytes=0, n_tokens=1, size_bytes=2048),
+        )
     assert cache.size_bytes <= 4096
     assert cache.evictions > 0
 
@@ -864,7 +991,9 @@ async def test_second_turn_hits_the_prompt_cache(cfg):
     pipeline = Pipeline(cfg, MockBackend(use_tools=False))
     long_body = "def handler():\n    return 1\n\n" * 400
 
-    await pipeline.run(GenRequest(messages=[Message(role=Role.USER, content=long_body)]))
+    await pipeline.run(
+        GenRequest(messages=[Message(role=Role.USER, content=long_body)])
+    )
     await pipeline.run(
         GenRequest(
             messages=[

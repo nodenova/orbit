@@ -19,9 +19,10 @@ from __future__ import annotations
 
 import threading
 from collections import OrderedDict
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
-from ...types import Message, ToolCall
+from tandem.types import Message, ToolCall
 
 
 class ReplayMap:

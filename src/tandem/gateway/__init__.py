@@ -1,16 +1,22 @@
 """Gateway (spec sec 8)."""
 
-from .compaction import Compactor, CompactionResult, CompactionTemplate, TEMPLATES, detect
-from .context_scale import ContextScaler
-from .pipeline import Pipeline, TurnTrace
+from tandem.gateway.compaction import (
+    TEMPLATES,
+    CompactionResult,
+    CompactionTemplate,
+    Compactor,
+    detect,
+)
+from tandem.gateway.context_scale import ContextScaler
+from tandem.gateway.pipeline import Pipeline, TurnTrace
 
 __all__ = [
-    "Compactor",
+    "TEMPLATES",
     "CompactionResult",
     "CompactionTemplate",
-    "TEMPLATES",
-    "detect",
+    "Compactor",
     "ContextScaler",
     "Pipeline",
     "TurnTrace",
+    "detect",
 ]

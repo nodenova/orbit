@@ -10,11 +10,28 @@ from tandem.router.cascade import Cascade
 from tandem.router.classify import classify, previous_turn_produced_diff
 from tandem.tier1.schemas import RERANK, REVIEW
 from tandem.tier1.verifier import Candidate, Tier1Verifier
-from tandem.types import GenRequest, GenResult, Message, Role, ToolDef, ToolResult, TurnClass
+from tandem.types import (
+    GenRequest,
+    GenResult,
+    Message,
+    Role,
+    ToolDef,
+    ToolResult,
+    TurnClass,
+)
 
-EDIT = ToolDef(name="edit_file", parameters={"type": "object", "properties": {"path": {"type": "string"}}})
-READ = ToolDef(name="read_file", parameters={"type": "object", "properties": {"path": {"type": "string"}}})
-BASH = ToolDef(name="run_bash", parameters={"type": "object", "properties": {"command": {"type": "string"}}})
+EDIT = ToolDef(
+    name="edit_file",
+    parameters={"type": "object", "properties": {"path": {"type": "string"}}},
+)
+READ = ToolDef(
+    name="read_file",
+    parameters={"type": "object", "properties": {"path": {"type": "string"}}},
+)
+BASH = ToolDef(
+    name="run_bash",
+    parameters={"type": "object", "properties": {"command": {"type": "string"}}},
+)
 
 DIFF = "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-a\n+b\n"
 
@@ -29,7 +46,11 @@ DIFF = "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-a\n+b\n"
         ("Implement pagination for the list endpoint", (EDIT,), TurnClass.CODE_CHANGE),
         ("What does the parse_args function do?", (READ,), TurnClass.READ_ONLY),
         ("Explain how the retry backoff works", (READ,), TurnClass.READ_ONLY),
-        ("How would we approach migrating to the new API?", (READ, EDIT), TurnClass.PLAN),
+        (
+            "How would we approach migrating to the new API?",
+            (READ, EDIT),
+            TurnClass.PLAN,
+        ),
         ("Thanks, that's helpful", (), TurnClass.CHAT),
     ],
 )
@@ -61,9 +82,15 @@ def test_continuation_after_a_diff_is_still_a_code_change_turn():
 
 
 def test_diff_detection_reads_tool_results_too():
-    msgs = [Message(role=Role.TOOL, tool_results=(ToolResult(tool_call_id="t", content=DIFF),))]
+    msgs = [
+        Message(
+            role=Role.TOOL, tool_results=(ToolResult(tool_call_id="t", content=DIFF),)
+        )
+    ]
     assert previous_turn_produced_diff(msgs)
-    assert not previous_turn_produced_diff([Message(role=Role.ASSISTANT, content="no diff here")])
+    assert not previous_turn_produced_diff(
+        [Message(role=Role.ASSISTANT, content="no diff here")]
+    )
 
 
 # --- tier-1 verifier (sec 5.1) ----------------------------------------------
@@ -73,7 +100,8 @@ def test_diff_detection_reads_tool_results_too():
 async def test_rerank_returns_a_schema_valid_choice():
     verifier = Tier1Verifier(MockBackend(tier=1))
     verdict = await verifier.rerank(
-        [Candidate(0, "patch a"), Candidate(1, "patch b"), Candidate(2, "patch c")], "context"
+        [Candidate(0, "patch a"), Candidate(1, "patch b"), Candidate(2, "patch c")],
+        "context",
     )
     assert verdict.ok
     assert 0 <= verdict.data["choice"] < 3
@@ -103,6 +131,7 @@ async def test_out_of_range_choice_is_a_failed_call_not_a_silent_clamp():
 @pytest.mark.asyncio
 async def test_unparseable_verdict_degrades_rather_than_raises():
     """2-bit's documented failure mode must not take the turn down (sec 5.2)."""
+
     def responder(_req):
         return GenResult(text="I think candidate two is best, actually.")
 
@@ -141,7 +170,11 @@ def test_rerank_schema_bounds_the_choice_to_the_candidates_on_offer():
     from tandem.tier1.schemas import rerank_schema
 
     schema = rerank_schema(3)
-    assert schema["properties"]["choice"] == {"type": "integer", "minimum": 0, "maximum": 2}
+    assert schema["properties"]["choice"] == {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 2,
+    }
     assert schema["title"] == "rerank"  # the tier-1 budget lookup keys on this
     assert rerank_schema(1)["properties"]["choice"]["maximum"] == 0
     with pytest.raises(ValueError):
@@ -188,9 +221,14 @@ async def test_chat_turns_never_touch_tier_1():
 @pytest.mark.asyncio
 async def test_code_change_turn_generates_n_candidates_and_reranks():
     tier0 = MockBackend(use_tools=False)
-    cascade = Cascade(tier0, Tier1Verifier(MockBackend(tier=1)), RouterConfig(candidates=3))
+    cascade = Cascade(
+        tier0, Tier1Verifier(MockBackend(tier=1)), RouterConfig(candidates=3)
+    )
     _result, info = await cascade.produce(
-        GenRequest(messages=[Message(role=Role.USER, content="Fix the retry loop")], tools=(EDIT,))
+        GenRequest(
+            messages=[Message(role=Role.USER, content="Fix the retry loop")],
+            tools=(EDIT,),
+        )
     )
     assert info.candidates_generated == 3
     assert info.tier1_invoked and info.tier1_call == "rerank"
@@ -200,8 +238,12 @@ async def test_code_change_turn_generates_n_candidates_and_reranks():
 @pytest.mark.asyncio
 async def test_candidate_seeds_are_derived_so_the_receipt_reproduces_them():
     tier0 = MockBackend(use_tools=False)
-    cascade = Cascade(tier0, Tier1Verifier(None), RouterConfig(candidates=3, rerank_enabled=False))
-    req = GenRequest(messages=[Message(role=Role.USER, content="Fix it")], tools=(EDIT,))
+    cascade = Cascade(
+        tier0, Tier1Verifier(None), RouterConfig(candidates=3, rerank_enabled=False)
+    )
+    req = GenRequest(
+        messages=[Message(role=Role.USER, content="Fix it")], tools=(EDIT,)
+    )
     await cascade.produce(req)
     seeds = [c.sampling.seed for c in tier0.calls]
     assert seeds == [0, 1, 2]
@@ -213,7 +255,9 @@ async def test_candidate_seeds_are_derived_so_the_receipt_reproduces_them():
 @pytest.mark.asyncio
 async def test_n_equals_one_disables_reranking():
     tier1 = MockBackend(tier=1)
-    cascade = Cascade(MockBackend(use_tools=False), Tier1Verifier(tier1), RouterConfig(candidates=1))
+    cascade = Cascade(
+        MockBackend(use_tools=False), Tier1Verifier(tier1), RouterConfig(candidates=1)
+    )
     _result, info = await cascade.produce(
         GenRequest(messages=[Message(role=Role.USER, content="Fix it")], tools=(EDIT,))
     )
@@ -255,7 +299,10 @@ async def test_failure_escalation_regenerates_with_the_critique():
         test_runner=failing_tests,
     )
     _result, info = await cascade.produce(
-        GenRequest(messages=[Message(role=Role.USER, content="Fix the retry loop")], tools=(EDIT,))
+        GenRequest(
+            messages=[Message(role=Role.USER, content="Fix the retry loop")],
+            tools=(EDIT,),
+        )
     )
     assert calls["n"] == 1
     assert info.escalated
@@ -272,7 +319,8 @@ async def test_escalation_is_bounded_to_one_per_turn():
 
     tier0 = MockBackend(use_tools=False)
     cascade = Cascade(
-        tier0, Tier1Verifier(MockBackend(tier=1)),
+        tier0,
+        Tier1Verifier(MockBackend(tier=1)),
         RouterConfig(candidates=1, max_escalations_per_turn=1),
         test_runner=always_fails,
     )
@@ -287,8 +335,11 @@ async def test_escalation_is_bounded_to_one_per_turn():
 @pytest.mark.asyncio
 async def test_escalation_stays_dormant_without_a_test_runner():
     """Escalating on a failure we never observed would be theatre."""
-    cascade = Cascade(MockBackend(use_tools=False), Tier1Verifier(MockBackend(tier=1)),
-                      RouterConfig(candidates=1))
+    cascade = Cascade(
+        MockBackend(use_tools=False),
+        Tier1Verifier(MockBackend(tier=1)),
+        RouterConfig(candidates=1),
+    )
     _result, info = await cascade.produce(
         GenRequest(messages=[Message(role=Role.USER, content="Fix it")], tools=(EDIT,))
     )
@@ -320,14 +371,19 @@ def test_the_served_path_has_no_test_runner_by_default(tmp_path):
 
 def test_opting_in_without_a_test_command_stays_dormant(tmp_path):
     """A runner that answers "passed" to everything would suppress T2 silently."""
-    pipeline = _served(tmp_path, escalate_on_test_failure=True, linters=[["ruff", "check"]])
+    pipeline = _served(
+        tmp_path, escalate_on_test_failure=True, linters=[["ruff", "check"]]
+    )
     assert pipeline.cascade.test_runner is None
 
 
 def test_opting_in_makes_t2_escalation_reachable(tmp_path):
     """Item 3: the path exists and is tested, but nothing could ever trigger it."""
     pipeline = _served(
-        tmp_path, escalate_on_test_failure=True, test_command=["pytest", "-q"], repo=str(tmp_path)
+        tmp_path,
+        escalate_on_test_failure=True,
+        test_command=["pytest", "-q"],
+        repo=str(tmp_path),
     )
     assert pipeline.cascade.test_runner is not None
     assert pipeline.stats()["escalation"]["test_command"] == "pytest -q"
@@ -342,9 +398,11 @@ async def test_pressure_valve_degrades_to_n_equals_one():
         Tier1Verifier(MockBackend(tier=1)),
         RouterConfig(candidates=3, degrade_after_s=0.0),
     )
-    req = GenRequest(messages=[Message(role=Role.USER, content="Fix it")], tools=(EDIT,))
+    req = GenRequest(
+        messages=[Message(role=Role.USER, content="Fix it")], tools=(EDIT,)
+    )
 
-    first, info1 = await cascade.produce(req)
+    _first, info1 = await cascade.produce(req)
     assert info1.candidates_generated == 3
     assert cascade.degraded
 
@@ -362,5 +420,7 @@ async def test_pressure_valve_ignores_chat_latency():
         Tier1Verifier(MockBackend(tier=1)),
         RouterConfig(candidates=3, degrade_after_s=0.0),
     )
-    await cascade.produce(GenRequest(messages=[Message(role=Role.USER, content="thanks")]))
+    await cascade.produce(
+        GenRequest(messages=[Message(role=Role.USER, content="thanks")])
+    )
     assert not cascade.degraded

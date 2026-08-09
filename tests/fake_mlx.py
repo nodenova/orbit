@@ -36,7 +36,8 @@ import hashlib
 import json
 import sys
 import types
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 # --- arrays -----------------------------------------------------------------
 
@@ -49,7 +50,7 @@ class Array:
     rather than surface them. Every operation here checks its shapes.
     """
 
-    __slots__ = ("rows", "dtype")
+    __slots__ = ("dtype", "rows")
 
     def __init__(self, rows: list[list[float]], dtype: str = "float32"):
         if not rows or not all(isinstance(r, (list, tuple)) for r in rows):
@@ -64,15 +65,17 @@ class Array:
     def shape(self) -> tuple[int, int]:
         return len(self.rows), len(self.rows[0])
 
-    def astype(self, dtype: str) -> "Array":
+    def astype(self, dtype: str) -> Array:
         return Array(self.rows, dtype)
 
     @property
-    def T(self) -> "Array":
+    def T(self) -> Array:
         n, m = self.shape
-        return Array([[self.rows[i][j] for i in range(n)] for j in range(m)], self.dtype)
+        return Array(
+            [[self.rows[i][j] for i in range(n)] for j in range(m)], self.dtype
+        )
 
-    def __matmul__(self, other: "Array") -> "Array":
+    def __matmul__(self, other: Array) -> Array:
         if not isinstance(other, Array):
             return NotImplemented
         n, k = self.shape
@@ -80,21 +83,25 @@ class Array:
         if k != k2:
             raise ValueError(f"shape mismatch: {self.shape} @ {other.shape}")
         out = [
-            [sum(self.rows[i][t] * other.rows[t][j] for t in range(k)) for j in range(m)]
+            [
+                sum(self.rows[i][t] * other.rows[t][j] for t in range(k))
+                for j in range(m)
+            ]
             for i in range(n)
         ]
         return Array(out, self.dtype)
 
-    def __add__(self, other: "Array") -> "Array":
+    def __add__(self, other: Array) -> Array:
         if not isinstance(other, Array):
             return NotImplemented
         if self.shape != other.shape:
             raise ValueError(f"shape mismatch: {self.shape} + {other.shape}")
         return Array(
-            [[a + b for a, b in zip(ra, rb)] for ra, rb in zip(self.rows, other.rows)], self.dtype
+            [[a + b for a, b in zip(ra, rb)] for ra, rb in zip(self.rows, other.rows)],
+            self.dtype,
         )
 
-    def __mul__(self, scalar: float) -> "Array":
+    def __mul__(self, scalar: float) -> Array:
         if not isinstance(scalar, (int, float)):
             return NotImplemented
         return Array([[v * scalar for v in r] for r in self.rows], self.dtype)
@@ -137,10 +144,10 @@ class Module:
     def children(self) -> dict[str, Any]:
         out: dict[str, Any] = {}
         for key, value in vars(self).items():
-            if isinstance(value, Module):
-                out[key] = value
-            elif isinstance(value, (list, tuple)) and value and all(
-                isinstance(v, Module) for v in value
+            if isinstance(value, Module) or (
+                isinstance(value, (list, tuple))
+                and value
+                and all(isinstance(v, Module) for v in value)
             ):
                 out[key] = value
         return out
@@ -152,8 +159,10 @@ class Module:
                 out[key] = value
             elif isinstance(value, Module):
                 out[key] = value.parameters()
-            elif isinstance(value, (list, tuple)) and value and all(
-                isinstance(v, Module) for v in value
+            elif (
+                isinstance(value, (list, tuple))
+                and value
+                and all(isinstance(v, Module) for v in value)
             ):
                 out[key] = [v.parameters() for v in value]
         return out
@@ -162,16 +171,18 @@ class Module:
 class Linear(Module):
     """`y = x @ W.T + b`, with W shaped [out, in] as in MLX."""
 
-    def __init__(self, input_dims: int, output_dims: int, bias: bool = True, *, seed: str = ""):
+    def __init__(
+        self, input_dims: int, output_dims: int, bias: bool = True, *, seed: str = ""
+    ):
         self.input_dims = input_dims
         self.output_dims = output_dims
-        flat = _digest_floats(f"W:{seed}:{input_dims}x{output_dims}", input_dims * output_dims)
+        flat = _digest_floats(
+            f"W:{seed}:{input_dims}x{output_dims}", input_dims * output_dims
+        )
         self.weight = Array(
             [flat[r * input_dims : (r + 1) * input_dims] for r in range(output_dims)]
         )
-        self.bias = (
-            Array([_digest_floats(f"b:{seed}", output_dims)]) if bias else None
-        )
+        self.bias = Array([_digest_floats(f"b:{seed}", output_dims)]) if bias else None
 
     def __call__(self, x: Array) -> Array:
         y = x @ self.weight.T
@@ -238,7 +249,11 @@ def _normalise(x: Array) -> Array:
     two different adapters both produce a wall of the same token.
     """
     peak = max((abs(v) for row in x.rows for v in row), default=0.0)
-    return x if peak <= 1.0 else Array([[v / peak for v in row] for row in x.rows], x.dtype)
+    return (
+        x
+        if peak <= 1.0
+        else Array([[v / peak for v in row] for row in x.rows], x.dtype)
+    )
 
 
 # --- tokenizer --------------------------------------------------------------
@@ -271,10 +286,14 @@ class FakeTokenizer:
         tools: list[dict[str, Any]] | None = None,
     ) -> str:
         if tokenize:
-            raise NotImplementedError("fake tokenizer renders text only; pass tokenize=False")
+            raise NotImplementedError(
+                "fake tokenizer renders text only; pass tokenize=False"
+            )
         parts: list[str] = []
         if tools:
-            parts.append("<|tools|>" + json.dumps(tools, sort_keys=True) + "<|/tools|>\n")
+            parts.append(
+                "<|tools|>" + json.dumps(tools, sort_keys=True) + "<|/tools|>\n"
+            )
         for msg in messages:
             unknown = set(msg) - _TEMPLATE_KEYS
             if unknown:
@@ -285,7 +304,9 @@ class FakeTokenizer:
                 )
             parts.append(f"<|im_start|>{msg['role']}\n{msg.get('content', '')}\n")
             for call in msg.get("tool_calls") or ():
-                parts.append(f"<|tool_call|>{json.dumps(call, sort_keys=True)}<|/tool_call|>\n")
+                parts.append(
+                    f"<|tool_call|>{json.dumps(call, sort_keys=True)}<|/tool_call|>\n"
+                )
             parts.append("<|im_end|>\n")
         if add_generation_prompt:
             parts.append("<|im_start|>assistant\n")
@@ -301,8 +322,20 @@ class FakeTokenizer:
 # --- generation -------------------------------------------------------------
 
 _VOCAB = (
-    "<eos>", "return", "self", "value", "if", "None", "raise", "config",
-    "path", "result", "token", "adapter", "cache", "error",
+    "<eos>",
+    "return",
+    "self",
+    "value",
+    "if",
+    "None",
+    "raise",
+    "config",
+    "path",
+    "result",
+    "token",
+    "adapter",
+    "cache",
+    "error",
 )
 
 _SEED = 0
@@ -331,7 +364,9 @@ def make_sampler(temp: float = 0.0, top_p: float = 1.0):
     def sample(logits: Array) -> int:
         vals = [round(v, 6) for v in logits.rows[0]]
         seed = repr(vals) if temp == 0 else f"{vals!r}:{temp}:{top_p}:{_SEED}"
-        return int(hashlib.blake2b(seed.encode(), digest_size=8).hexdigest(), 16) % len(_VOCAB)
+        return int(hashlib.blake2b(seed.encode(), digest_size=8).hexdigest(), 16) % len(
+            _VOCAB
+        )
 
     return sample
 
@@ -419,7 +454,7 @@ def _mx_load(path: str) -> dict[str, Array]:
     safetensors writer. The filename is still `adapters.safetensors`, because
     `mount_all` looks for exactly that name.
     """
-    with open(path, "r", encoding="utf-8") as fh:
+    with open(path, encoding="utf-8") as fh:
         raw = json.load(fh)
     return {key: Array(rows) for key, rows in raw.items()}
 
@@ -515,8 +550,11 @@ def write_adapter(
         b = _digest_floats(f"{salt}:{key}:b", rank * dim)
         weights[f"{key}.lora_a"] = [a[r * rank : (r + 1) * rank] for r in range(dim)]
         weights[f"{key}.lora_b"] = [b[r * dim : (r + 1) * dim] for r in range(rank)]
-    (directory / "adapters.safetensors").write_text(json.dumps(weights), encoding="utf-8")
+    (directory / "adapters.safetensors").write_text(
+        json.dumps(weights), encoding="utf-8"
+    )
     (directory / "adapter_config.json").write_text(
-        json.dumps({"lora_parameters": {"rank": rank, "alpha": alpha}}), encoding="utf-8"
+        json.dumps({"lora_parameters": {"rank": rank, "alpha": alpha}}),
+        encoding="utf-8",
     )
     return directory

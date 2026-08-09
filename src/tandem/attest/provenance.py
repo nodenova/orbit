@@ -18,7 +18,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from .hashing import PROVENANCE_FILENAME, hash_file, hash_text
+from tandem.attest.hashing import PROVENANCE_FILENAME, hash_file, hash_text
 
 __all__ = [
     "PROVENANCE_FILENAME",
@@ -112,7 +112,9 @@ class ProvenanceRecord:
                 "Training on another model's outputs is not a permitted source."
             )
         if not self.corpus_hash:
-            raise ProvenanceError("corpus_hash is required — an unattested corpus is not trainable")
+            raise ProvenanceError(
+                "corpus_hash is required — an unattested corpus is not trainable"
+            )
         if not self.base_model_hash:
             raise ProvenanceError("base_model_hash is required")
         if self.source_kind is SourceKind.CUSTOMER_REPO and not self.source_repo:
@@ -139,7 +141,10 @@ class ProvenanceRecord:
     def write(self, path: str | Path) -> Path:
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(self.as_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        p.write_text(
+            json.dumps(self.as_dict(), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
         return p
 
     @classmethod
@@ -181,7 +186,7 @@ def corpus_hash_for(path: str | Path) -> str:
     for the same reason: universal-newline translation would rewrite a lone ``\\r``
     into a split the reader does not make.
     """
-    with open(path, "r", encoding="utf-8", newline="") as fh:
+    with open(path, encoding="utf-8", newline="") as fh:
         text = fh.read()
     lines = sorted(line for line in text.split("\n") if line.strip())
     return hash_text("\n".join(lines))

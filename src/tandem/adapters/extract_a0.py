@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..types import ToolDef
+from tandem.types import ToolDef
 
 # A representative coding-agent tool surface. Names are drawn from the shapes real
 # harnesses use so the adapter learns the format against realistic identifiers.
@@ -71,7 +71,10 @@ DEFAULT_TOOLS: tuple[ToolDef, ...] = (
         description="Run a shell command.",
         parameters={
             "type": "object",
-            "properties": {"command": {"type": "string"}, "timeout": {"type": "integer"}},
+            "properties": {
+                "command": {"type": "string"},
+                "timeout": {"type": "integer"},
+            },
             "required": ["command"],
         },
     ),
@@ -100,17 +103,36 @@ DEFAULT_TOOLS: tuple[ToolDef, ...] = (
 )
 
 _PATHS = (
-    "src/click/core.py", "src/click/_termui_impl.py", "tests/test_options.py",
-    "README.md", "pyproject.toml", "src/utils/retry.py", "internal/server/handler.go",
-    "lib/parser.rs", "app/models/user.rb", "packages/core/src/index.ts",
+    "src/click/core.py",
+    "src/click/_termui_impl.py",
+    "tests/test_options.py",
+    "README.md",
+    "pyproject.toml",
+    "src/utils/retry.py",
+    "internal/server/handler.go",
+    "lib/parser.rs",
+    "app/models/user.rb",
+    "packages/core/src/index.ts",
 )
 _PATTERNS = (
-    r"def \w+\(", "TODO", r"class \w+", "retry", r"import \w+", "deprecated",
-    r"raise \w+Error", "async def",
+    r"def \w+\(",
+    "TODO",
+    r"class \w+",
+    "retry",
+    r"import \w+",
+    "deprecated",
+    r"raise \w+Error",
+    "async def",
 )
 _COMMANDS = (
-    "pytest -q", "pytest tests/test_options.py -x", "ruff check .", "mypy src",
-    "go test ./...", "cargo test", "npm run build", "git diff --stat",
+    "pytest -q",
+    "pytest tests/test_options.py -x",
+    "ruff check .",
+    "mypy src",
+    "go test ./...",
+    "cargo test",
+    "npm run build",
+    "git diff --stat",
 )
 _GLOBS = ("**/*.py", "src/**/*.ts", "**/test_*.py", "**/*.go", "docs/**/*.md")
 
@@ -128,7 +150,10 @@ _TASKS = (
 )
 
 _ACKS = (
-    "", "", "", "",  # weighted toward no preamble: the target behaviour is a bare call
+    "",
+    "",
+    "",
+    "",  # weighted toward no preamble: the target behaviour is a bare call
     "I'll check that.",
     "Let me look at the file.",
     "Searching for that now.",
@@ -156,7 +181,9 @@ def _sample_args(tool: ToolDef, rng: random.Random) -> dict[str, Any]:
         if name == "path":
             args[name] = rng.choice(_PATHS)
         elif name == "pattern":
-            args[name] = rng.choice(_PATTERNS) if tool.name == "grep" else rng.choice(_GLOBS)
+            args[name] = (
+                rng.choice(_PATTERNS) if tool.name == "grep" else rng.choice(_GLOBS)
+            )
         elif name == "command":
             args[name] = rng.choice(_COMMANDS)
         elif name == "glob":
@@ -187,7 +214,11 @@ def _render_call(tool: ToolDef, args: dict[str, Any]) -> str:
 def _tool_result_text(tool: ToolDef, rng: random.Random) -> str:
     if tool.name == "run_bash":
         return rng.choice(
-            ["3 passed, 1 failed in 2.14s", "All checks passed.", "error: type mismatch at line 42"]
+            [
+                "3 passed, 1 failed in 2.14s",
+                "All checks passed.",
+                "error: type mismatch at line 42",
+            ]
         )
     if tool.name in ("grep", "glob"):
         return "\n".join(rng.sample(_PATHS, k=min(3, len(_PATHS))))
@@ -236,8 +267,9 @@ def write_jsonl(traces: list[A0Trace], path: str | Path) -> Path:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "w", encoding="utf-8") as fh:
-        for trace in traces:
-            fh.write(json.dumps(trace.as_record(), ensure_ascii=False) + "\n")
+        fh.writelines(
+            json.dumps(trace.as_record(), ensure_ascii=False) + "\n" for trace in traces
+        )
     return p
 
 

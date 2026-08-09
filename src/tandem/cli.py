@@ -20,10 +20,16 @@ import argparse
 import asyncio
 import json
 import sys
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from .config import Config
+from tandem.config import Config
+
+if TYPE_CHECKING:
+    from tandem.backends.base import Backend
+    from tandem.eval.merge_eval import Arm
+    from tandem.types import GenRequest
 
 
 def _print(payload: Any) -> None:
@@ -34,7 +40,7 @@ def _print(payload: Any) -> None:
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
-    from .gateway.app import serve
+    from tandem.gateway.app import serve
 
     cfg = Config.load(args.config)
     if args.port:
@@ -43,10 +49,13 @@ def cmd_serve(args: argparse.Namespace) -> int:
         cfg.backend = args.backend
     if args.no_compact:
         cfg.compaction.enabled = False
-    print(f"tandem serving on http://{cfg.server.host}:{cfg.server.port}", file=sys.stderr)
+    print(
+        f"tandem serving on http://{cfg.server.host}:{cfg.server.port}", file=sys.stderr
+    )
     print(f"  backend={cfg.backend} tier0={cfg.tier0.model}", file=sys.stderr)
     print(
-        f"  tier1={'on ' + cfg.tier1.model if cfg.tier1.enabled else 'off'}", file=sys.stderr
+        f"  tier1={'on ' + cfg.tier1.model if cfg.tier1.enabled else 'off'}",
+        file=sys.stderr,
     )
     print("  /v1/messages  /v1/chat/completions  /v1/responses", file=sys.stderr)
     serve(cfg)
@@ -63,7 +72,7 @@ def _rung_note(cfg: Config) -> str:
     finds out about at the wrong moment: rung 3 is weaker than it looks, rung 2 is
     slower than it looks, and rung 4 is not local at all.
     """
-    from .backends import REMOTE_RUNG, RESIDENT_SWAP_RUNG, SECOND_OPINION_RUNG
+    from tandem.backends import REMOTE_RUNG, RESIDENT_SWAP_RUNG, SECOND_OPINION_RUNG
 
     return {
         SECOND_OPINION_RUNG: (
@@ -83,7 +92,7 @@ def _rung_note(cfg: Config) -> str:
 
 def _tier1_model(cfg: Config) -> str:
     """Which weights the configured rung would actually use."""
-    from .backends import REMOTE_RUNG, SECOND_OPINION_RUNG
+    from tandem.backends import REMOTE_RUNG, SECOND_OPINION_RUNG
 
     if cfg.tier1.rung == SECOND_OPINION_RUNG:
         # Rung 3 is tier 0 itself, with the adapter off.
@@ -94,11 +103,11 @@ def _tier1_model(cfg: Config) -> str:
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    from .backends import REMOTE_RUNG, build_tier0, build_tier1
-    from .backends.base import BackendUnavailable
-    from .eval.latency import Environment
-    from .gateway.toolcall.constrain import Constrainer
-    from .offline import verify
+    from tandem.backends import REMOTE_RUNG, build_tier0, build_tier1
+    from tandem.backends.base import BackendUnavailable
+    from tandem.eval.latency import Environment
+    from tandem.gateway.toolcall.constrain import Constrainer
+    from tandem.offline import verify
 
     cfg = Config.load(args.config)
     out: dict[str, Any] = {
@@ -147,7 +156,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     except (BackendUnavailable, ValueError) as exc:
         out["tier1"] = {"ok": False, "reason": str(exc)}
 
-    from .adapters.train import trainer_available
+    from tandem.adapters.train import trainer_available
 
     ok, detail = trainer_available()
     out["trainer"] = {"ok": ok, "detail": detail}
@@ -156,7 +165,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 
 def cmd_offline_env(args: argparse.Namespace) -> int:
-    from .offline import env_exports
+    from tandem.offline import env_exports
 
     print(env_exports())
     return 0
@@ -170,7 +179,7 @@ def cmd_extract(args: argparse.Namespace) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if args.kind == "a0":
-        from .adapters import extract_a0
+        from tandem.adapters import extract_a0
 
         traces = extract_a0.generate(n=args.n, seed=args.seed)
         path = extract_a0.write_jsonl(traces, out_dir / "train.jsonl")
@@ -178,14 +187,18 @@ def cmd_extract(args: argparse.Namespace) -> int:
         return 0
 
     if args.kind == "a1":
-        from .adapters import extract_a1
-        from .adapters.filters import ExtractionFilters
+        from tandem.adapters import extract_a1
+        from tandem.adapters.filters import ExtractionFilters
 
         filters = ExtractionFilters()
         if args.merge_policy:
             filters.merge_policy = args.merge_policy
         train, held, report = extract_a1.extract(
-            args.repo, filters=filters, limit=args.limit, since=args.since, holdout=args.holdout
+            args.repo,
+            filters=filters,
+            limit=args.limit,
+            since=args.since,
+            holdout=args.holdout,
         )
         extract_a1.write_jsonl(train, out_dir / "train.jsonl")
         extract_a1.write_manifest(train, out_dir / "manifest.jsonl")
@@ -198,23 +211,26 @@ def cmd_extract(args: argparse.Namespace) -> int:
         _print(payload)
         return 0 if not report.thin else 2
 
-    from .adapters import extract_a2
-    from .adapters.filters import ExtractionFilters
+    from tandem.adapters import extract_a2
+    from tandem.adapters.filters import ExtractionFilters
 
-    train, held, report = extract_a2.extract(
+    # Distinct names from the a1 branch above: A2 yields PreferencePair/A2Report
+    # where A1 yields Pair/ExtractionReport, and reusing the names binds this
+    # function's locals to whichever branch is read first.
+    a2_train, a2_held, a2_report = extract_a2.extract(
         args.repo,
         filters=ExtractionFilters(),
         limit=args.limit,
         reviews_path=args.reviews,
         holdout=args.holdout,
     )
-    extract_a2.write_jsonl(train, out_dir / "train.jsonl")
-    if held:
-        extract_a2.write_jsonl(held, out_dir / "holdout.jsonl")
-    payload = report.as_dict()
+    extract_a2.write_jsonl(a2_train, out_dir / "train.jsonl")
+    if a2_held:
+        extract_a2.write_jsonl(a2_held, out_dir / "holdout.jsonl")
+    payload = a2_report.as_dict()
     payload["corpus"] = str(out_dir / "train.jsonl")
     _print(payload)
-    return 0 if not report.thin else 2
+    return 0 if not a2_report.thin else 2
 
 
 # --- profile ----------------------------------------------------------------
@@ -226,7 +242,7 @@ def cmd_profile(args: argparse.Namespace) -> int:
     The forward pass that produces the counts is backend work and needs the real
     model; this builds the sidecar from its output, checks it, and writes it.
     """
-    from .adapters import profile as prof
+    from tandem.adapters import profile as prof
 
     raw = json.loads(Path(args.counts).read_text(encoding="utf-8"))
     built = prof.build(
@@ -246,12 +262,17 @@ def cmd_profile(args: argparse.Namespace) -> int:
 
 
 def cmd_train(args: argparse.Namespace) -> int:
-    from .adapters.train import DPOConfig, SFTConfig, train_dpo, train_sft
-    from .attest.provenance import SourceKind
+    from tandem.adapters.train import DPOConfig, SFTConfig, train_dpo, train_sft
+    from tandem.attest.provenance import SourceKind
 
     cfg = Config.load(args.config)
     corpus = Path(args.corpus)
     output = Path(args.out)
+
+    # Counted once, before either branch. The generator form left the corpus handle
+    # open until the GC got to it, which on a dry run is the whole process lifetime.
+    with corpus.open(encoding="utf-8") as fh:
+        n_pairs = sum(1 for _ in fh)
 
     if args.method == "sft":
         result = train_sft(
@@ -261,7 +282,7 @@ def cmd_train(args: argparse.Namespace) -> int:
             adapter_name=args.name,
             source_kind=SourceKind(args.source_kind),
             source_repo=args.repo or "",
-            n_pairs=sum(1 for _ in open(corpus, encoding="utf-8")),
+            n_pairs=n_pairs,
             cfg=SFTConfig(neftune_alpha=args.neftune),
             dry_run=args.dry_run,
         )
@@ -273,7 +294,7 @@ def cmd_train(args: argparse.Namespace) -> int:
             adapter_name=args.name,
             parent_adapter=Path(args.mount_adapter) if args.mount_adapter else None,
             source_repo=args.repo or "",
-            n_pairs=sum(1 for _ in open(corpus, encoding="utf-8")),
+            n_pairs=n_pairs,
             cfg=DPOConfig(),
             dry_run=args.dry_run,
         )
@@ -286,7 +307,7 @@ def cmd_train(args: argparse.Namespace) -> int:
 
 def _review_proxy(args: argparse.Namespace, verifier: Any) -> Any:
     """Build the review-comment proxy named on the command line, or None."""
-    from .eval.merge_eval import scored_review_proxy, tier1_review_proxy
+    from tandem.eval.merge_eval import scored_review_proxy, tier1_review_proxy
 
     choice = args.review_proxy or "none"
     if choice == "none":
@@ -300,11 +321,11 @@ def _review_proxy(args: argparse.Namespace, verifier: Any) -> Any:
 
 
 def cmd_eval_merge(args: argparse.Namespace) -> int:
-    from .adapters.extract_a1 import extract
-    from .backends import build_tier0, build_tier1
-    from .eval.merge_eval import Arm, cases_from_holdout, run
-    from .eval.worktree import from_config as build_runner
-    from .gateway.pipeline import Pipeline
+    from tandem.adapters.extract_a1 import extract
+    from tandem.backends import build_tier0, build_tier1
+    from tandem.eval.merge_eval import Arm, cases_from_holdout, run
+    from tandem.eval.worktree import from_config as build_runner
+    from tandem.gateway.pipeline import Pipeline
 
     cfg = Config.load(args.config)
     if args.review_proxy == "file" and not args.review_scores:
@@ -326,8 +347,10 @@ def cmd_eval_merge(args: argparse.Namespace) -> int:
     runner = None if args.no_worktree else build_runner(cfg.eval, repo=args.repo)
     proxy = _review_proxy(args, pipeline.verifier)
 
-    async def gen(adapter: str | None, cascade: bool):
-        async def _gen(req):
+    async def gen(
+        adapter: str | None, cascade: bool
+    ) -> Callable[[GenRequest], Awaitable[str]]:
+        async def _gen(req: GenRequest) -> str:
             req = req.with_(adapter=adapter)
             if cascade:
                 result, _ = await pipeline.run(req)
@@ -336,15 +359,31 @@ def cmd_eval_merge(args: argparse.Namespace) -> int:
 
         return _gen
 
-    async def build_arms():
+    async def build_arms() -> list[Arm]:
         arms = [Arm(name="tier0 base", generate=await gen(None, False))]
         if args.a1:
-            arms.append(Arm(name="tier0 + A1", generate=await gen(args.a1, False), adapter=args.a1))
+            arms.append(
+                Arm(
+                    name="tier0 + A1",
+                    generate=await gen(args.a1, False),
+                    adapter=args.a1,
+                )
+            )
         if args.a2:
-            arms.append(Arm(name="tier0 + A1 + A2", generate=await gen(args.a2, False), adapter=args.a2))
+            arms.append(
+                Arm(
+                    name="tier0 + A1 + A2",
+                    generate=await gen(args.a2, False),
+                    adapter=args.a2,
+                )
+            )
         if cfg.tier1.enabled:
             arms.append(
-                Arm(name="cascade + tier1 rerank", generate=await gen(args.a1, True), adapter=args.a1)
+                Arm(
+                    name="cascade + tier1 rerank",
+                    generate=await gen(args.a1, True),
+                    adapter=args.a1,
+                )
             )
         return arms
 
@@ -388,10 +427,10 @@ def cmd_eval_merge(args: argparse.Namespace) -> int:
 
 def cmd_eval_regression(args: argparse.Namespace) -> int:
     """Sec 10.3. Exit 1 on a regression; exit 0 on a clean run or a first baseline."""
-    from .attest.receipt import engine_commit
-    from .backends import build_tier0
-    from .eval.regression import Baseline, check_comparable, compare, run
-    from .eval.regression_items import SUITE, by_category
+    from tandem.attest.receipt import engine_commit
+    from tandem.backends import build_tier0
+    from tandem.eval.regression import Baseline, check_comparable, compare, run
+    from tandem.eval.regression_items import SUITE, by_category
 
     cfg = Config.load(args.config)
     tier0 = build_tier0(cfg)
@@ -431,16 +470,18 @@ def cmd_eval_regression(args: argparse.Namespace) -> int:
     payload["baseline_path"] = str(baseline_path)
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.out).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        Path(args.out).write_text(
+            json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+        )
     _print(payload)
     print(report.summary(), file=sys.stderr)
     return 0 if report.clean else 1
 
 
 def cmd_gate(args: argparse.Namespace) -> int:
-    from .backends import build_tier0, build_tier1
-    from .eval.gates import adapter_isolation_gate, toolcall_gate
-    from .gateway.pipeline import Pipeline
+    from tandem.backends import build_tier0, build_tier1
+    from tandem.eval.gates import adapter_isolation_gate, toolcall_gate
+    from tandem.gateway.pipeline import Pipeline
 
     cfg = Config.load(args.config)
 
@@ -448,7 +489,7 @@ def cmd_gate(args: argparse.Namespace) -> int:
         tier0 = build_tier0(cfg)
         pipeline = Pipeline(cfg, tier0, build_tier1(cfg, tier0))
 
-        async def run_turn(req):
+        async def run_turn(req: GenRequest) -> Any:
             prepared = pipeline._prepare_sampling(req)
             result, _ = await pipeline.cascade.produce(prepared)
             _result, info = await pipeline._settle_tool_calls(prepared, result)
@@ -458,14 +499,16 @@ def cmd_gate(args: argparse.Namespace) -> int:
         _print(result.as_dict())
         return 0 if result.passed else 1
 
-    from .backends.mock import MockBackend
+    from tandem.backends.mock import MockBackend
 
-    def factory(names):
+    def factory(names: Sequence[str]) -> Backend:
         if cfg.backend == "mock":
             return MockBackend(adapters=tuple(names))
-        from .backends.mlx_tier0 import MLXTier0Backend
+        from tandem.backends.mlx_tier0 import MLXTier0Backend
 
-        backend = MLXTier0Backend(cfg.tier0.container_path or cfg.tier0.model, adapter_dir=None)
+        backend = MLXTier0Backend(
+            cfg.tier0.container_path or cfg.tier0.model, adapter_dir=None
+        )
         for name in names:
             backend.mount(name, Path(cfg.tier0.adapter_dir) / name)
         return backend
@@ -477,8 +520,8 @@ def cmd_gate(args: argparse.Namespace) -> int:
 
 
 def cmd_bench(args: argparse.Namespace) -> int:
-    from .backends import build_tier0, build_tier1
-    from .eval.latency import Environment, LatencyReport, m0_gate_a, measure
+    from tandem.backends import build_tier0, build_tier1
+    from tandem.eval.latency import Environment, LatencyReport, m0_gate_a, measure
 
     cfg = Config.load(args.config)
 
@@ -488,14 +531,39 @@ def cmd_bench(args: argparse.Namespace) -> int:
             _print({"error": "tier 1 is disabled; enable it in config to run Gate B"})
             return 1
 
-        async def main() -> int:
+        # Gate B instruments *streamed* prefill, which only rung 1 has. Rung 3 serves
+        # the verifier from tier 0's own weights and rung 1 on the mock backend is a
+        # MockBackend; neither carries the instrument. Say which rung is configured
+        # rather than dying with an AttributeError on the host whose tandem.toml
+        # deliberately runs rung 3.
+        if not hasattr(tier1, "gate_b_report"):
+            _print(
+                {
+                    "error": "Gate B measures streamed prefill and needs tier1.rung "
+                    f"= 'streamed' on a real engine; this config is rung "
+                    f"'{cfg.tier1.rung}' on backend '{cfg.backend}'",
+                    "rung": cfg.tier1.rung,
+                }
+            )
+            return 1
+
+        # Deliberately duck-typed, and the hasattr guard above is what makes it
+        # safe. The prefill instrument lives only on the rung-1 streamed backend, so
+        # declaring it on `Backend` would put a method on every implementation that
+        # cannot honour it — which is the same mistake sec 5.1 avoids by giving
+        # tier 1 no `generate`.
+        instrumented: Any = tier1
+
+        async def gate_b() -> int:
             for frontier in (4_000, 8_000, 16_000):
-                await tier1.measure_prefill(frontier)
-            report = tier1.gate_b_report()
+                await instrumented.measure_prefill(frontier)
+            report = instrumented.gate_b_report(
+                threshold_tok_per_s=cfg.gates.gate_b_prefill_tok_per_s
+            )
             _print(report)
             return 0 if report["pass"] else 1
 
-        return asyncio.run(main())
+        return asyncio.run(gate_b())
 
     tier0 = build_tier0(cfg)
 
@@ -508,18 +576,30 @@ def cmd_bench(args: argparse.Namespace) -> int:
             adapter_hash=tier0.adapter_hash(args.adapter),
             command=" ".join(sys.argv),
             samples=[*cold, *warm],
+            contract_ttft_s=cfg.gates.contract_chat_ttft_s,
+            contract_tok_per_s=cfg.gates.contract_chat_tok_per_s,
         )
         if args.out:
             report.write(args.out)
         print(report.table(), file=sys.stderr)
-        _print({"gate_a": m0_gate_a(report.samples, args.toolcall_failure_rate)})
+        _print(
+            {
+                "gate_a": m0_gate_a(
+                    report.samples,
+                    args.toolcall_failure_rate,
+                    ttft_s=cfg.gates.gate_a_ttft_s,
+                    decode_tok_per_s=cfg.gates.gate_a_decode_tok_per_s,
+                    toolcall_failure_budget=cfg.gates.gate_a_toolcall_failure_rate,
+                )
+            }
+        )
         return 0
 
     return asyncio.run(main())
 
 
 def cmd_audit(args: argparse.Namespace) -> int:
-    from .attest.audit import verify_chain
+    from tandem.attest.audit import verify_chain
 
     cfg = Config.load(args.config)
     ok, reason = verify_chain(args.log or cfg.attest.audit_log)
@@ -538,14 +618,20 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("serve", help="run the gateway (sec 8)")
     s.add_argument("--port", type=int, default=None)
     s.add_argument("--backend", choices=("mock", "mlx"), default=None)
-    s.add_argument("--no-compact", action="store_true", help="disable harness compaction")
+    s.add_argument(
+        "--no-compact", action="store_true", help="disable harness compaction"
+    )
     s.set_defaults(func=cmd_serve)
 
     s = sub.add_parser("doctor", help="runtime status and offline posture (sec 8.6)")
-    s.add_argument("--strict-deps", action="store_true", help="also audit the import graph")
+    s.add_argument(
+        "--strict-deps", action="store_true", help="also audit the import graph"
+    )
     s.set_defaults(func=cmd_doctor)
 
-    s = sub.add_parser("offline-env", help="print the harness environment to export (sec 8.6)")
+    s = sub.add_parser(
+        "offline-env", help="print the harness environment to export (sec 8.6)"
+    )
     s.set_defaults(func=cmd_offline_env)
 
     s = sub.add_parser("extract", help="build an adapter corpus (sec 6)")
@@ -554,16 +640,22 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--out", default="corpus", help="output directory")
     s.add_argument("--limit", type=int, default=None, help="max commits to walk")
     s.add_argument("--since", default="", help="git --since expression")
-    s.add_argument("--holdout", type=int, default=0, help="reserve K most recent for eval")
+    s.add_argument(
+        "--holdout", type=int, default=0, help="reserve K most recent for eval"
+    )
     s.add_argument("--n", type=int, default=2000, help="traces to generate (a0)")
     s.add_argument("--seed", type=int, default=0)
     s.add_argument("--reviews", default=None, help="forge review export (a2)")
-    s.add_argument("--merge-policy", choices=("auto", "skip", "first_parent"), default=None)
+    s.add_argument(
+        "--merge-policy", choices=("auto", "skip", "first_parent"), default=None
+    )
     s.set_defaults(func=cmd_extract)
 
     s = sub.add_parser("profile", help="build a routing profile sidecar (sec 6.4)")
     s.add_argument("--counts", required=True, help="JSON activation-count dump")
-    s.add_argument("--model", default="", help="model name, decides count- vs mass-ranking")
+    s.add_argument(
+        "--model", default="", help="model name, decides count- vs mass-ranking"
+    )
     s.add_argument("--out", default="profiles/routing_profile.json")
     s.set_defaults(func=cmd_profile)
 
@@ -581,7 +673,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     s.add_argument("--mount-adapter", default=None, help="A1 adapter to start DPO from")
     s.add_argument("--neftune", type=float, default=0.0)
-    s.add_argument("--dry-run", action="store_true", help="print the command without running it")
+    s.add_argument(
+        "--dry-run", action="store_true", help="print the command without running it"
+    )
     s.set_defaults(func=cmd_train)
 
     s = sub.add_parser("eval", help="run an evaluation")
@@ -599,7 +693,9 @@ def build_parser() -> argparse.ArgumentParser:
         default="none",
         help="review-comment metric: tier-1 judgement, or scores from --review-scores",
     )
-    e.add_argument("--review-scores", default=None, help="JSON {commit_sha: probability}")
+    e.add_argument(
+        "--review-scores", default=None, help="JSON {commit_sha: probability}"
+    )
     e.add_argument(
         "--no-worktree",
         action="store_true",

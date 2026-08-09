@@ -19,7 +19,11 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from tandem.backends.mlx_tier1 import OptiqTier1Backend, PrefillSample, _reported_decode_seconds
+from tandem.backends.mlx_tier1 import (
+    OptiqTier1Backend,
+    PrefillSample,
+    _reported_decode_seconds,
+)
 from tandem.backends.tier1_call import Tier1Unavailable
 from tandem.tier1.schemas import rerank_schema
 from tandem.types import GenRequest, Message, Role, Sampling
@@ -42,7 +46,9 @@ def _endpoint(handler):
     return backend, original
 
 
-def _ok(body: str = RERANK_BODY, *, usage: dict | None = None, extra: dict | None = None):
+def _ok(
+    body: str = RERANK_BODY, *, usage: dict | None = None, extra: dict | None = None
+):
     """A handler answering every POST with `body`, recording what it was sent."""
 
     seen: list[dict] = []
@@ -55,7 +61,9 @@ def _ok(body: str = RERANK_BODY, *, usage: dict | None = None, extra: dict | Non
         seen.append(json.loads(request.content))
         payload = {
             "choices": [{"message": {"content": body}}],
-            "usage": usage if usage is not None else {"prompt_tokens": 8000, "completion_tokens": 24},
+            "usage": usage
+            if usage is not None
+            else {"prompt_tokens": 8000, "completion_tokens": 24},
         }
         payload.update(extra or {})
         return httpx.Response(200, json=payload)
@@ -298,13 +306,38 @@ def test_gate_b_reads_the_worst_sample_not_the_average():
     """
     backend = OptiqTier1Backend("http://127.0.0.1:9999/v1", model="m")
     backend.prefill_samples = [
-        PrefillSample(16_000, 1, prefill_s=1.0, total_s=1.0),       # 16,000 tok/s
-        PrefillSample(16_000, 1, prefill_s=200.0, total_s=200.0),   # 80 tok/s
+        PrefillSample(16_000, 1, prefill_s=1.0, total_s=1.0),  # 16,000 tok/s
+        PrefillSample(16_000, 1, prefill_s=200.0, total_s=200.0),  # 80 tok/s
     ]
     report = backend.gate_b_report()
     assert report["pass"] is False
     assert report["worst_tok_per_s"] == 80.0
     assert len(report["samples"]) == 2
+
+
+def test_gate_b_relaxed_threshold_passes_but_does_not_claim_the_spec():
+    """A host judged against its own floor must not report a met sec-11 Gate B.
+
+    This host is ~40x short: the streamed 122B reads 1.39 GB of experts per decoded
+    token against a measured 6.93 GB/s SSD. Relaxing the floor is what lets the rung
+    run at all; `meets_spec` is what stops the result being quoted as a pass.
+    """
+    backend = OptiqTier1Backend("http://127.0.0.1:9999/v1", model="m")
+    backend.prefill_samples = [PrefillSample(16_000, 1, prefill_s=615.4, total_s=615.4)]
+
+    spec = backend.gate_b_report()
+    assert spec["pass"] is False
+    assert spec["threshold_tok_per_s"] == 200.0
+    assert spec["relaxed"] is False
+
+    host = backend.gate_b_report(threshold_tok_per_s=20.0)
+    assert host["pass"] is True
+    assert host["meets_spec"] is False
+    assert host["relaxed"] is True
+    assert host["threshold_tok_per_s"] == 20.0
+    assert host["spec_threshold_tok_per_s"] == 200.0
+    # The worst rate is the same measurement in both reports; only the verdict moved.
+    assert spec["worst_tok_per_s"] == host["worst_tok_per_s"] == 26.0
 
 
 def test_gate_b_with_no_samples_is_a_failure_not_a_pass():

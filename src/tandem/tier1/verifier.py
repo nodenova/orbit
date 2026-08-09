@@ -20,9 +20,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..backends.base import Backend
-from ..types import GenRequest, Message, Role, Sampling
-from .schemas import PLAN_CRITIQUE, REVIEW, rerank_schema
+from tandem.backends.base import Backend
+from tandem.tier1.schemas import PLAN_CRITIQUE, REVIEW, rerank_schema
+from tandem.types import GenRequest, Message, Role, Sampling
 
 
 @dataclass
@@ -78,7 +78,9 @@ class Tier1Verifier:
                 data={"choice": 0, "reason": "single candidate; no rerank needed"},
             )
         prompt = _rerank_prompt(candidates, context)
-        verdict = await self._call("rerank", rerank_schema(len(candidates)), prompt, seed=seed)
+        verdict = await self._call(
+            "rerank", rerank_schema(len(candidates)), prompt, seed=seed
+        )
         if verdict.ok:
             choice = verdict.data.get("choice")
             # A verifier that returns an out-of-range index has not made a choice we
@@ -94,17 +96,27 @@ class Tier1Verifier:
         return verdict
 
     async def review(
-        self, patch: str, context: str, *, conventions: str = "", failure_output: str = "", seed: int = 0
+        self,
+        patch: str,
+        context: str,
+        *,
+        conventions: str = "",
+        failure_output: str = "",
+        seed: int = 0,
     ) -> Verdict:
         """Judge one patch. ~25 s at 12k input."""
         prompt = _review_prompt(patch, context, conventions, failure_output)
         return await self._call("review", REVIEW, prompt, seed=seed)
 
-    async def plan_critique(self, plan: str, repo_map: str, *, seed: int = 0) -> Verdict:
+    async def plan_critique(
+        self, plan: str, repo_map: str, *, seed: int = 0
+    ) -> Verdict:
         prompt = _plan_prompt(plan, repo_map)
         return await self._call("plan_critique", PLAN_CRITIQUE, prompt, seed=seed)
 
-    async def _call(self, name: str, schema: dict[str, Any], prompt: str, *, seed: int) -> Verdict:
+    async def _call(
+        self, name: str, schema: dict[str, Any], prompt: str, *, seed: int
+    ) -> Verdict:
         if self.backend is None:
             return Verdict(call=name, ok=False, error="tier 1 not enabled")
         req = GenRequest(
@@ -144,7 +156,10 @@ class Tier1Verifier:
         missing = [k for k in schema.get("required", []) if k not in data]
         if missing:
             verdict = Verdict(
-                call=name, ok=False, latency_s=latency, error=f"verdict missing {missing}"
+                call=name,
+                ok=False,
+                latency_s=latency,
+                error=f"verdict missing {missing}",
             )
             self.calls.append(verdict)
             return verdict
@@ -161,7 +176,9 @@ class Tier1Verifier:
             "calls": len(self.calls),
             "ok": ok,
             "failure_rate": round(1 - ok / len(self.calls), 3),
-            "mean_latency_s": round(sum(c.latency_s for c in self.calls) / len(self.calls), 2),
+            "mean_latency_s": round(
+                sum(c.latency_s for c in self.calls) / len(self.calls), 2
+            ),
             "by_call": {
                 name: sum(1 for c in self.calls if c.call == name)
                 for name in {c.call for c in self.calls}
@@ -181,7 +198,9 @@ def _rerank_prompt(candidates: list[Candidate], context: str) -> str:
     for c in candidates:
         parts.append(f"\n## Candidate {c.index}\n")
         if c.tests_passed is not None:
-            parts.append(f"(repository tests: {'pass' if c.tests_passed else 'fail'})\n")
+            parts.append(
+                f"(repository tests: {'pass' if c.tests_passed else 'fail'})\n"
+            )
         parts.append("```diff\n")
         parts.append(c.text.strip())
         parts.append("\n```\n")
@@ -193,7 +212,9 @@ def _rerank_prompt(candidates: list[Candidate], context: str) -> str:
     return "".join(parts)
 
 
-def _review_prompt(patch: str, context: str, conventions: str, failure_output: str) -> str:
+def _review_prompt(
+    patch: str, context: str, conventions: str, failure_output: str
+) -> str:
     parts = ["# Context\n", context.strip(), "\n"]
     if conventions:
         parts.append("\n# Repository conventions\n" + conventions.strip() + "\n")

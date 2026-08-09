@@ -161,6 +161,4 @@ def is_revert(message: str) -> bool:
 def keep_path(path: str, filters: ExtractionFilters) -> bool:
     if filters.skip_vendored and is_vendored(path):
         return False
-    if filters.skip_lockfiles and is_lockfile(path):
-        return False
-    return True
+    return not (filters.skip_lockfiles and is_lockfile(path))

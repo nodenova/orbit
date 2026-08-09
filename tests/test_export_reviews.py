@@ -70,7 +70,10 @@ def test_author_check_is_case_insensitive():
 
 def test_author_comments_do_not_mask_a_real_review():
     got = export_reviews.earliest_review_at(
-        [review("author", "2026-03-01T08:00:00Z"), review("maintainer", "2026-03-03T12:00:00Z")],
+        [
+            review("author", "2026-03-01T08:00:00Z"),
+            review("maintainer", "2026-03-03T12:00:00Z"),
+        ],
         [],
         author_login="author",
     )
@@ -137,11 +140,24 @@ def test_unmerged_and_unreviewed_pulls_are_omitted():
     """A PR merged without review has no 'before review' state to point at, so a
     record would claim a signal that does not exist."""
     pulls = [
-        {"number": 1, "merged_at": None, "merge_commit_sha": "x", "user": {"login": "a"}},
-        {"number": 2, "merged_at": "2026-01-01T00:00:00Z", "merge_commit_sha": None,
-         "user": {"login": "a"}},
-        {"number": 3, "merged_at": "2026-01-01T00:00:00Z", "merge_commit_sha": "y",
-         "user": {"login": "a"}},
+        {
+            "number": 1,
+            "merged_at": None,
+            "merge_commit_sha": "x",
+            "user": {"login": "a"},
+        },
+        {
+            "number": 2,
+            "merged_at": "2026-01-01T00:00:00Z",
+            "merge_commit_sha": None,
+            "user": {"login": "a"},
+        },
+        {
+            "number": 3,
+            "merged_at": "2026-01-01T00:00:00Z",
+            "merge_commit_sha": "y",
+            "user": {"login": "a"},
+        },
     ]
     records = export_reviews.build_records(pulls, _fake_fetch({}))
     assert records == []
@@ -171,8 +187,10 @@ def test_output_is_loadable_by_extract_a2(tmp_path):
 @pytest.mark.parametrize(
     "header,expected",
     [
-        ('<https://api.github.com/x?page=2>; rel="next", <https://api.github.com/x?page=9>; rel="last"',
-         "https://api.github.com/x?page=2"),
+        (
+            '<https://api.github.com/x?page=2>; rel="next", <https://api.github.com/x?page=9>; rel="last"',
+            "https://api.github.com/x?page=2",
+        ),
         ('<https://api.github.com/x?page=1>; rel="prev"', None),
         ("", None),
     ],
@@ -196,7 +214,11 @@ class _Headers(dict):
         (_Headers({}), "You have exceeded a secondary rate limit", True),
         (_Headers({"X-RateLimit-Remaining": "4980"}), "", False),
         # The refusal that cost a minute of backoff and reported the wrong cause.
-        (_Headers({}), '{"message":"GitHub access to this repository is not enabled"}', False),
+        (
+            _Headers({}),
+            '{"message":"GitHub access to this repository is not enabled"}',
+            False,
+        ),
         (_Headers({}), '{"message":"Bad credentials"}', False),
         (None, "", False),
     ],
@@ -223,15 +245,32 @@ def test_the_exporter_is_not_part_of_the_package():
 # offline check parses endpoint hosts and needs no exemption for doing so.
 _NETWORK_MODULES = frozenset(
     {
-        "httpx", "requests", "aiohttp", "urllib3", "socket", "ssl", "asyncio.streams",
-        "urllib.request", "urllib.error", "http.client", "ftplib", "smtplib",
-        "telnetlib", "xmlrpc.client", "websockets", "grpc", "boto3", "paramiko",
+        "httpx",
+        "requests",
+        "aiohttp",
+        "urllib3",
+        "socket",
+        "ssl",
+        "asyncio.streams",
+        "urllib.request",
+        "urllib.error",
+        "http.client",
+        "ftplib",
+        "smtplib",
+        "telnetlib",
+        "xmlrpc.client",
+        "websockets",
+        "grpc",
+        "boto3",
+        "paramiko",
     }
 )
 
 # `curl`/`wget` through a subprocess is an outbound call with the import graph left
 # clean, which is exactly the shape a substring pin misses.
-_NETWORK_BINARIES = frozenset({"curl", "wget", "nc", "ncat", "netcat", "ssh", "scp", "rsync"})
+_NETWORK_BINARIES = frozenset(
+    {"curl", "wget", "nc", "ncat", "netcat", "ssh", "scp", "rsync"}
+)
 
 # `asyncio` is imported almost everywhere and is not a network module, but two of its
 # attributes are sockets and nothing else. Matched by attribute name rather than by

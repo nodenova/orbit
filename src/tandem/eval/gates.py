@@ -23,12 +23,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Sequence
+from typing import Any
 
-from ..backends.base import Backend
-from ..types import GenRequest, Message, Role, Sampling, ToolDef
+from tandem.backends.base import Backend
+from tandem.types import GenRequest, Message, Role, Sampling, ToolDef
 
 
 @dataclass
@@ -39,7 +40,12 @@ class GateResult:
     reason: str = ""
 
     def as_dict(self) -> dict[str, Any]:
-        return {"gate": self.name, "pass": self.passed, "reason": self.reason, **self.detail}
+        return {
+            "gate": self.name,
+            "pass": self.passed,
+            "reason": self.reason,
+            **self.detail,
+        }
 
 
 # --- sec 10.2 tool-call validity --------------------------------------------
@@ -131,7 +137,9 @@ class ToolCallGateReport:
 TurnRunner = Callable[[GenRequest], Awaitable[dict[str, Any]]]
 
 
-async def toolcall_gate(run_turn: TurnRunner, *, runs: int = TOOLCALL_MIN_RUNS) -> GateResult:
+async def toolcall_gate(
+    run_turn: TurnRunner, *, runs: int = TOOLCALL_MIN_RUNS
+) -> GateResult:
     """Sec 10.2. Runs the fixed scenario `runs` times and tallies outcomes."""
     report = ToolCallGateReport()
     for i in range(runs):
@@ -187,7 +195,10 @@ _ISOLATION_PROMPTS = (
 
 
 async def adapter_isolation_gate(
-    factory: BackendFactory, adapters: Sequence[str], *, prompts: Sequence[str] = _ISOLATION_PROMPTS
+    factory: BackendFactory,
+    adapters: Sequence[str],
+    *,
+    prompts: Sequence[str] = _ISOLATION_PROMPTS,
 ) -> GateResult:
     """Sec 4.2, blocking.
 
@@ -198,7 +209,9 @@ async def adapter_isolation_gate(
     """
     if not adapters:
         return GateResult(
-            name="adapter_isolation", passed=True, reason="no adapters mounted; nothing to isolate"
+            name="adapter_isolation",
+            passed=True,
+            reason="no adapters mounted; nothing to isolate",
         )
 
     all_mounted = factory(list(adapters))
@@ -252,7 +265,10 @@ async def adapter_isolation_gate(
 
 
 async def g1_backend_equivalence(
-    reference: Backend, accelerated: Backend, *, prompts: Sequence[str] = _ISOLATION_PROMPTS
+    reference: Backend,
+    accelerated: Backend,
+    *,
+    prompts: Sequence[str] = _ISOLATION_PROMPTS,
 ) -> GateResult:
     """G1: greedy output byte-identical between the CPU reference and Metal paths."""
     mismatches: list[dict[str, str]] = []
@@ -261,10 +277,16 @@ async def g1_backend_equivalence(
             messages=[Message(role=Role.USER, content=prompt)],
             sampling=Sampling(temperature=0.0, top_p=1.0, seed=0, max_tokens=128),
         )
-        ref, acc = await asyncio.gather(reference.generate(req), accelerated.generate(req))
+        ref, acc = await asyncio.gather(
+            reference.generate(req), accelerated.generate(req)
+        )
         if ref.text != acc.text:
             mismatches.append(
-                {"prompt": prompt[:60], "reference": ref.text[:120], "accelerated": acc.text[:120]}
+                {
+                    "prompt": prompt[:60],
+                    "reference": ref.text[:120],
+                    "accelerated": acc.text[:120],
+                }
             )
     passed = not mismatches
     return GateResult(
@@ -305,7 +327,11 @@ async def g2_placement_invariance(
         a, b = await asyncio.gather(cold.generate(req), warm.generate(req))
         if a.text != b.text:
             mismatches.append(
-                {"prompt": prompt[:60], "cache_0": a.text[:120], "cache_max": b.text[:120]}
+                {
+                    "prompt": prompt[:60],
+                    "cache_0": a.text[:120],
+                    "cache_max": b.text[:120],
+                }
             )
     passed = not mismatches
     return GateResult(

@@ -29,12 +29,27 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
-from .filters import ExtractionFilters, SkipTally, is_bot, is_revert, keep_path
-from .gitwalk import Commit, CommitDiff, commit_diff, default_branch, file_at, is_repo, iter_commits
+from tandem.adapters.filters import (
+    ExtractionFilters,
+    SkipTally,
+    is_bot,
+    is_revert,
+    keep_path,
+)
+from tandem.adapters.gitwalk import (
+    Commit,
+    CommitDiff,
+    commit_diff,
+    default_branch,
+    file_at,
+    is_repo,
+    iter_commits,
+)
 
 _HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
 # Trailers a task description should not carry into the prompt: they leak the answer
@@ -200,7 +215,9 @@ def _truncate(text: str, budget: int) -> str:
     return f"{head}\n... (truncated) ...\n{tail}"
 
 
-def build_prompt(repo: Path, diff: CommitDiff, filters: ExtractionFilters) -> str | None:
+def build_prompt(
+    repo: Path, diff: CommitDiff, filters: ExtractionFilters
+) -> str | None:
     task = clean_message(diff.commit)
     if len(task) < filters.min_message_chars:
         return None
@@ -223,7 +240,9 @@ def build_prompt(repo: Path, diff: CommitDiff, filters: ExtractionFilters) -> st
             any_context = True
             continue
         excerpt = excerpt_around(
-            content, changed_line_ranges(diff.unified, fc.path), filters.per_file_context_chars
+            content,
+            changed_line_ranges(diff.unified, fc.path),
+            filters.per_file_context_chars,
         )
         if not excerpt:
             continue
@@ -361,8 +380,9 @@ def write_jsonl(pairs: list[Pair], path: str | Path) -> Path:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "w", encoding="utf-8") as fh:
-        for pair in pairs:
-            fh.write(json.dumps(pair.as_messages(), ensure_ascii=False) + "\n")
+        fh.writelines(
+            json.dumps(pair.as_messages(), ensure_ascii=False) + "\n" for pair in pairs
+        )
     return p
 
 
@@ -371,24 +391,24 @@ def write_manifest(pairs: list[Pair], path: str | Path) -> Path:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "w", encoding="utf-8") as fh:
-        for i, pair in enumerate(pairs):
-            fh.write(
-                json.dumps(
-                    {
-                        "line": i,
-                        "sha": pair.sha,
-                        "ts": pair.ts,
-                        "n_files": pair.n_files,
-                        "n_lines": pair.n_lines,
-                    }
-                )
-                + "\n"
+        fh.writelines(
+            json.dumps(
+                {
+                    "line": i,
+                    "sha": pair.sha,
+                    "ts": pair.ts,
+                    "n_files": pair.n_files,
+                    "n_lines": pair.n_lines,
+                }
             )
+            + "\n"
+            for i, pair in enumerate(pairs)
+        )
     return p
 
 
 def iter_jsonl(path: str | Path) -> Iterator[dict[str, Any]]:
-    with open(path, "r", encoding="utf-8") as fh:
+    with open(path, encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
             if line:

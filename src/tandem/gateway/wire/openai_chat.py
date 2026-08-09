@@ -16,7 +16,8 @@ import time
 import uuid
 from typing import Any
 
-from ...types import (
+from tandem.gateway.wire import check_bounds, size_of
+from tandem.types import (
     GenRequest,
     GenResult,
     Message,
@@ -28,7 +29,6 @@ from ...types import (
     ToolResult,
     Usage,
 )
-from . import check_bounds, size_of
 
 _FINISH_REASON = {
     StopReason.END_TURN: "stop",
@@ -100,7 +100,9 @@ def to_canonical(body: dict[str, Any]) -> GenRequest:
                     # bug, but dropping the call entirely loses the conversation's
                     # shape; keep it raw so the prompt still shows what happened.
                     args = {"_raw": raw_args}
-            calls.append(ToolCall(id=tc.get("id", ""), name=fn.get("name", ""), arguments=args))
+            calls.append(
+                ToolCall(id=tc.get("id", ""), name=fn.get("name", ""), arguments=args)
+            )
 
         role = Role.ASSISTANT if role_name == "assistant" else Role.USER
         messages.append(Message(role=role, content=content, tool_calls=tuple(calls)))
@@ -128,7 +130,9 @@ def to_canonical(body: dict[str, Any]) -> GenRequest:
     else:
         stop_seqs = ()
 
-    max_tokens = int(body.get("max_completion_tokens") or body.get("max_tokens") or 4096)
+    max_tokens = int(
+        body.get("max_completion_tokens") or body.get("max_tokens") or 4096
+    )
 
     schema = None
     fmt = body.get("response_format")
@@ -156,7 +160,9 @@ def to_canonical(body: dict[str, Any]) -> GenRequest:
     )
 
 
-def from_canonical(result: GenResult, *, model: str, request_id: str = "") -> dict[str, Any]:
+def from_canonical(
+    result: GenResult, *, model: str, request_id: str = ""
+) -> dict[str, Any]:
     message: dict[str, Any] = {"role": "assistant", "content": result.text or None}
     if result.tool_calls:
         message["tool_calls"] = [
@@ -184,7 +190,9 @@ def from_canonical(result: GenResult, *, model: str, request_id: str = "") -> di
             "prompt_tokens": result.usage.input_tokens,
             "completion_tokens": result.usage.output_tokens,
             "total_tokens": result.usage.input_tokens + result.usage.output_tokens,
-            "prompt_tokens_details": {"cached_tokens": result.usage.cached_input_tokens},
+            "prompt_tokens_details": {
+                "cached_tokens": result.usage.cached_input_tokens
+            },
         },
     }
     if result.receipt is not None:
@@ -202,13 +210,19 @@ def stream_options(body: dict[str, Any]) -> dict[str, Any]:
     is the whole mechanism by which the harness decides to compact.
     """
     opts = body.get("stream_options")
-    return {"include_usage": bool(opts.get("include_usage")) if isinstance(opts, dict) else False}
+    return {
+        "include_usage": bool(opts.get("include_usage"))
+        if isinstance(opts, dict)
+        else False
+    }
 
 
 class StreamEncoder:
     """Incremental SSE encoder: `open` -> `delta`* -> `close`."""
 
-    def __init__(self, *, model: str, request_id: str = "", include_usage: bool = False):
+    def __init__(
+        self, *, model: str, request_id: str = "", include_usage: bool = False
+    ):
         self.model = model
         self.id = request_id or f"chatcmpl-{uuid.uuid4().hex[:24]}"
         # One `created` for the whole stream. A per-chunk timestamp would have the
@@ -276,7 +290,10 @@ class StreamEncoder:
                             "index": i,
                             "id": call.id,
                             "type": "function",
-                            "function": {"name": call.name, "arguments": call.arguments_json()},
+                            "function": {
+                                "name": call.name,
+                                "arguments": call.arguments_json(),
+                            },
                         }
                     ]
                 }
@@ -293,5 +310,9 @@ class StreamEncoder:
         return [f"data: {payload}\n\n", "data: [DONE]\n\n"]
 
 
-def error(status: int, message: str, err_type: str = "invalid_request_error") -> dict[str, Any]:
-    return {"error": {"message": message, "type": err_type, "param": None, "code": None}}
+def error(
+    status: int, message: str, err_type: str = "invalid_request_error"
+) -> dict[str, Any]:
+    return {
+        "error": {"message": message, "type": err_type, "param": None, "code": None}
+    }

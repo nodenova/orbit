@@ -42,7 +42,7 @@ enabled = false
 #   "second_opinion"  rung 3 — tier 0 with its adapter unmounted. Free, weak, needs
 #                     no second model, and still catches adapter overfit. This is
 #                     the rung that is actually available during M0-M3, and on any
-#                     machine where both tiers turn out not to co-reside in 64 GB.
+#                     machine where both tiers turn out not to co-reside.
 #   "remote"          rung 4 — somebody else's API. Breaks the sec 8.6 offline claim
 #                     and needs the consent sentence below written out in full.
 rung = "streamed"
@@ -76,28 +76,23 @@ request_timeout_s = 180.0
 # arrival whatever was asked for, on every rung and every model.
 reasoning_control = "auto"
 
-# --- DeepSeek-V4-Flash-0731 -------------------------------------------------
-# The other tier-1 model this runtime supports, and the one to use on a 64 GB Mac
-# where the 122B does not leave room. Same rung, same engine, same process
-# boundary — `optiq serve --stream-experts` on 8081 — so this is a model swap and
-# not a code path. The full analysis is docs/DEEPSEEK_V4.md.
+# --- swapping the rung-1 model ----------------------------------------------
+# Any model mlx-optiq can stream serves this rung: same engine, same process
+# boundary (`optiq serve --stream-experts` on 8081), so it is a model swap and not
+# a code path. Two things to carry with the swap.
 #
-# 284B total / 13B active, 92.5 GB on disk, 6.5 GB resident with experts streamed.
-# MIT licensed and ungated, so the weights are a one-off auditable download.
+# 1. Raise `request_timeout_s` to match the throughput you measure. At Gate B's
+#    200 tok/s floor a 30k review costs ~150 s of prefill plus ~46 s of decode —
+#    past the 180 s default, so the largest reviews would degrade to failed
+#    verdicts on a *passing* gate. 300 s is the value that fits that arithmetic.
 #
-# model = "mlx-community/DeepSeek-V4-Flash-0731-OptiQ-2bit-mixed"
+# 2. Check whether the model reasons by default. If it does, `reasoning_control`
+#    above is not optional: a <think> block spends the output clamp before the
+#    verdict exists, and thinking mode discards `temperature` without erroring.
+#    A reasoned verdict is refused on arrival whatever the config says, so the
+#    symptom of getting this wrong is every verdict failing, not a wrong answer.
 #
-# Budget on a 64 GB M4 Max with tier 0 resident: ~8 OS + ~20 tier 0 + ~4 tier-0 KV
-# + 6.5 non-routed + ~4 activations leaves ~21 GB, so the 18 GB default above fits
-# with ~3 GB of headroom — about 21% of the ~86 GB routed-expert set. Sweep it at
-# 12/18/24 GB once Gate B has a number; do not tune it from this comment.
-#
-# Raise the timeout with it. Gate B's floor is 200 tok/s, and at the floor a 30k
-# review costs ~150 s of prefill plus ~46 s of decode — past the 180 s default, so
-# the largest reviews would degrade to failed verdicts on a passing gate.
-# request_timeout_s = 300.0
-#
-# Leave DSpark/MTP speculative decoding off at the engine. It buys nothing for a
+# Leave speculative decoding (DSpark/MTP) off at the engine. It buys nothing for a
 # verifier writing <=128 tokens and threatens the byte-identity G1/G2 assert.
 
 # --- rung 2 -----------------------------------------------------------------
@@ -196,3 +191,40 @@ escalate_on_test_failure = false
 # usually is not, so a patch against uncommitted work fails to apply for reasons
 # that are not the model's.
 escalate_on_apply_failure = false
+
+[gates]
+# What THIS host is judged against. Every value below is the sec 11 figure, which is
+# also the code default — an absent [gates] block and this block are the same thing.
+#
+# Lower one only when the host cannot meet it for a reason that is arithmetic rather
+# than a bug: an SSD-streamed tier against a resident one, a prefill rate the GPU
+# resident one. A gate that can only ever report red is a gate nobody runs, and the
+# point of relaxing is that the system gets to run end to end so the *next* weakness
+# becomes the thing the gate finds.
+#
+# Relaxing hides nothing. Every gate reports `spec_budget` beside `budget` and a
+# `meets_spec` verdict beside `pass`, and `relaxed_criteria` names each row that is
+# green only because of this block. A pass against a lowered floor means "this host
+# cleared its own floor" and never "Gate A passed" — delete this section before
+# quoting a gate result off the machine that produced it.
+
+# M0 Gate A (sec 11): can tier 0 serve interactively at all?
+gate_a_ttft_s = 5.0
+gate_a_decode_tok_per_s = 30.0
+# Almost never worth moving. Unlike the two above this is not a hardware fact, so a
+# host that cannot meet it has a bug in the tool-call layer — which is the thing the
+# gate exists to find. Note the number is *passed in* from `tandem gate toolcall`,
+# not measured by `tandem bench latency`, and defaults to 0.0, which passes: a Gate A
+# report is not evidence about tool calls unless that gate was run and its number
+# handed over.
+gate_a_toolcall_failure_rate = 0.05
+
+# M0 Gate B (sec 11, 5.3): streamed prefill throughput. Below this the engine is
+# reading each expert per token instead of once per chunk, and the in-house loader
+# becomes M-blocking rather than optional. Only rung 1 has this instrument — at any
+# other rung `tandem bench tier1` reports which rung is configured and exits 1.
+gate_b_prefill_tok_per_s = 200.0
+
+# The sec 7.3 chat contract, reported beside Gate A by `tandem bench latency`.
+contract_chat_ttft_s = 2.0
+contract_chat_tok_per_s = 40.0

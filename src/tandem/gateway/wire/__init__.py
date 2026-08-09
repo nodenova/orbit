@@ -20,9 +20,10 @@ has a token-counting endpoint.
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
-from ...types import Message
+from tandem.types import Message
 
 # --- edge bounds ------------------------------------------------------------
 #
@@ -79,15 +80,15 @@ def size_of(system: Any, messages: Iterable[Message]) -> int:
     return total
 
 
-from . import anthropic, openai_chat, openai_responses  # noqa: E402 - see above
+from tandem.gateway.wire import anthropic, openai_chat, openai_responses
 
 __all__ = [
+    "MAX_INPUT_CHARS",
+    "MAX_MESSAGES",
+    "MAX_OUTPUT_TOKENS",
     "anthropic",
+    "check_bounds",
     "openai_chat",
     "openai_responses",
-    "MAX_MESSAGES",
-    "MAX_INPUT_CHARS",
-    "MAX_OUTPUT_TOKENS",
-    "check_bounds",
     "size_of",
 ]

@@ -53,9 +53,13 @@ class TinyTokenizer:
     """
 
     def __init__(self) -> None:
-        self.pieces = ["<eos>", "<pad>"] + list('{}[]":,.-_') + list(
-            string.ascii_lowercase
-        ) + list(string.digits)
+        self.pieces = [
+            "<eos>",
+            "<pad>",
+            *list('{}[]":,.-_'),
+            *list(string.ascii_lowercase),
+            *list(string.digits),
+        ]
         self._ids = {piece: i for i, piece in enumerate(self.pieces)}
         self.all_special_ids = [0, 1]
         self.eos_token_id = 0
@@ -139,7 +143,9 @@ def _advance(tokenizer, allowed_fn, text: str) -> set[int]:
 # --- the filter enforces the schema -----------------------------------------
 
 
-def test_a_greedy_walk_under_the_mask_is_valid_json_for_the_schema(tokenizer, vocabulary):
+def test_a_greedy_walk_under_the_mask_is_valid_json_for_the_schema(
+    tokenizer, vocabulary
+):
     schema = tool_call_schema([READ_FILE])
     text, _ = _walk(tokenizer, _filter(vocabulary, schema))
 
@@ -148,8 +154,12 @@ def test_a_greedy_walk_under_the_mask_is_valid_json_for_the_schema(tokenizer, vo
     assert "path" in parsed["arguments"]
 
 
-def test_the_first_token_cannot_be_one_that_does_not_open_an_object(tokenizer, vocabulary):
-    allowed = _advance(tokenizer, _filter(vocabulary, tool_call_schema([READ_FILE])), "")
+def test_the_first_token_cannot_be_one_that_does_not_open_an_object(
+    tokenizer, vocabulary
+):
+    allowed = _advance(
+        tokenizer, _filter(vocabulary, tool_call_schema([READ_FILE])), ""
+    )
 
     assert tokenizer._ids["{"] in allowed
     for illegal in ("}", "]", ",", ":", "a"):
@@ -171,11 +181,15 @@ def test_a_const_name_admits_only_the_letters_that_spell_it(tokenizer, vocabular
 
 
 def test_a_stop_token_is_refused_until_the_object_is_complete(tokenizer, vocabulary):
-    midway = _advance(tokenizer, _filter(vocabulary, tool_call_schema([READ_FILE])), '{"name":')
+    midway = _advance(
+        tokenizer, _filter(vocabulary, tool_call_schema([READ_FILE])), '{"name":'
+    )
     assert not midway & tokenizer.eos_token_ids
 
     text, _ = _walk(tokenizer, _filter(vocabulary, tool_call_schema([READ_FILE])))
-    complete = _advance(tokenizer, _filter(vocabulary, tool_call_schema([READ_FILE])), text)
+    complete = _advance(
+        tokenizer, _filter(vocabulary, tool_call_schema([READ_FILE])), text
+    )
     assert complete & tokenizer.eos_token_ids, (
         "a completed object must admit a stop token, or the turn runs to max_tokens"
     )
@@ -226,18 +240,20 @@ def test_a_filter_cannot_be_built_without_a_vocabulary(tokenizer):
 class _Array:
     """The `mx.array` surface `build_logits_processor` touches, and no more."""
 
-    def __init__(self, values: list[float], shape: tuple[int, ...], dtype: str = "float32"):
+    def __init__(
+        self, values: list[float], shape: tuple[int, ...], dtype: str = "float32"
+    ):
         self.values = list(values)
         self.shape = shape
         self.dtype = dtype
 
-    def __setitem__(self, index: "_Array", value: float) -> None:
+    def __setitem__(self, index: _Array, value: float) -> None:
         if not isinstance(index, _Array):
             raise TypeError("scatter takes an index array")
         for i in index.values:
             self.values[int(i)] = float(value)
 
-    def __add__(self, other: "_Array") -> "_Array":
+    def __add__(self, other: _Array) -> _Array:
         # Real MLX broadcasts a [vocab] mask against [1, vocab] logits; a double
         # that refused would fail code the library accepts.
         width = self.shape[-1]
@@ -313,6 +329,26 @@ def test_an_allowed_set_entirely_past_the_width_passes_through():
     assert _processor([99, 100])(_Tokens(), logits) is logits
 
 
+def test_each_step_masks_from_its_own_allowed_set():
+    """No caching between steps — a stale mask would permit last token's choices.
+
+    `build_logits_processor` carried an identity-keyed mask cache briefly; it
+    measured 27.1 tok/s against 27.6 without and was removed. This pins the
+    behaviour that matters either way: what the mask permits tracks the parser,
+    step by step.
+    """
+    from tandem.backends import mlx_tier0
+
+    sets = [[1], [3]]
+    processor = mlx_tier0.build_logits_processor(lambda _t: sets.pop(0), _MX())
+
+    first = processor(_Tokens(), _logits(5))
+    second = processor(_Tokens(), _logits(5))
+
+    assert first.values[1] == 1.0 and first.values[3] == float("-inf")
+    assert second.values[3] == 3.0 and second.values[1] == float("-inf")
+
+
 # --- the backend actually passes it down ------------------------------------
 
 
@@ -323,7 +359,9 @@ def tier0(tmp_path):
 
     container = tmp_path / "qwen3.6-35b-a3b-4bit"
     container.mkdir()
-    (container / "config.json").write_text('{"model_type": "qwen3_moe"}', encoding="utf-8")
+    (container / "config.json").write_text(
+        '{"model_type": "qwen3_moe"}', encoding="utf-8"
+    )
     with fake_mlx.install():
         from tandem.backends.mlx_tier0 import MLXTier0Backend
 
@@ -369,7 +407,9 @@ def test_the_vocabulary_is_built_once_and_reused(tier0, tokenizer, monkeypatch):
     assert len(builds) == 1
 
 
-def test_unloading_drops_the_vocabulary_with_the_tokenizer_it_describes(tier0, tokenizer):
+def test_unloading_drops_the_vocabulary_with_the_tokenizer_it_describes(
+    tier0, tokenizer
+):
     """A stale prefix tree would constrain against a vocabulary nobody is sampling."""
     import asyncio
 
@@ -384,7 +424,6 @@ def test_a_missing_enforcer_is_probed_once_and_then_remembered(tier0, monkeypatc
 
     def unavailable(self, tok):
         calls.append(tok)
-        return None
 
     monkeypatch.setattr(Constrainer, "vocabulary", unavailable)
     for _ in range(3):

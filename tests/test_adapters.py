@@ -59,7 +59,13 @@ def repo(tmp_path):
     (root / "package-lock.json").write_text('{"lockfileVersion": 3}\n')
     (root / "util.py").write_text("def helper():\n    return None\n")
     git(root, "add", ".")
-    git(root, "commit", "-q", "-m", "Make the helper return None and refresh the lockfile")
+    git(
+        root,
+        "commit",
+        "-q",
+        "-m",
+        "Make the helper return None and refresh the lockfile",
+    )
     return root
 
 
@@ -192,7 +198,15 @@ def test_merge_policy_auto_uses_first_parent_on_a_merge_heavy_branch(tmp_path):
         git(root, "add", ".")
         git(root, "commit", "-q", "-m", f"Change x to {i + 2} on the feature branch")
         git(root, "checkout", "-q", "main")
-        git(root, "merge", "-q", "--no-ff", f"feature-{i}", "-m", f"Merge feature {i} into main")
+        git(
+            root,
+            "merge",
+            "-q",
+            "--no-ff",
+            f"feature-{i}",
+            "-m",
+            f"Merge feature {i} into main",
+        )
 
     _train, _held, report = extract_a1.extract(root)
     assert report.merge_policy_used == "first_parent"
@@ -223,7 +237,11 @@ def test_clean_message_strips_trailers_and_issue_refs():
     from tandem.adapters.gitwalk import Commit
 
     commit = Commit(
-        sha="x", parents=("p",), author_name="A", author_email="a@b", ts=0,
+        sha="x",
+        parents=("p",),
+        author_name="A",
+        author_email="a@b",
+        ts=0,
         subject="Fix the retry loop (#123)",
         body="Explains the change.\n\nSigned-off-by: A <a@b>\nFixes: #99\n",
     )
@@ -313,7 +331,9 @@ def test_a0_generates_deterministic_traces():
     a = extract_a0.generate(n=50, seed=7)
     b = extract_a0.generate(n=50, seed=7)
     assert [t.messages for t in a] == [t.messages for t in b]
-    assert [t.messages for t in extract_a0.generate(n=50, seed=8)] != [t.messages for t in a]
+    assert [t.messages for t in extract_a0.generate(n=50, seed=8)] != [
+        t.messages for t in a
+    ]
 
 
 def test_a0_emits_the_one_canonical_call_shape():
@@ -326,7 +346,9 @@ def test_a0_emits_the_one_canonical_call_shape():
             if msg["role"] != "assistant":
                 continue
             out = repair(msg["content"], extract_a0.DEFAULT_TOOLS)
-            assert out.ok, f"A0 emitted a shape the repair layer rejects: {msg['content'][:80]}"
+            assert out.ok, (
+                f"A0 emitted a shape the repair layer rejects: {msg['content'][:80]}"
+            )
 
 
 def test_a0_includes_multi_step_traces():
@@ -390,8 +412,11 @@ def test_profile_rejects_ragged_layers():
 
 def test_sft_command_carries_the_spec_defaults(tmp_path):
     cmd = build_sft_command(
-        model="m", corpus=tmp_path / "d" / "train.jsonl", output=tmp_path / "out",
-        cfg=SFTConfig(), trainer="mlx_lm",
+        model="m",
+        corpus=tmp_path / "d" / "train.jsonl",
+        output=tmp_path / "out",
+        cfg=SFTConfig(),
+        trainer="mlx_lm",
     )
     assert "--mask-prompt" in cmd
     assert "--grad-checkpoint" in cmd
@@ -402,8 +427,12 @@ def test_sft_command_carries_the_spec_defaults(tmp_path):
 def test_dpo_command_mounts_a1_and_uses_one_epoch(tmp_path):
     """Sec 6.3: start from the SFT weights; more than one epoch invites collapse."""
     cmd = build_dpo_command(
-        model="m", corpus=tmp_path / "d" / "train.jsonl", output=tmp_path / "out",
-        cfg=DPOConfig(), trainer="mlx_lm", mount_adapter=tmp_path / "a1",
+        model="m",
+        corpus=tmp_path / "d" / "train.jsonl",
+        output=tmp_path / "out",
+        cfg=DPOConfig(),
+        trainer="mlx_lm",
+        mount_adapter=tmp_path / "a1",
     )
     assert "--method" in cmd and cmd[cmd.index("--method") + 1] == "dpo"
     assert "--mount-adapter" in cmd

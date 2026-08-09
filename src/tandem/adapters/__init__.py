@@ -9,17 +9,17 @@ that says whether any of it worked (sec 13).
     A2  reviewer  pre/post-review diff pairs      per customer repo, DPO
 """
 
-from . import extract_a0, extract_a1, extract_a2, profile, train
-from .filters import ExtractionFilters, SkipTally
-from .profile import RoutingProfile
+from tandem.adapters import extract_a0, extract_a1, extract_a2, profile, train
+from tandem.adapters.filters import ExtractionFilters, SkipTally
+from tandem.adapters.profile import RoutingProfile
 
 __all__ = [
+    "ExtractionFilters",
+    "RoutingProfile",
+    "SkipTally",
     "extract_a0",
     "extract_a1",
     "extract_a2",
     "profile",
     "train",
-    "ExtractionFilters",
-    "RoutingProfile",
-    "SkipTally",
 ]

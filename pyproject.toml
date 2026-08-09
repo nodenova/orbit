@@ -41,7 +41,13 @@ constrain = ["lm-format-enforcer>=0.11"]
 mlx = ["mlx>=0.32.0", "mlx-lm>=0.28"]
 # pytest 9 and pytest-asyncio 1.x are what CI runs and what the strict-mode
 # convention in CLAUDE.md describes. The old floors predate both majors.
-dev = ["pytest>=9.0", "pytest-asyncio>=1.0"]
+#
+# ruff is floored at 0.16 because that release moved the default rule set from 59
+# rules to 413, and `[tool.ruff.lint]` below extends the *default* set rather than
+# naming 400-odd rules. On 0.15 the same config silently lints a twentieth of what
+# CI does. `required-version` under [tool.ruff] makes that mismatch an error rather
+# than a green run that proves nothing.
+dev = ["pytest>=9.0", "pytest-asyncio>=1.0", "ruff>=0.16.2,<0.17", "mypy>=2.3"]
 
 [project.scripts]
 tandem = "tandem.cli:main"
@@ -57,3 +63,207 @@ filterwarnings = ["error::DeprecationWarning:tandem.*"]
 # explicit `@pytest.mark.asyncio` it implies, and a default that flips upstream
 # would turn every unmarked coroutine into a silent skip rather than an error.
 asyncio_mode = "strict"
+
+[tool.ruff]
+# The floor in [dev] and this ceiling are the same decision from both ends: the
+# config below is written against 0.16's default rule set, so a 0.15 binary would
+# lint far less than CI and a 0.17 one could change the baseline underneath it.
+# Ruff refuses to run rather than reporting a number that means something else.
+required-version = ">=0.16.2,<0.17"
+target-version = "py311"
+# Import classification: without this, first-party modules under src/ sort as
+# third-party and `ruff check --fix` churns the import block every other run.
+src = ["src", "tests", "tools"]
+# `/specs/` is gitignored and not ours (CLAUDE.md); `var/` is runtime output.
+extend-exclude = ["specs", "var"]
+
+[tool.ruff.lint]
+# 0.16 turns on 413 rules by default, which is the whole baseline here. This list
+# is only the delta: families that fire zero or near-zero times today and are
+# therefore free to keep clean, plus the non-default members of families already
+# partly on. Deliberately *not* selected, with reasons, because each looks like an
+# obvious win until you run it here:
+#   ANN, D    1063 and 801 hits — annotations are mypy's job below (it runs strict
+#             over src/), and docstring formatting is not a thing worth 800 edits.
+#   S         994 hits, dominated by S101 `assert` in tests. The security rules
+#             worth having (S110 and friends) are already in the 0.16 default set.
+#   EM, TRY   176 hits of exception-message *style*. Opinion, not defect.
+#   SLF, ARG  interface conformance reads as a violation to both — a Backend
+#             implementation that ignores an argument the ABC requires is correct.
+#   ERA       flags this repo's explanatory comments as commented-out code.
+#   PTH       24 mechanical `open()` -> `Path.open()` rewrites, several of them in
+#             the KV-cache I/O that CLAUDE.md pins to plain read/write. No defect
+#             found, so the edit is pure risk.
+#   TC        pydantic resolves annotations at runtime. Moving a field's type into
+#             an `if TYPE_CHECKING:` block is a green lint and an import error on
+#             first model construction, which is exactly the failure this repo
+#             calls a silently wrong answer.
+extend-select = [
+    "A",     # builtin shadowing
+    "ASYNC", # blocking calls in async defs — the gateway is async end to end
+    "DTZ",   # naive datetimes; the audit chain (sec 9.2) timestamps records
+    "G",     # logging call format
+    "ICN",   # import conventions
+    "LOG",   # logging defects
+    "N",     # pep8-naming
+    "PERF",
+    "PIE",
+    "RSE",
+    "RUF",
+    "SIM",
+    "TID",   # absolute imports only — see flake8-tidy-imports below
+    "UP",    # pyupgrade, floored at target-version
+]
+ignore = [
+    # Typography, not confusables. The prose comments use en/em dashes throughout,
+    # and repair.py:60 is a *table* of the smart-quote characters the tool-call
+    # repair layer normalises — the ambiguity is the subject matter.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+    # `class Role(str, Enum)` -> `StrEnum` is offered as an unsafe fix because it
+    # is one: the two differ in `__str__`/`__format__`, and all four classes here
+    # serialise onto the wire (sec 8.1). A lint adoption is not where that gets
+    # changed.
+    "UP042",
+    # Renaming `BackendUnavailable` to `BackendUnavailableError` is a public API
+    # break for a suffix.
+    "N818",
+    # "prefer TypeError for a `callable()` check" is right in general and wrong at
+    # all three sites here. Two are constructor guards whose ValueError is pinned by
+    # tests (test_fallback_rungs.py); the third raises ValueError *into* its own
+    # `except (JSONDecodeError, ValueError)` on purpose, so retyping it turns a
+    # handled parse failure into an escaping exception.
+    "TRY004",
+    # The rest of PERF stays on — PERF101/102 find real work done twice. These two
+    # only ever say "make this loop a comprehension", and every site they flag here
+    # is a loop with a guard and a multi-line body, where the comprehension is the
+    # harder thing to read. Kept out by name rather than dropping the family.
+    "PERF401",
+    "PERF403",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# `T` mirrors the transpose attribute on a real mlx array. The stand-in is held to
+# "never easier than the real thing" (CLAUDE.md), which includes the spelling.
+"tests/fake_mlx.py" = ["N802"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+# Absolute imports only, no exceptions — `from tandem.types import GenRequest`,
+# never `from ..types import GenRequest`. TID252 enforces it and autofixes it.
+# "all" rather than "parents": banning only `..` leaves single-dot imports legal,
+# and a rule with a legal shortcut is the shortcut.
+ban-relative-imports = "all"
+
+[tool.ruff.lint.isort]
+known-first-party = ["tandem"]
+
+[tool.ruff.format]
+# Both are ruff's defaults; written out because the repo's convention matches them
+# 97:3 (4972 double-quoted strings to 144) and a default flip would reformat
+# everything. Same reasoning as asyncio_mode above.
+quote-style = "double"
+indent-style = "space"
+# 0.16 formats Python blocks inside Markdown by default. The docs here carry shell
+# and TOML blocks, not Python, so this changes nothing today — it is on so that a
+# Python example added to docs/ later is formatted like the code it describes.
+docstring-code-format = true
+
+[tool.mypy]
+# Deliberately no `python_version`: mypy targets whatever interpreter it runs
+# under, so the CI matrix checks 3.11 and 3.14 the same way pytest does. Pinning it
+# to 3.11 here checks one end twice and, worse, parses the *installed* stubs at
+# 3.11 — numpy's are `requires-python >=3.12` and use `type` statements, which is a
+# syntax error in a package nothing in this repo imports.
+files = ["src", "tests", "tools"]
+strict = true
+# tests/ and tools/ are not packages — no __init__.py, by design. Without these
+# two, mypy derives module names from the filesystem root and reports duplicate
+# modules instead of checking them.
+namespace_packages = true
+explicit_package_bases = true
+# Only `src`. Putting `tests` here as well makes mypy name the modules after the
+# file — `test_router`, not `tests.test_router` — and a `tests.*` override then
+# matches nothing while looking like it works. mypy accepts `*` as a whole
+# component only, so there is no bare-name pattern to fall back to.
+mypy_path = "src"
+warn_unreachable = true
+# `ignore-without-code` is the load-bearing one: a bare `# type: ignore` silences
+# every future error on that line too, which is how a real defect hides behind a
+# suppression written for something else.
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+
+[[tool.mypy.overrides]]
+# `tools/` is real code — the no-outbound-network rule (CLAUDE.md) is enforced
+# against it by tests/test_export_reviews.py — so it keeps every check that finds a
+# type error. Only the annotation-presence rules come off, because these are
+# argparse scripts, not a library surface.
+module = ["tools.*"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_decorators = false
+disallow_untyped_calls = false
+
+[[tool.mypy.overrides]]
+# Tests get the same annotation relief plus the checks that a test suite is
+# *supposed* to violate. Each of these was measured against the actual failures,
+# not guessed:
+#   arg-type          tests pass `None` and bare objects on purpose, to prove a
+#                     constructor rejects them (test_fallback_rungs.py:560 is
+#                     literally `RemoteTier1Backend(None, ...)` inside a
+#                     pytest.raises). Type-checking a rejection test defeats it.
+#   union-attr/index  `assert result.receipt["seed"]` on an `X | None` is the
+#                     assertion. Narrowing every one first adds noise, not safety.
+#   truthy-bool       `assert some_dataclass` as a not-None check.
+#   redundant-expr    the MLX stand-in keeps guards the real library needs.
+#   no_implicit_reexport  tests reach through a module to patch what it imported —
+#                     `receipt.subprocess` — which is the point of the patch.
+module = ["tests.*"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_decorators = false
+disallow_untyped_calls = false
+disallow_any_generics = false
+warn_return_any = false
+warn_unreachable = false
+no_implicit_reexport = false
+disable_error_code = ["arg-type", "union-attr", "index", "truthy-bool", "redundant-expr"]
+
+[[tool.mypy.overrides]]
+# The stand-in assembles fake `mlx` / `mlx_lm` module objects attribute by
+# attribute so `import mlx.core` resolves under test. Assigning onto a ModuleType
+# is `attr-defined` by construction, and it is the mechanism, not a mistake.
+module = ["tests.fake_mlx"]
+disable_error_code = ["attr-defined"]
+
+[[tool.mypy.overrides]]
+# No stubs published. Scoped per module rather than a global
+# `ignore_missing_imports`, so a genuinely missing first-party import still fails.
+#
+# `follow_imports = "skip"` is the load-bearing half, and it is about the [mlx]
+# extra being Apple-Silicon-only. Without it mypy answers one way on the CI box,
+# where mlx_lm is simply absent, and another on the M4 Max, where it resolves and
+# `load()` declares `tuple[Module, Tokenizer] | tuple[Module, Tokenizer, dict]` —
+# a union mypy cannot narrow on the `return_config=False` default, so correct
+# 2-tuple unpacking reads as an error. Skipping pins both machines to the CI
+# answer instead of leaving a gate that only fails on the machine that can run it.
+module = ["blake3.*", "lmformatenforcer.*", "mlx.*", "mlx_lm.*", "uvicorn.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
+
+[[tool.mypy.overrides]]
+# The MLX stand-in is a sibling import (`import fake_mlx`), which pytest resolves by
+# putting tests/ on sys.path and mypy does not resolve at all — tests/ is not a
+# package and must not become one, or the stand-in ships inside the distribution.
+# The file itself is still checked, as `tests.fake_mlx`; this only silences the
+# import edge.
+module = ["fake_mlx"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Nothing here imports numpy; it arrives transitively under the Apple-only [mlx]
+# extra, so it is absent from CI entirely. Its bundled stubs use `type` statements
+# and numpy itself is `requires-python >=3.12`, so parsing them at the 3.11 target
+# above is a syntax error in a file no code in this repo reaches.
+module = ["numpy.*"]
+follow_imports = "skip"

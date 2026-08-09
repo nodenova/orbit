@@ -11,10 +11,12 @@ from __future__ import annotations
 import os
 import tomllib
 from dataclasses import dataclass, field, fields, is_dataclass
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 from types import UnionType
 from typing import Any, Union, get_args, get_origin, get_type_hints
+
+from tandem import thresholds
 
 DEFAULT_CONFIG_PATH = Path(os.environ.get("TANDEM_CONFIG", "tandem.toml"))
 
@@ -206,6 +208,36 @@ class EvalConfig:
 
 
 @dataclass
+class GatesConfig:
+    """Effective gate targets for *this host* (sec 11, 7.3).
+
+    Every default is the spec number, so a fresh clone and CI judge exactly what the
+    specification asks for. Lower one here only when the host cannot meet it and the
+    reason is arithmetic rather than a bug — an SSD-streamed tier against a resident
+    one, a prefill rate the GPU cannot reach at any efficiency.
+
+    Relaxing a target does **not** hide the shortfall. Every gate reports the spec
+    number beside the effective one and a `meets_spec` verdict against it
+    (`tandem.thresholds`), so a green gate on a relaxed floor still says how far
+    short of sec 11 the host is. What relaxing buys is that the system runs end to
+    end and the *next* weakness becomes visible; what it must never buy is a report
+    that reads as a met specification.
+    """
+
+    # M0 Gate A. `toolcall_failure_rate` is the one that should almost never move:
+    # unlike TTFT and decode it is not a hardware fact, so a host that cannot meet
+    # it has a bug in the tool-call layer rather than a small enough machine.
+    gate_a_ttft_s: float = thresholds.SPEC_GATE_A_TTFT_S
+    gate_a_decode_tok_per_s: float = thresholds.SPEC_GATE_A_DECODE_TOK_PER_S
+    gate_a_toolcall_failure_rate: float = thresholds.SPEC_GATE_A_TOOLCALL_FAILURE_RATE
+    # M0 Gate B — streamed prefill throughput.
+    gate_b_prefill_tok_per_s: float = thresholds.SPEC_GATE_B_PREFILL_TOK_PER_S
+    # sec 7.3 chat contract, reported by `tandem bench latency` beside Gate A.
+    contract_chat_ttft_s: float = thresholds.SPEC_CHAT_TTFT_S
+    contract_chat_tok_per_s: float = thresholds.SPEC_CHAT_DECODE_TOK_PER_S
+
+
+@dataclass
 class AttestConfig:
     audit_log: str = "var/audit.jsonl"
     fsync: bool = False
@@ -245,6 +277,7 @@ class Config:
     toolcall: ToolCallConfig = field(default_factory=ToolCallConfig)
     attest: AttestConfig = field(default_factory=AttestConfig)
     eval: EvalConfig = field(default_factory=EvalConfig)
+    gates: GatesConfig = field(default_factory=GatesConfig)
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> Config:
@@ -269,7 +302,11 @@ def _apply(target: Any, data: dict[str, Any]) -> None:
     fail somewhere that names neither `server` nor the file it came from. A config
     error should be reported against the line that caused it.
     """
-    hints = _hints(type(target))
+    # typeshed types `lru_cache.__call__` as taking `Hashable`, and `type[X]` does
+    # not structurally match it — its `__hash__` is `(self: object) -> int` where
+    # the protocol wants `() -> int`. Classes are hashable; this is the stub, not
+    # the code.
+    hints = _hints(type(target))  # type: ignore[arg-type]
     known = {f.name: f for f in fields(target)}
     for key, value in data.items():
         if key not in known:
@@ -296,8 +333,8 @@ def _apply(target: Any, data: dict[str, Any]) -> None:
             setattr(target, key, value)
 
 
-@lru_cache(maxsize=None)
-def _hints(cls: type) -> dict[str, Any]:
+@cache
+def _hints(cls: type[Any]) -> dict[str, Any]:
     """Resolved annotations for a config dataclass.
 
     `from __future__ import annotations` makes `Field.type` a string, and matching
@@ -386,7 +423,7 @@ def _apply_env(cfg: Config) -> None:
         name = path[-1]
         current = getattr(target, name)
         value: Any = raw
-        if isinstance(current, bool) or current is None and env.endswith("_ENABLED"):
+        if isinstance(current, bool) or (current is None and env.endswith("_ENABLED")):
             value = raw.strip().lower() in ("1", "true", "yes", "on")
         elif isinstance(current, int):
             value = int(raw)

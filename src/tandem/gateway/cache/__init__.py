@@ -1,7 +1,7 @@
 """Prompt and KV caching (spec sec 8.4)."""
 
-from .kv_disk import DiskKVCache, KVSnapshot
-from .prompt_cache import (
+from tandem.gateway.cache.kv_disk import DiskKVCache, KVSnapshot
+from tandem.gateway.cache.prompt_cache import (
     CacheEntry,
     PrefixHit,
     PromptCache,

@@ -18,23 +18,11 @@ entry that comes back short, or under the wrong name, is worse than no entry at 
 
 from __future__ import annotations
 
-import os
-import stat
-import threading
-import time
-
 import pytest
 
 from tandem.backends.mock import MockBackend
 from tandem.config import Config
 from tandem.gateway.cache.kv_disk import DiskKVCache, KVSnapshot
-from tandem.gateway.cache.prompt_cache import (
-    CacheEntry,
-    PromptCache,
-    align_down,
-    aligned_mark,
-    chunk_digests,
-)
 from tandem.gateway.pipeline import Pipeline
 from tandem.types import GenRequest, KVState, Message, Role
 
@@ -42,7 +30,9 @@ LONG_BODY = "def handler(request):\n    return process(request)\n\n" * 300
 # The same shape of body with the multi-byte characters a real diff carries: a CJK
 # identifier, an accented one, an emoji and a box-drawing character. Every cache test
 # in the suite used to be pure ASCII, which is why H1 survived.
-UNICODE_BODY = "def 计算(请求):\n    return prozessieren(请求)  # ✅ résumé ─┤\n\n" * 300
+UNICODE_BODY = (
+    "def 计算(请求):\n    return prozessieren(请求)  # ✅ résumé ─┤\n\n" * 300
+)
 
 
 @pytest.fixture
@@ -198,7 +188,11 @@ async def test_replay_map_is_restored_alongside_the_state(cfg, tmp_path):
     """A restored prefix whose tool calls re-render differently is not that prefix."""
     from tandem.types import ToolDef
 
-    schema = {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}
+    schema = {
+        "type": "object",
+        "properties": {"path": {"type": "string"}},
+        "required": ["path"],
+    }
     tools = (ToolDef(name="read_file", parameters=schema),)
 
     first = Pipeline(cfg, MockBackend())

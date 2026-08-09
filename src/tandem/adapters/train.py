@@ -17,12 +17,16 @@ weights, beta 0.1, lr 5e-5, and **1 epoch**: more invites preference collapse.
 logits four times per step (policy and reference x chosen and rejected) and the
 plain path OOMs early.
 
-Memory ceiling on 64 GB: 4096-token context ~= 11.4 GB peak, 8192 ~= 19.9 GB, measured
-on a 36 GB M3 Max for a 4B model and scaled [V]. Fused cut-cross-entropy auto-engages
-above 4096 so the `[seq, vocab]` logit tensor is never materialised — with a ~250k
-vocab that tensor is multi-GB and is what OOMs first. **Training a 35B adapter on
-64 GB requires tier 1 unloaded**, which `preflight()` checks rather than discovering
-two hours in.
+Memory: 4096-token context ~= 11.4 GB peak, 8192 ~= 19.9 GB, measured on an M3 Max for
+a 4B model and scaled [V]. Fused cut-cross-entropy auto-engages above 4096 so the
+`[seq, vocab]` logit tensor is never materialised — with a ~250k vocab that tensor is
+multi-GB and is what OOMs first.
+
+**Those two figures have not been re-measured against the baseline host** (36 GB M4
+Max, 28.08 GiB Metal working set — `docs/BASELINE.md`), and the headroom there is
+thin enough that the scaling is worth checking rather than trusting: tier 0 alone is
+23.0 GiB. **Training a 35B adapter requires tier 1 unloaded** regardless, which
+`preflight()` checks rather than discovering two hours in.
 """
 
 from __future__ import annotations
@@ -34,8 +38,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..attest.hashing import hash_artefact
-from ..attest.provenance import ProvenanceRecord, SourceKind, corpus_hash_for
+from tandem.attest.hashing import hash_artefact
+from tandem.attest.provenance import ProvenanceRecord, SourceKind, corpus_hash_for
 
 
 @dataclass
@@ -111,7 +115,7 @@ def trainer_available() -> tuple[bool, str]:
     if shutil.which("optiq"):
         return True, "optiq"
     try:
-        import mlx_lm  # type: ignore  # noqa: F401
+        import mlx_lm  # noqa: F401
     except ImportError:
         return False, (
             "no trainer available: install mlx-lm (Apple Silicon) or the optiq CLI. "
@@ -124,13 +128,13 @@ def preflight(tier1_loaded: bool, model_params_b: float = 35.0) -> list[str]:
     """Checks worth making before a multi-hour run (sec 6.2).
 
     Returns warnings rather than raising: the operator decides, but nobody should
-    discover the 64 GB ceiling two hours into a run.
+    discover the memory ceiling two hours into a run.
     """
     warnings: list[str] = []
     if tier1_loaded and model_params_b >= 30:
         warnings.append(
-            "Tier 1 is loaded. Training a 35B adapter on 64 GB requires tier 1 "
-            "unloaded (sec 6.2) — stop the tier-1 process before training."
+            "Tier 1 is loaded. Training a 35B adapter requires tier 1 unloaded "
+            "(sec 6.2) — stop the tier-1 process before training."
         )
     return warnings
 
@@ -144,19 +148,32 @@ def build_sft_command(
     trainer: str,
     valid_corpus: Path | None = None,
 ) -> list[str]:
-    base = ["optiq", "lora", "train"] if trainer == "optiq" else ["python3", "-m", "mlx_lm", "lora"]
+    base = (
+        ["optiq", "lora", "train"]
+        if trainer == "optiq"
+        else ["python3", "-m", "mlx_lm", "lora"]
+    )
     cmd = [
         *base,
-        "--model", model,
+        "--model",
+        model,
         "--train",
-        "--data", str(corpus.parent),
-        "--adapter-path", str(output),
-        "--iters", str(cfg.epochs),
-        "--learning-rate", str(cfg.learning_rate),
-        "--batch-size", str(cfg.batch_size),
-        "--max-seq-length", str(cfg.max_seq_length),
-        "--num-layers", "-1",  # all-linear targeting (sec 4.3), not attention-only
-        "--seed", str(cfg.seed),
+        "--data",
+        str(corpus.parent),
+        "--adapter-path",
+        str(output),
+        "--iters",
+        str(cfg.epochs),
+        "--learning-rate",
+        str(cfg.learning_rate),
+        "--batch-size",
+        str(cfg.batch_size),
+        "--max-seq-length",
+        str(cfg.max_seq_length),
+        "--num-layers",
+        "-1",  # all-linear targeting (sec 4.3), not attention-only
+        "--seed",
+        str(cfg.seed),
     ]
     if cfg.mask_prompt:
         cmd.append("--mask-prompt")
@@ -178,21 +195,35 @@ def build_dpo_command(
     trainer: str,
     mount_adapter: Path | None,
 ) -> list[str]:
-    base = ["optiq", "lora", "train"] if trainer == "optiq" else ["python3", "-m", "mlx_lm", "lora"]
+    base = (
+        ["optiq", "lora", "train"]
+        if trainer == "optiq"
+        else ["python3", "-m", "mlx_lm", "lora"]
+    )
     cmd = [
         *base,
-        "--model", model,
+        "--model",
+        model,
         "--train",
-        "--method", "dpo",
-        "--data", str(corpus.parent),
-        "--adapter-path", str(output),
-        "--iters", str(cfg.epochs),
-        "--learning-rate", str(cfg.learning_rate),
-        "--dpo-beta", str(cfg.beta),
-        "--batch-size", str(cfg.batch_size),
-        "--max-seq-length", str(cfg.max_seq_length),
+        "--method",
+        "dpo",
+        "--data",
+        str(corpus.parent),
+        "--adapter-path",
+        str(output),
+        "--iters",
+        str(cfg.epochs),
+        "--learning-rate",
+        str(cfg.learning_rate),
+        "--dpo-beta",
+        str(cfg.beta),
+        "--batch-size",
+        str(cfg.batch_size),
+        "--max-seq-length",
+        str(cfg.max_seq_length),
         "--grad-checkpoint",
-        "--seed", str(cfg.seed),
+        "--seed",
+        str(cfg.seed),
     ]
     if mount_adapter is not None:
         # Start from the SFT weights (sec 6.3), not from the base.
@@ -204,7 +235,9 @@ def build_dpo_command(
 
 def _run(cmd: list[str], cwd: Path | None = None) -> tuple[int, str, str, float]:
     t0 = time.perf_counter()
-    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, errors="replace")
+    proc = subprocess.run(
+        cmd, capture_output=True, text=True, cwd=cwd, errors="replace", check=False
+    )
     return proc.returncode, proc.stdout, proc.stderr, time.perf_counter() - t0
 
 
@@ -228,14 +261,18 @@ def train_sft(
     ok, trainer = trainer_available()
     warnings = preflight(tier1_loaded)
     if not ok:
-        return TrainResult(ok=False, adapter_path=str(output), stderr_tail=trainer, warnings=warnings)
+        return TrainResult(
+            ok=False, adapter_path=str(output), stderr_tail=trainer, warnings=warnings
+        )
 
     output.mkdir(parents=True, exist_ok=True)
     cmd = build_sft_command(
         model=model, corpus=corpus, output=output, cfg=cfg, trainer=trainer
     )
     if dry_run:
-        return TrainResult(ok=True, adapter_path=str(output), command=cmd, warnings=warnings)
+        return TrainResult(
+            ok=True, adapter_path=str(output), command=cmd, warnings=warnings
+        )
 
     rc, out, err, elapsed = _run(cmd)
     result = TrainResult(
@@ -287,15 +324,23 @@ def train_dpo(
     ok, trainer = trainer_available()
     warnings = preflight(tier1_loaded)
     if not ok:
-        return TrainResult(ok=False, adapter_path=str(output), stderr_tail=trainer, warnings=warnings)
+        return TrainResult(
+            ok=False, adapter_path=str(output), stderr_tail=trainer, warnings=warnings
+        )
 
     output.mkdir(parents=True, exist_ok=True)
     cmd = build_dpo_command(
-        model=model, corpus=corpus, output=output, cfg=cfg, trainer=trainer,
+        model=model,
+        corpus=corpus,
+        output=output,
+        cfg=cfg,
+        trainer=trainer,
         mount_adapter=parent_adapter,
     )
     if dry_run:
-        return TrainResult(ok=True, adapter_path=str(output), command=cmd, warnings=warnings)
+        return TrainResult(
+            ok=True, adapter_path=str(output), command=cmd, warnings=warnings
+        )
 
     rc, out, err, elapsed = _run(cmd)
     collapse = detect_collapse(out + err)
@@ -324,7 +369,9 @@ def train_dpo(
             base_model_hash=hash_artefact(model) or "",
             base_model_name=model,
             training_config={"method": "dpo", **cfg.as_dict()},
-            parent_adapter_hash=hash_artefact(parent_adapter) if parent_adapter else None,
+            parent_adapter_hash=hash_artefact(parent_adapter)
+            if parent_adapter
+            else None,
             licence=licence,
             created_ts=time.time(),
         )
@@ -341,10 +388,15 @@ def detect_collapse(log: str) -> str:
     """
     import re
 
-    losses = [float(m) for m in re.findall(r"(?:train )?loss[ =:]+([0-9.]+)", log, re.IGNORECASE)]
+    losses = [
+        float(m)
+        for m in re.findall(r"(?:train )?loss[ =:]+([0-9.]+)", log, re.IGNORECASE)
+    ]
     rewards = [
         float(m)
-        for m in re.findall(r"reward(?:s)?[a-z_/]*[ =:]+(-?[0-9.]+)", log, re.IGNORECASE)
+        for m in re.findall(
+            r"reward(?:s)?[a-z_/]*[ =:]+(-?[0-9.]+)", log, re.IGNORECASE
+        )
     ]
     if len(losses) >= 3 and losses[-1] < 0.01 and losses[0] > losses[-1] * 10:
         if any(r < -5.0 for r in rewards[-5:]):

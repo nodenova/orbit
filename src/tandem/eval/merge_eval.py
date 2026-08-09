@@ -31,12 +31,18 @@ import json
 import re
 import statistics
 import time
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Sequence
+from typing import Any
 
-from ..types import GenRequest, Message, Role, Sampling
-from .worktree import WorktreeRunner, extract_diff, touched_files
+# Explicit re-export form (`as`): mypy runs with `no_implicit_reexport`, under
+# which a plain import makes these private to this module — see the note below on
+# why callers import them from here.
+from tandem.eval.worktree import WorktreeRunner
+from tandem.eval.worktree import extract_diff as extract_diff  # noqa: PLC0414
+from tandem.eval.worktree import touched_files as touched_files  # noqa: PLC0414
+from tandem.types import GenRequest, Message, Role, Sampling
 
 _HUNK_LINE = re.compile(r"^[+-](?![+-])", re.MULTILINE)
 
@@ -163,7 +169,9 @@ _VERDICT_PRIOR = {"accept": 0.1, "revise": 0.6, "reject": 0.9}
 _SEVERITY_WEIGHT = {"blocking": 0.4, "major": 0.2, "minor": 0.05}
 
 
-def tier1_review_proxy(verifier: Any, *, conventions: str = "", seed: int = 0) -> ReviewProxy:
+def tier1_review_proxy(
+    verifier: Any, *, conventions: str = "", seed: int = 0
+) -> ReviewProxy:
     """Score "would this draw a review comment?" with the tier-1 verifier.
 
     **This proxy is biased in favour of the cascade arm and must be read that
@@ -182,7 +190,9 @@ def tier1_review_proxy(verifier: Any, *, conventions: str = "", seed: int = 0) -
         if not diff.strip():
             # No patch at all reliably draws a comment. Not a verifier call.
             return 1.0
-        verdict = await verifier.review(diff, case.prompt, conventions=conventions, seed=seed)
+        verdict = await verifier.review(
+            diff, case.prompt, conventions=conventions, seed=seed
+        )
         if not verdict.ok:
             return None
         score = _VERDICT_PRIOR.get(str(verdict.data.get("verdict", "revise")), 0.6)
@@ -296,7 +306,9 @@ async def run_arm(
             adapter=arm.adapter,
             # Greedy. The eval measures the model, not the sampler's variance, and a
             # temperature here would make two runs of the same arm disagree.
-            sampling=Sampling(temperature=0.0, top_p=1.0, seed=0, max_tokens=max_tokens),
+            sampling=Sampling(
+                temperature=0.0, top_p=1.0, seed=0, max_tokens=max_tokens
+            ),
         )
         t0 = time.perf_counter()
         try:
@@ -339,18 +351,24 @@ def summarise(arm_name: str, scores: Sequence[CaseScore]) -> ArmSummary:
     applied = [s for s in valid if s.applied is not None]
     summary.applied_n = len(applied)
     if applied:
-        summary.apply_rate = round(sum(1 for s in applied if s.applied) / len(applied), 4)
+        summary.apply_rate = round(
+            sum(1 for s in applied if s.applied) / len(applied), 4
+        )
     tested = [s for s in valid if s.test_pass is not None]
     summary.tested_n = len(tested)
     if tested:
-        summary.test_pass_rate = round(sum(1 for s in tested if s.test_pass) / len(tested), 4)
+        summary.test_pass_rate = round(
+            sum(1 for s in tested if s.test_pass) / len(tested), 4
+        )
     linted = [s for s in valid if s.convention_clean is not None]
     summary.linted_n = len(linted)
     if linted:
         summary.convention_rate = round(
             sum(1 for s in linted if s.convention_clean) / len(linted), 4
         )
-    proxied = [s.review_comment_proxy for s in valid if s.review_comment_proxy is not None]
+    proxied = [
+        s.review_comment_proxy for s in valid if s.review_comment_proxy is not None
+    ]
     if proxied:
         summary.mean_review_proxy = round(sum(proxied) / len(proxied), 4)
 
@@ -417,13 +435,17 @@ def _covered(rate: float | None, denominator: int | None, n: int) -> float | Non
 def comparable_metrics(summary: ArmSummary) -> dict[str, float | None]:
     return {
         "test_pass_rate": _covered(summary.test_pass_rate, summary.tested_n, summary.n),
-        "convention_rate": _covered(summary.convention_rate, summary.linted_n, summary.n),
+        "convention_rate": _covered(
+            summary.convention_rate, summary.linted_n, summary.n
+        ),
         "mean_proximity": summary.mean_proximity,
         "blast_radius_accuracy": _blast_accuracy(summary),
         # Lower is better for the raw proxy (probability of drawing a comment), so
         # it is inverted here to make "higher is better" uniform across metrics.
         "review_proxy": (
-            None if summary.mean_review_proxy is None else 1.0 - summary.mean_review_proxy
+            None
+            if summary.mean_review_proxy is None
+            else 1.0 - summary.mean_review_proxy
         ),
     }
 
@@ -526,7 +548,9 @@ async def run(
     runner: WorktreeRunner | None = None,
     review_proxy: ReviewProxy | None = None,
 ) -> MergeEvalReport:
-    report = MergeEvalReport(repo=str(repo or (runner.repo if runner else "")), n_cases=len(cases))
+    report = MergeEvalReport(
+        repo=str(repo or (runner.repo if runner else "")), n_cases=len(cases)
+    )
     report.measured = {
         "tests": bool(runner and runner.measures_tests),
         "lint": bool(runner and runner.measures_lint),

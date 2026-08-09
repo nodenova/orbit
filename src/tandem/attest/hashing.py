@@ -13,9 +13,9 @@ directory digest is cheap to keep stable.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterator
 
 import blake3
 
@@ -188,7 +188,9 @@ def tree_signature(root: Path) -> str:
             st = full.stat()
         except OSError:
             continue
-        rows.append(f"{rel}\0{st.st_size}\0{st.st_mtime_ns}\0{st.st_ctime_ns}\0{st.st_ino}\n")
+        rows.append(
+            f"{rel}\0{st.st_size}\0{st.st_mtime_ns}\0{st.st_ctime_ns}\0{st.st_ino}\n"
+        )
     h = blake3.blake3()
     # Sorted, because the walk order follows the filesystem and an unstable
     # signature would miss the cache on every request for an unchanged tree.

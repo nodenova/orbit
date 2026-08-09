@@ -54,6 +54,7 @@ def rerank_schema(n_candidates: int) -> dict[str, Any]:
     }
     return schema
 
+
 # ~150 output tokens.
 REVIEW: dict[str, Any] = {
     "title": "review",
@@ -66,7 +67,10 @@ REVIEW: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "severity": {"type": "string", "enum": ["blocking", "major", "minor"]},
+                    "severity": {
+                        "type": "string",
+                        "enum": ["blocking", "major", "minor"],
+                    },
                     "where": {"type": "string", "maxLength": 120},
                     "what": {"type": "string", "maxLength": 240},
                 },
@@ -84,8 +88,16 @@ PLAN_CRITIQUE: dict[str, Any] = {
     "title": "plan_critique",
     "type": "object",
     "properties": {
-        "risks": {"type": "array", "maxItems": 6, "items": {"type": "string", "maxLength": 200}},
-        "missing": {"type": "array", "maxItems": 6, "items": {"type": "string", "maxLength": 200}},
+        "risks": {
+            "type": "array",
+            "maxItems": 6,
+            "items": {"type": "string", "maxLength": 200},
+        },
+        "missing": {
+            "type": "array",
+            "maxItems": 6,
+            "items": {"type": "string", "maxLength": 200},
+        },
     },
     "required": ["risks", "missing"],
     "additionalProperties": False,

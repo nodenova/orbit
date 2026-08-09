@@ -33,29 +33,71 @@ from typing import Any
 
 import httpx
 
-from ..attest.hashing import hash_artefact
-from ..types import GenRequest, GenResult, Message, Role, Sampling, StopReason, Usage
-from .base import Backend
-from .tier1_call import (
+from tandem.attest.hashing import hash_artefact
+from tandem.backends.base import Backend
+from tandem.backends.tier1_call import (
     Tier1Unavailable,
     build_payload,
     read_completion,
     resolve_reasoning_control,
     validate_or_raise,
 )
-
+from tandem.thresholds import SPEC_GATE_B_PREFILL_TOK_PER_S, judge
+from tandem.types import (
+    GenRequest,
+    GenResult,
+    Message,
+    Role,
+    Sampling,
+    StopReason,
+    Usage,
+)
 
 # Fragments the filler is assembled from. Deliberately a wide vocabulary rather
 # than one repeated line — see `prefill_filler`.
 _FILLER_VERBS = (
-    "resolve", "collect", "flatten", "annotate", "reconcile", "dispatch", "prune",
-    "serialise", "bisect", "coalesce", "validate", "rehydrate", "quantise", "route",
-    "materialise", "invalidate", "checkpoint", "escalate", "attribute", "compact",
+    "resolve",
+    "collect",
+    "flatten",
+    "annotate",
+    "reconcile",
+    "dispatch",
+    "prune",
+    "serialise",
+    "bisect",
+    "coalesce",
+    "validate",
+    "rehydrate",
+    "quantise",
+    "route",
+    "materialise",
+    "invalidate",
+    "checkpoint",
+    "escalate",
+    "attribute",
+    "compact",
 )
 _FILLER_NOUNS = (
-    "manifest", "shard", "cursor", "envelope", "quorum", "digest", "lease",
-    "watermark", "partition", "ledger", "snapshot", "backlog", "delta", "receipt",
-    "adapter", "expert", "router", "verdict", "worktree", "corpus",
+    "manifest",
+    "shard",
+    "cursor",
+    "envelope",
+    "quorum",
+    "digest",
+    "lease",
+    "watermark",
+    "partition",
+    "ledger",
+    "snapshot",
+    "backlog",
+    "delta",
+    "receipt",
+    "adapter",
+    "expert",
+    "router",
+    "verdict",
+    "worktree",
+    "corpus",
 )
 _FILLER_TYPES = ("bytes", "str", "int", "float", "dict", "list", "tuple", "bool")
 
@@ -266,12 +308,16 @@ class OptiqTier1Backend(Backend):
 
         t0 = time.perf_counter()
         try:
-            resp = await self._client.post(f"{self.endpoint}/chat/completions", json=payload)
+            resp = await self._client.post(
+                f"{self.endpoint}/chat/completions", json=payload
+            )
         except httpx.HTTPError as exc:
             raise Tier1Unavailable(f"tier 1 call failed: {exc}") from exc
         total_s = time.perf_counter() - t0
         if resp.status_code != 200:
-            raise Tier1Unavailable(f"tier 1 returned {resp.status_code}: {resp.text[:200]}")
+            raise Tier1Unavailable(
+                f"tier 1 returned {resp.status_code}: {resp.text[:200]}"
+            )
 
         body = resp.json()
         text, in_tok, out_tok = read_completion(body, payload, self.count_tokens)
@@ -326,14 +372,34 @@ class OptiqTier1Backend(Backend):
         await self.generate(req)
         return self.prefill_samples[-1]
 
-    def gate_b_report(self) -> dict[str, Any]:
+    def gate_b_report(
+        self, *, threshold_tok_per_s: float = SPEC_GATE_B_PREFILL_TOK_PER_S
+    ) -> dict[str, Any]:
+        """M0 Gate B, judged against `threshold_tok_per_s` and against sec 11's 200.
+
+        The threshold is a parameter rather than a constant because a host may be
+        arithmetically unable to reach the spec figure — this one is, by ~40x, and a
+        rung that can never report anything but red teaches nothing. Relaxing it lets
+        the streamed path run and the *next* failure become visible; `meets_spec` in
+        the returned row is what stops that from reading as a passed Gate B.
+        """
         if not self.prefill_samples:
             return {"pass": False, "reason": "no samples taken"}
         rates = [s.prefill_tok_per_s for s in self.prefill_samples]
         worst = min(rates)
+        verdict = judge(
+            worst,
+            target=threshold_tok_per_s,
+            spec_target=SPEC_GATE_B_PREFILL_TOK_PER_S,
+            higher_is_better=True,
+            digits=1,
+        )
         return {
-            "pass": worst >= 200.0,
-            "threshold_tok_per_s": 200.0,
+            "pass": verdict["pass"],
+            "meets_spec": verdict["meets_spec"],
+            "relaxed": verdict["relaxed"],
+            "threshold_tok_per_s": threshold_tok_per_s,
+            "spec_threshold_tok_per_s": SPEC_GATE_B_PREFILL_TOK_PER_S,
             "worst_tok_per_s": round(worst, 1),
             # Reported with the number, not alongside it (sec 10.5). Streamed
             # prefill throughput is a function of how much of the expert set the
@@ -348,8 +414,11 @@ class OptiqTier1Backend(Backend):
             ),
             "samples": [s.as_dict() for s in self.prefill_samples],
             "note": (
-                "Below 200 tok/s the engine is not doing batch-union prefill; "
-                "Phase 2 in-house loader becomes M-blocking (spec sec 5.4, 11). "
+                f"Below {SPEC_GATE_B_PREFILL_TOK_PER_S:.0f} tok/s the engine is not "
+                "doing batch-union prefill; Phase 2 in-house loader becomes "
+                "M-blocking (spec sec 5.4, 11). A `pass` against a lower "
+                "`threshold_tok_per_s` says the host was judged against its own "
+                "floor, not that the spec figure was met — read `meets_spec`. "
                 "Filler is deterministic and identifier-diverse so the chunk's "
                 "expert union is not artificially small; it does not reproduce a "
                 "real repository's expert distribution."

@@ -3,9 +3,14 @@
     2. Tier 1 = an 80B swapped into residency, evicting tier 0 (~10 s each way)
 
 The rung for a machine that has a second model worth verifying with but cannot hold
-it alongside tier 0. Unified memory is the whole constraint: 64 GB does not fit a
-4-bit 35B and a 4-bit 80B at once, so admitting one *means* evicting the other. Every
-design decision below follows from that one sentence.
+it alongside tier 0. Unified memory is the whole constraint: no Apple Silicon box in
+this class fits a 4-bit 35B and a 4-bit 80B at once, so admitting one *means* evicting
+the other. Every design decision below follows from that one sentence.
+
+On the baseline host (36 GB, 28.08 GiB working set — `docs/BASELINE.md`) the second
+occupant does not exist and there is no room for it: tier 0 alone is 23.0 GiB. The
+policy below is built and tested against the mock, which is where the concurrency bugs
+are; what it lacks is a resident verifier to swap in.
 
 Three consequences, each of which is a way this rung goes silently wrong if it is
 left implicit:
@@ -42,12 +47,13 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Protocol
+from typing import Any, Protocol
 
-from ..types import GenRequest, GenResult
-from .base import Backend, BackendUnavailable, Delta, ToolCallRenderer
+from tandem.backends.base import Backend, BackendUnavailable, Delta, ToolCallRenderer
+from tandem.types import GenRequest, GenResult
 
 RUNG = "resident_swap"
 
@@ -287,7 +293,9 @@ class SwapGuard(Backend):
     def accepts_state(self, state: Any, adapter: str | None) -> bool:
         return self._tier0.accepts_state(state, adapter)
 
-    def export_state(self, req: GenRequest, rendered_prefix: str, result: GenResult) -> Any:
+    def export_state(
+        self, req: GenRequest, rendered_prefix: str, result: GenResult
+    ) -> Any:
         return self._tier0.export_state(req, rendered_prefix, result)
 
     async def close(self) -> None:
@@ -300,7 +308,9 @@ class ResidentSwapBackend(Backend):
     name = "resident-swap-tier1"
     tier = 1
 
-    def __init__(self, verifier: Backend, switch: ResidencySwitch, *, budget_s: float = 0.0):
+    def __init__(
+        self, verifier: Backend, switch: ResidencySwitch, *, budget_s: float = 0.0
+    ):
         self._verifier = verifier
         self._switch = switch
         # Round-trip ceiling in seconds; 0 disables the guard. Off by default

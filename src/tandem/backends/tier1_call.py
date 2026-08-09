@@ -25,10 +25,11 @@ tier 1 a verifier had no test at all.
 from __future__ import annotations
 
 import json
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
-from ..types import GenRequest
-from .base import BackendUnavailable
+from tandem.backends.base import BackendUnavailable
+from tandem.types import GenRequest
 
 # Hard output ceilings per call type (sec 5.1). Generous against the spec's budgets
 # so a schema with a long `reason` still fits, tight enough that generation is
@@ -211,7 +212,9 @@ def refuse_reasoned_answer(choice: dict[str, Any], body: dict[str, Any]) -> None
     that claims otherwise.
     """
     message = choice.get("message")
-    reasoning = (message or {}).get("reasoning_content") if isinstance(message, dict) else None
+    reasoning = (
+        (message or {}).get("reasoning_content") if isinstance(message, dict) else None
+    )
     details = (body.get("usage") or {}).get("completion_tokens_details") or {}
     try:
         reasoning_tokens = int(details.get("reasoning_tokens") or 0)
@@ -240,7 +243,9 @@ def validate_or_raise(text: str, schema: dict[str, Any]) -> None:
     try:
         obj = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise Tier1Unavailable(f"tier 1 returned non-JSON under a schema: {exc}") from exc
+        raise Tier1Unavailable(
+            f"tier 1 returned non-JSON under a schema: {exc}"
+        ) from exc
     if not isinstance(obj, dict):
         raise Tier1Unavailable("tier 1 returned a JSON value that is not an object")
     missing = [k for k in schema.get("required", []) if k not in obj]

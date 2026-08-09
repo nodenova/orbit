@@ -44,7 +44,8 @@ import os
 import sys
 import urllib.error
 import urllib.request
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 USER_AGENT = "tandem-remote-tier1/1.0"
 
@@ -110,7 +111,8 @@ def build_transport(
             req.add_header("Authorization", f"Bearer {api_key}")
         try:
             with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                decoded: dict[str, Any] = json.loads(resp.read().decode("utf-8"))
+                return decoded
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", "replace")[:200]
             # No retry loop. A tier-1 call that fails degrades to a failed verdict
@@ -184,8 +186,15 @@ def main(argv: list[str] | None = None) -> int:
         "temperature": 0.0,
         "stream": False,
     }
+
+    # Wrapped rather than `asyncio.run(transport(payload))`: the transport is
+    # declared to return an Awaitable, which is the right contract for a caller that
+    # only awaits it, and asyncio.run specifically wants a Coroutine.
+    async def _once() -> dict[str, Any]:
+        return await transport(payload)
+
     try:
-        body = asyncio.run(transport(payload))
+        body = asyncio.run(_once())
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 1

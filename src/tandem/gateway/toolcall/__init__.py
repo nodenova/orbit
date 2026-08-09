@@ -9,18 +9,23 @@ Five layers, in the order they engage:
 5. **Replay** — exact sampled text preserved across turns (`replay.py`).
 """
 
-from .constrain import Constrainer, tool_call_schema
-from .repair import RepairOutcome, looks_like_tool_intent, repair, resolve_name
-from .replay import ReplayMap, coverage, render_call
+from tandem.gateway.toolcall.constrain import Constrainer, tool_call_schema
+from tandem.gateway.toolcall.repair import (
+    RepairOutcome,
+    looks_like_tool_intent,
+    repair,
+    resolve_name,
+)
+from tandem.gateway.toolcall.replay import ReplayMap, coverage, render_call
 
 __all__ = [
     "Constrainer",
-    "tool_call_schema",
     "RepairOutcome",
-    "looks_like_tool_intent",
-    "repair",
-    "resolve_name",
     "ReplayMap",
     "coverage",
+    "looks_like_tool_intent",
     "render_call",
+    "repair",
+    "resolve_name",
+    "tool_call_schema",
 ]

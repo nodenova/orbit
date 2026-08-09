@@ -16,7 +16,8 @@ import time
 import uuid
 from typing import Any
 
-from ...types import (
+from tandem.gateway.wire import check_bounds, size_of
+from tandem.types import (
     GenRequest,
     GenResult,
     Message,
@@ -27,7 +28,6 @@ from ...types import (
     ToolDef,
     ToolResult,
 )
-from . import check_bounds, size_of
 
 _STATUS = {
     StopReason.END_TURN: "completed",
@@ -123,7 +123,9 @@ def to_canonical(body: dict[str, Any]) -> GenRequest:
 
     # `instructions` is the Responses system prompt; a system item in `input` folds
     # in after it so both routes reach the compactor's fingerprinter.
-    system_parts = [body["instructions"]] if isinstance(body.get("instructions"), str) else []
+    system_parts = (
+        [body["instructions"]] if isinstance(body.get("instructions"), str) else []
+    )
     kept: list[Message] = []
     for msg in messages:
         if msg.role is Role.SYSTEM:
@@ -144,7 +146,9 @@ def to_canonical(body: dict[str, Any]) -> GenRequest:
         name = t.get("name") or (t.get("function") or {}).get("name")
         if not name:
             continue
-        params = t.get("parameters") or (t.get("function") or {}).get("parameters") or {}
+        params = (
+            t.get("parameters") or (t.get("function") or {}).get("parameters") or {}
+        )
         tools.append(
             ToolDef(name=name, description=t.get("description", ""), parameters=params)
         )
@@ -181,7 +185,9 @@ def _text_part(text: str) -> dict[str, Any]:
     return {"type": "output_text", "text": text, "annotations": []}
 
 
-def _message_item(text: str, item_id: str, *, status: str = "completed") -> dict[str, Any]:
+def _message_item(
+    text: str, item_id: str, *, status: str = "completed"
+) -> dict[str, Any]:
     return {
         "type": "message",
         "id": item_id,
@@ -233,12 +239,15 @@ def _body(
     return body
 
 
-def from_canonical(result: GenResult, *, model: str, request_id: str = "") -> dict[str, Any]:
+def from_canonical(
+    result: GenResult, *, model: str, request_id: str = ""
+) -> dict[str, Any]:
     output: list[dict[str, Any]] = []
     if result.text:
         output.append(_message_item(result.text, f"msg_{uuid.uuid4().hex[:24]}"))
     output.extend(
-        _function_item(call, f"fc_{uuid.uuid4().hex[:24]}") for call in result.tool_calls
+        _function_item(call, f"fc_{uuid.uuid4().hex[:24]}")
+        for call in result.tool_calls
     )
     return _body(
         result,
@@ -283,7 +292,9 @@ class StreamEncoder:
     def _emit(self, event: str, data: dict[str, Any]) -> list[str]:
         payload = {**data, "sequence_number": self._seq}
         self._seq += 1
-        return [f"event: {event}\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"]
+        return [
+            f"event: {event}\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
+        ]
 
     def _skeleton(self, status: str, input_tokens: int = 0) -> dict[str, Any]:
         return {
@@ -305,9 +316,12 @@ class StreamEncoder:
     def open(self, input_tokens: int = 0) -> list[str]:
         skeleton = self._skeleton("in_progress", input_tokens)
         return [
-            *self._emit("response.created", {"type": "response.created", "response": skeleton}),
             *self._emit(
-                "response.in_progress", {"type": "response.in_progress", "response": skeleton}
+                "response.created", {"type": "response.created", "response": skeleton}
+            ),
+            *self._emit(
+                "response.in_progress",
+                {"type": "response.in_progress", "response": skeleton},
             ),
         ]
 
@@ -383,7 +397,11 @@ class StreamEncoder:
             )
             out += self._emit(
                 "response.output_item.done",
-                {"type": "response.output_item.done", "output_index": self._index, "item": item},
+                {
+                    "type": "response.output_item.done",
+                    "output_index": self._index,
+                    "item": item,
+                },
             )
             self._index += 1
 
@@ -392,7 +410,11 @@ class StreamEncoder:
             items.append(item)
             out += self._emit(
                 "response.output_item.added",
-                {"type": "response.output_item.added", "output_index": self._index, "item": item},
+                {
+                    "type": "response.output_item.added",
+                    "output_index": self._index,
+                    "item": item,
+                },
             )
             out += self._emit(
                 "response.function_call_arguments.delta",
@@ -414,7 +436,11 @@ class StreamEncoder:
             )
             out += self._emit(
                 "response.output_item.done",
-                {"type": "response.output_item.done", "output_index": self._index, "item": item},
+                {
+                    "type": "response.output_item.done",
+                    "output_index": self._index,
+                    "item": item,
+                },
             )
             self._index += 1
 
@@ -426,7 +452,9 @@ class StreamEncoder:
             output=items,
             output_text=text,
         )
-        out += self._emit("response.completed", {"type": "response.completed", "response": final})
+        out += self._emit(
+            "response.completed", {"type": "response.completed", "response": final}
+        )
         return out
 
     def fail(self, message: str, err_type: str = "api_error") -> list[str]:
@@ -443,5 +471,9 @@ class StreamEncoder:
         )
 
 
-def error(status: int, message: str, err_type: str = "invalid_request_error") -> dict[str, Any]:
-    return {"error": {"message": message, "type": err_type, "param": None, "code": None}}
+def error(
+    status: int, message: str, err_type: str = "invalid_request_error"
+) -> dict[str, Any]:
+    return {
+        "error": {"message": message, "type": err_type, "param": None, "code": None}
+    }

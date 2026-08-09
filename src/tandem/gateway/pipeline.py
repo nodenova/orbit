@@ -35,20 +35,28 @@ import asyncio
 import time
 import uuid
 from collections import deque
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator
+from typing import Any
 
-from ..attest.audit import AuditLog, AuditRecord, now, sha256_text
-from ..attest.receipt import Receipt, Tier0Attestation, Tier1Attestation
-from ..backends.base import Backend, Delta, render_default
-from ..backends.resident_swap import ResidentSwapBackend
-from ..config import Config
-from ..eval.worktree import WorktreeRunner
-from ..eval.worktree import from_config as build_worktree_runner
-from ..router.cascade import Cascade, CascadeInfo
-from ..router.classify import Classification, classify
-from ..tier1.verifier import Tier1Verifier
-from ..types import (
+from tandem.attest.audit import AuditLog, AuditRecord, now, sha256_text
+from tandem.attest.receipt import Receipt, Tier0Attestation, Tier1Attestation
+from tandem.backends.base import Backend, Delta, render_default
+from tandem.backends.resident_swap import ResidentSwapBackend
+from tandem.config import Config
+from tandem.eval.worktree import WorktreeRunner
+from tandem.eval.worktree import from_config as build_worktree_runner
+from tandem.gateway.cache.kv_disk import DiskKVCache, KVSnapshot, align_down
+from tandem.gateway.cache.prompt_cache import CacheEntry, PromptCache, chunk_digests
+from tandem.gateway.compaction import Compactor
+from tandem.gateway.context_scale import ContextScaler
+from tandem.gateway.toolcall.constrain import Constrainer, tool_call_schema
+from tandem.gateway.toolcall.repair import looks_like_tool_intent, repair
+from tandem.gateway.toolcall.replay import ReplayMap, render_call
+from tandem.router.cascade import Cascade, CascadeInfo
+from tandem.router.classify import Classification, classify
+from tandem.tier1.verifier import Tier1Verifier
+from tandem.types import (
     GenRequest,
     GenResult,
     KVState,
@@ -60,13 +68,6 @@ from ..types import (
     TurnClass,
     Usage,
 )
-from .cache.kv_disk import DiskKVCache, KVSnapshot, align_down
-from .cache.prompt_cache import CacheEntry, PromptCache, chunk_digests
-from .compaction import Compactor
-from .context_scale import ContextScaler
-from .toolcall.constrain import Constrainer, tool_call_schema
-from .toolcall.repair import looks_like_tool_intent, repair
-from .toolcall.replay import ReplayMap, render_call
 
 # Enough to cover a working session's recent history for `/tandem/trace/last` and
 # the sec 10.5 measurement discipline, without growing without bound.
@@ -166,7 +167,9 @@ class Pipeline:
             if self.worktree is not None
             else None
         )
-        self.cascade = Cascade(tier0, self.verifier, cfg.router, test_runner=self.test_runner)
+        self.cascade = Cascade(
+            tier0, self.verifier, cfg.router, test_runner=self.test_runner
+        )
         self.compactor = Compactor(
             enabled=cfg.compaction.enabled,
             strip_schemas=cfg.compaction.strip_tool_schemas,
@@ -183,7 +186,9 @@ class Pipeline:
             chunk_bytes=max(64, cfg.cache.kv_chunk_tokens * 4),
         )
         self.disk_kv = (
-            DiskKVCache(cfg.cache.disk_kv_dir, budget_bytes=cfg.cache.disk_kv_budget_bytes)
+            DiskKVCache(
+                cfg.cache.disk_kv_dir, budget_bytes=cfg.cache.disk_kv_budget_bytes
+            )
             if cfg.cache.disk_kv_enabled
             else None
         )
@@ -225,6 +230,7 @@ class Pipeline:
         would read it as a real chat template and quietly drop replay-aware
         rendering.
         """
+
         def renderer(call: ToolCall) -> str:
             return render_call(call, self.replay)
 
@@ -234,12 +240,16 @@ class Pipeline:
 
     # --- main path ----------------------------------------------------------
 
-    async def run(self, req: GenRequest, *, no_compact: bool = False) -> tuple[GenResult, TurnTrace]:
+    async def run(
+        self, req: GenRequest, *, no_compact: bool = False
+    ) -> tuple[GenResult, TurnTrace]:
         turn = self._begin(req, no_compact=no_compact)
         result = await self._produce(turn)
         return result, turn.trace
 
-    async def stream(self, req: GenRequest, *, no_compact: bool = False) -> AsyncIterator[Delta]:
+    async def stream(
+        self, req: GenRequest, *, no_compact: bool = False
+    ) -> AsyncIterator[Delta]:
         """Stream a turn, incrementally where that can be done honestly.
 
         Single-candidate turns carrying no tools — `chat`, and `read_only` without
@@ -371,7 +381,9 @@ class Pipeline:
         turn.trace.toolcall = tool_info
         return await self._finish(turn, result, cinfo)
 
-    async def _finish(self, turn: _Turn, result: GenResult, cinfo: CascadeInfo) -> GenResult:
+    async def _finish(
+        self, turn: _Turn, result: GenResult, cinfo: CascadeInfo
+    ) -> GenResult:
         """Everything after the model: cache, receipt, audit, reported usage."""
         # A cache store can never fail a turn. The model has already answered by
         # the time we get here, and `_remember` is the first thing `_finish` does,
@@ -387,7 +399,9 @@ class Pipeline:
             turn.trace.cache["store_error"] = f"{type(exc).__name__}: {exc}"
 
         receipt = self._build_receipt(turn.req, cinfo)
-        result.receipt = receipt.as_dict() if self.cfg.attest.attach_to_response else None
+        result.receipt = (
+            receipt.as_dict() if self.cfg.attest.attach_to_response else None
+        )
         await self._write_audit(turn.req, turn.rendered, result, cinfo)
 
         # Reporting-only scaling (sec 8.3). Applied after the audit record so the
@@ -409,7 +423,9 @@ class Pipeline:
 
     def _prompt_usage(self, turn: _Turn) -> Usage:
         """Prompt-side usage for the stream prologue, already context-scaled."""
-        return Usage(input_tokens=self.scaler.scale(self.tier0.count_tokens(turn.rendered)))
+        return Usage(
+            input_tokens=self.scaler.scale(self.tier0.count_tokens(turn.rendered))
+        )
 
     def _not_streamable(self, req: GenRequest, cls: Classification) -> str:
         """Why this turn cannot stream incrementally, or "" if it can."""
@@ -431,7 +447,9 @@ class Pipeline:
         if not req.has_tools():
             return req
         sampling = Sampling(
-            temperature=min(req.sampling.temperature, self.cfg.toolcall.tool_turn_temperature),
+            temperature=min(
+                req.sampling.temperature, self.cfg.toolcall.tool_turn_temperature
+            ),
             top_p=req.sampling.top_p,
             seed=req.sampling.seed,
             max_tokens=req.sampling.max_tokens,
@@ -442,7 +460,9 @@ class Pipeline:
             schema = tool_call_schema(req.tools)
         return req.with_(sampling=sampling, json_schema=schema)
 
-    def _probe_cache(self, rendered: str, req: GenRequest) -> tuple[GenRequest, dict[str, Any]]:
+    def _probe_cache(
+        self, rendered: str, req: GenRequest
+    ) -> tuple[GenRequest, dict[str, Any]]:
         """Find the longest reusable prefix, in memory first, then on disk.
 
         Memory before disk because a hit there needs no read at all. Disk is what
@@ -492,7 +512,9 @@ class Pipeline:
         if self.disk_kv is None or not self.tier0.supports_state():
             return None
         want = self.tier0.state_key(req.adapter)
-        for prefix_bytes, digest in reversed(chunk_digests(rendered, self.prompt_cache.chunk_bytes)):
+        for prefix_bytes, digest in reversed(
+            chunk_digests(rendered, self.prompt_cache.chunk_bytes)
+        ):
             if not self.disk_kv.has(digest):
                 continue
             snap = self.disk_kv.get(digest)
@@ -565,8 +587,8 @@ class Pipeline:
         retry_req = req
         for attempt in range(1, self.cfg.toolcall.max_retries + 1):
             retry_req = retry_req.with_(
-                messages=retry_req.messages
-                + [
+                messages=[
+                    *retry_req.messages,
                     Message(role=Role.ASSISTANT, content=result.text),
                     Message(role=Role.USER, content=_RETRY_INSTRUCTION),
                 ]
@@ -593,7 +615,9 @@ class Pipeline:
         info["outcome"] = "failed"
         return result, info
 
-    async def _remember(self, rendered: str, req: GenRequest, result: GenResult) -> None:
+    async def _remember(
+        self, rendered: str, req: GenRequest, result: GenResult
+    ) -> None:
         """Cache the turn's prefix in memory and, when possible, on disk (sec 8.4).
 
         Aligned down to a chunk boundary before saving: a state covering a partial
@@ -642,7 +666,7 @@ class Pipeline:
                 replay=replay,
                 prefix_bytes=prefix_bytes,
                 state_key=state.key,
-            )
+            ),
         )
 
     def _build_receipt(self, req: GenRequest, cinfo: CascadeInfo) -> Receipt:
@@ -691,7 +715,7 @@ class Pipeline:
                 output_sha256=sha256_text(result.text),
                 tools_invoked=tuple(c.name for c in result.tool_calls),
                 escalated=cinfo.escalated,
-            )
+            ),
         )
 
     # --- reporting ----------------------------------------------------------
@@ -750,7 +774,10 @@ class Pipeline:
             "escalation": (
                 self.worktree.describe()
                 if self.worktree is not None
-                else {"enabled": False, "reason": "no test command configured (tandem.toml [eval])"}
+                else {
+                    "enabled": False,
+                    "reason": "no test command configured (tandem.toml [eval])",
+                }
             ),
             "context_scale": self.scaler.describe(),
         }

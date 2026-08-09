@@ -21,13 +21,23 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..types import GenRequest, Message, Role, TurnClass
+from tandem.types import GenRequest, Message, Role, TurnClass
 
 # Tool names that mutate the working tree. Matched on substrings because harnesses
 # name the same capability differently (edit_file / str_replace_editor / apply_patch).
 _MUTATING = (
-    "edit", "write", "create", "apply_patch", "patch", "replace", "insert",
-    "delete", "move", "rename", "commit", "format",
+    "edit",
+    "write",
+    "create",
+    "apply_patch",
+    "patch",
+    "replace",
+    "insert",
+    "delete",
+    "move",
+    "rename",
+    "commit",
+    "format",
 )
 _READ_ONLY = ("read", "cat", "view", "grep", "search", "glob", "list", "ls", "find")
 # Shell tools are ambiguous: `pytest` is read-only in spirit, `sed -i` is not.
@@ -92,7 +102,9 @@ def classify(req: GenRequest) -> Classification:
     has_read = any(any(r in n for r in _READ_ONLY) for n in tool_names)
 
     user_text = _last_user_text(req.messages)
-    prompt_chars = sum(len(m.content or "") for m in req.messages) + len(req.system or "")
+    prompt_chars = sum(len(m.content or "") for m in req.messages) + len(
+        req.system or ""
+    )
     prior_diff = previous_turn_produced_diff(req.messages)
 
     signals: dict[str, Any] = {

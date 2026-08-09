@@ -8,7 +8,7 @@ Section references in docstrings point at docs/SPEC.md.
 
 __version__ = "0.1.0"
 
-from .types import (
+from tandem.types import (
     GenRequest,
     GenResult,
     Message,
@@ -23,7 +23,6 @@ from .types import (
 )
 
 __all__ = [
-    "__version__",
     "GenRequest",
     "GenResult",
     "Message",
@@ -35,4 +34,5 @@ __all__ = [
     "ToolResult",
     "TurnClass",
     "Usage",
+    "__version__",
 ]

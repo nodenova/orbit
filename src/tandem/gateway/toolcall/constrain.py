@@ -20,10 +20,11 @@ and is reported as such rather than passed over in silence.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, cast
 
-from ...types import ToolDef
+from tandem.types import ToolDef
 
 # A per-request token filter: given the tokens decoded so far, the ids that may
 # come next. Deliberately plain Python ints on both sides — this is the seam
@@ -85,9 +86,12 @@ class Constrainer:
 
     def _probe(self) -> tuple[bool, str]:
         try:
-            import lmformatenforcer  # type: ignore  # noqa: F401
+            import lmformatenforcer  # noqa: F401
         except ImportError:
-            return False, "lm-format-enforcer not installed (pip install 'tandem[constrain]')"
+            return (
+                False,
+                "lm-format-enforcer not installed (pip install 'tandem[constrain]')",
+            )
         return True, "ok"
 
     def vocabulary(self, tokenizer: Any) -> Any | None:
@@ -112,7 +116,7 @@ class Constrainer:
         ok, _ = self._probe()
         if not (self.enabled and ok):
             return None
-        from lmformatenforcer import TokenEnforcerTokenizerData  # type: ignore
+        from lmformatenforcer import TokenEnforcerTokenizerData
 
         inner = getattr(tokenizer, "_tokenizer", tokenizer)
         vocab_size = len(inner)
@@ -132,7 +136,7 @@ class Constrainer:
         def decode(ids: list[int]) -> str:
             # A partial multi-byte character decodes to U+FFFD; feeding that to the
             # parser would fail a schema the model is still spelling correctly.
-            return inner.decode(ids).rstrip("�")
+            return cast(str, inner.decode(ids).rstrip("�"))
 
         return TokenEnforcerTokenizerData(
             regular,
@@ -142,7 +146,9 @@ class Constrainer:
             vocab_size,
         )
 
-    def token_filter(self, schema: dict[str, Any], vocabulary: Any) -> TokenFilter | None:
+    def token_filter(
+        self, schema: dict[str, Any], vocabulary: Any
+    ) -> TokenFilter | None:
         """A filter enforcing `schema`, or None if unavailable.
 
         **Fresh per request, and that is not an oversight.** A `TokenEnforcer` keys
@@ -158,12 +164,13 @@ class Constrainer:
         ok, _ = self._probe()
         if not (self.enabled and ok) or vocabulary is None:
             return None
-        from lmformatenforcer import JsonSchemaParser, TokenEnforcer  # type: ignore
+        from lmformatenforcer import JsonSchemaParser, TokenEnforcer
 
         enforcer = TokenEnforcer(vocabulary, JsonSchemaParser(schema))
 
         def allowed(tokens: Sequence[int]) -> Sequence[int]:
-            return enforcer.get_allowed_tokens(list(tokens)).allowed_tokens
+            allowed = enforcer.get_allowed_tokens(list(tokens)).allowed_tokens
+            return cast("Sequence[int]", allowed)
 
         return allowed
 

@@ -38,9 +38,22 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .extract_a1 import build_prompt, clean_message
-from .filters import ExtractionFilters, SkipTally, is_bot, is_revert, keep_path
-from .gitwalk import Commit, CommitDiff, commit_diff, default_branch, is_repo, iter_commits, run_git
+from tandem.adapters.extract_a1 import build_prompt
+from tandem.adapters.filters import (
+    ExtractionFilters,
+    SkipTally,
+    is_bot,
+    is_revert,
+    keep_path,
+)
+from tandem.adapters.gitwalk import (
+    Commit,
+    commit_diff,
+    default_branch,
+    is_repo,
+    iter_commits,
+    run_git,
+)
 
 
 @dataclass
@@ -158,7 +171,15 @@ def branch_commits(repo: Path, merge: Commit) -> list[str]:
 
 def _diff_between(repo: Path, base: str, head: str) -> str:
     return run_git(
-        repo, "diff", "-U3", "-M", "--no-color", "--no-ext-diff", base, head, check=False
+        repo,
+        "diff",
+        "-U3",
+        "-M",
+        "--no-color",
+        "--no-ext-diff",
+        base,
+        head,
+        check=False,
     )
 
 
@@ -175,7 +196,11 @@ def _load_reviews(path: str | Path | None) -> dict[str, str]:
         return {str(k): str(v) for k, v in raw.items()}
     out: dict[str, str] = {}
     for item in raw if isinstance(raw, list) else []:
-        if isinstance(item, dict) and item.get("merge_sha") and item.get("first_review_at"):
+        if (
+            isinstance(item, dict)
+            and item.get("merge_sha")
+            and item.get("first_review_at")
+        ):
             out[str(item["merge_sha"])] = str(item["first_review_at"])
     return out
 
@@ -199,7 +224,7 @@ def _pre_review_head(repo: Path, shas: list[str], cutoff_iso: str | None) -> str
     try:
         from datetime import datetime
 
-        cutoff = int(datetime.fromisoformat(cutoff_iso.replace("Z", "+00:00")).timestamp())
+        cutoff = int(datetime.fromisoformat(cutoff_iso).timestamp())
     except (ValueError, TypeError):
         return shas[0]
     before = [sha for sha in shas if _commit_ts(repo, sha) <= cutoff]
@@ -315,7 +340,9 @@ def extract(
     return train, held, report
 
 
-def _revert_pair(repo: Path, revert: Commit, filters: ExtractionFilters) -> PreferencePair | None:
+def _revert_pair(
+    repo: Path, revert: Commit, filters: ExtractionFilters
+) -> PreferencePair | None:
     """A reverted commit is a labelled failure with a known-good counterfactual.
 
     `rejected` is the change that was reverted; `chosen` is the revert itself — the
@@ -357,7 +384,9 @@ def _reverted_sha(repo: Path, revert: Commit) -> str | None:
     m = re.search(r"[Tt]his reverts commit ([0-9a-f]{7,40})", revert.message)
     if not m:
         return None
-    sha = run_git(repo, "rev-parse", "--verify", "--quiet", m.group(1), check=False).strip()
+    sha = run_git(
+        repo, "rev-parse", "--verify", "--quiet", m.group(1), check=False
+    ).strip()
     return sha or None
 
 
@@ -365,6 +394,7 @@ def write_jsonl(pairs: list[PreferencePair], path: str | Path) -> Path:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "w", encoding="utf-8") as fh:
-        for pair in pairs:
-            fh.write(json.dumps(pair.as_record(), ensure_ascii=False) + "\n")
+        fh.writelines(
+            json.dumps(pair.as_record(), ensure_ascii=False) + "\n" for pair in pairs
+        )
     return p

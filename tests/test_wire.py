@@ -81,7 +81,13 @@ def _named(events: list[str]) -> list[str]:
 def test_every_protocol_exposes_the_documented_contract():
     """`wire/__init__.py` names these; app.py drives all three through them alone."""
     for module in (anthropic, openai_chat, openai_responses):
-        for name in ("to_canonical", "from_canonical", "StreamEncoder", "error", "stream_options"):
+        for name in (
+            "to_canonical",
+            "from_canonical",
+            "StreamEncoder",
+            "error",
+            "stream_options",
+        ):
             assert hasattr(module, name), f"{module.__name__} is missing {name}"
 
 
@@ -109,7 +115,9 @@ def test_chat_stream_options_are_read_off_the_body():
     }
     assert openai_chat.stream_options({}) == {"include_usage": False}
     # A client that sends a non-object is a client bug, not a 500.
-    assert openai_chat.stream_options({"stream_options": "yes"}) == {"include_usage": False}
+    assert openai_chat.stream_options({"stream_options": "yes"}) == {
+        "include_usage": False
+    }
 
 
 def test_chat_stream_emits_a_usage_chunk_when_the_client_asks():
@@ -119,10 +127,19 @@ def test_chat_stream_emits_a_usage_chunk_when_the_client_asks():
     compact; a stream that reports nothing leaves its context meter frozen.
     """
     body = {"stream": True, "stream_options": {"include_usage": True}, "messages": []}
-    enc = openai_chat.StreamEncoder(model="t", request_id="r1", **openai_chat.stream_options(body))
-    events = [*enc.open(1200), *enc.delta("hi"), *enc.close(
-        GenResult(text="hi", usage=Usage(input_tokens=1200, output_tokens=7, cached_input_tokens=64))
-    )]
+    enc = openai_chat.StreamEncoder(
+        model="t", request_id="r1", **openai_chat.stream_options(body)
+    )
+    events = [
+        *enc.open(1200),
+        *enc.delta("hi"),
+        *enc.close(
+            GenResult(
+                text="hi",
+                usage=Usage(input_tokens=1200, output_tokens=7, cached_input_tokens=64),
+            )
+        ),
+    ]
     chunks = _chunks(events)
 
     final = chunks[-1]
@@ -141,7 +158,11 @@ def test_chat_stream_emits_a_usage_chunk_when_the_client_asks():
 def test_chat_stream_falls_back_to_the_prologue_prompt_count():
     """A backend that reports no prompt tokens must not report zero to the harness."""
     enc = openai_chat.StreamEncoder(model="t", include_usage=True)
-    events = [*enc.open(830), *enc.delta("x"), *enc.close(GenResult(text="x", usage=Usage(output_tokens=3)))]
+    events = [
+        *enc.open(830),
+        *enc.delta("x"),
+        *enc.close(GenResult(text="x", usage=Usage(output_tokens=3))),
+    ]
     final = _chunks(events)[-1]
     assert final["usage"]["prompt_tokens"] == 830
     assert final["usage"]["total_tokens"] == 833
@@ -150,9 +171,13 @@ def test_chat_stream_falls_back_to_the_prologue_prompt_count():
 def test_chat_stream_stays_silent_about_usage_when_not_asked():
     """An empty `choices` array is a shape clients only tolerate having asked for it."""
     enc = openai_chat.StreamEncoder(model="t")
-    events = [*enc.open(1200), *enc.delta("hi"), *enc.close(
-        GenResult(text="hi", usage=Usage(input_tokens=1200, output_tokens=7))
-    )]
+    events = [
+        *enc.open(1200),
+        *enc.delta("hi"),
+        *enc.close(
+            GenResult(text="hi", usage=Usage(input_tokens=1200, output_tokens=7))
+        ),
+    ]
     chunks = _chunks(events)
     assert all("usage" not in c for c in chunks)
     assert all(c["choices"] for c in chunks)
@@ -183,8 +208,13 @@ def test_anthropic_fail_closes_an_open_content_block():
     events += enc.fail("boom")
     names = _named(events)
 
-    assert names == ["message_start", "content_block_start", "content_block_delta",
-                     "content_block_stop", "error"]
+    assert names == [
+        "message_start",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_stop",
+        "error",
+    ]
     # `message_stop` means the turn completed. This one did not.
     assert "message_stop" not in names
 
@@ -198,7 +228,9 @@ def test_anthropic_fail_before_any_text_emits_only_the_error():
 def test_anthropic_fail_does_not_reuse_the_closed_block_index():
     enc = anthropic.StreamEncoder(model="t")
     events = [*enc.open(0), *enc.delta("text"), *enc.fail("boom")]
-    stop = next(json.loads(e.split("data: ", 1)[1]) for e in events if "content_block_stop" in e)
+    stop = next(
+        json.loads(e.split("data: ", 1)[1]) for e in events if "content_block_stop" in e
+    )
     assert stop["index"] == 0
     assert enc._index == 1
 
@@ -217,10 +249,18 @@ async def test_a_stream_that_dies_mid_turn_still_closes_its_block(cfg):
     with _client(app) as client:
         r = client.post(
             "/v1/messages",
-            json={"model": "t", "max_tokens": 32, "stream": True,
-                  "messages": [{"role": "user", "content": "hello there"}]},
+            json={
+                "model": "t",
+                "max_tokens": 32,
+                "stream": True,
+                "messages": [{"role": "user", "content": "hello there"}],
+            },
         )
-    names = [line[len("event: ") :] for line in r.text.splitlines() if line.startswith("event: ")]
+    names = [
+        line[len("event: ") :]
+        for line in r.text.splitlines()
+        if line.startswith("event: ")
+    ]
     assert "error" in names
     assert names.index("content_block_stop") < names.index("error")
 
@@ -231,12 +271,19 @@ async def test_a_stream_that_dies_mid_turn_still_closes_its_block(cfg):
 def test_responses_text_stream_announces_and_closes_its_content_part():
     """Deltas are addressed to a content part by index; announcing the item is not enough."""
     enc = openai_responses.StreamEncoder(model="t")
-    events = [*enc.open(5), *enc.delta("hel"), *enc.delta("lo"), *enc.close(
-        GenResult(text="hello", usage=Usage(input_tokens=5, output_tokens=2))
-    )]
+    events = [
+        *enc.open(5),
+        *enc.delta("hel"),
+        *enc.delta("lo"),
+        *enc.close(
+            GenResult(text="hello", usage=Usage(input_tokens=5, output_tokens=2))
+        ),
+    ]
     names = _named(events)
 
-    assert names.index("response.content_part.added") < names.index("response.output_text.delta")
+    assert names.index("response.content_part.added") < names.index(
+        "response.output_text.delta"
+    )
     assert (
         names.index("response.output_text.done")
         < names.index("response.content_part.done")
@@ -246,10 +293,14 @@ def test_responses_text_stream_announces_and_closes_its_content_part():
     assert names.count("response.content_part.added") == 1
     assert names.count("response.content_part.done") == 1
 
-    payloads = {json.loads(e.split("data: ", 1)[1])["type"]: json.loads(e.split("data: ", 1)[1])
-                for e in events}
+    payloads = {
+        json.loads(e.split("data: ", 1)[1])["type"]: json.loads(e.split("data: ", 1)[1])
+        for e in events
+    }
     assert payloads["response.content_part.added"]["part"] == {
-        "type": "output_text", "text": "", "annotations": []
+        "type": "output_text",
+        "text": "",
+        "annotations": [],
     }
     assert payloads["response.content_part.done"]["part"]["text"] == "hello"
     assert payloads["response.content_part.done"]["content_index"] == 0
@@ -302,7 +353,9 @@ def test_max_tokens_is_bounded_on_every_protocol():
 def test_a_zero_max_tokens_budget_is_rejected():
     """A decode budget of nothing is a client bug, not a turn to run."""
     with pytest.raises(ValueError, match="at least 1"):
-        anthropic.to_canonical({"messages": [{"role": "user", "content": "hi"}], "max_tokens": 0})
+        anthropic.to_canonical(
+            {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 0}
+        )
 
 
 def test_input_size_is_bounded(monkeypatch):
@@ -321,7 +374,9 @@ def test_size_of_counts_tool_results_and_the_system_prompt():
 
     msgs = [
         Message(role=Role.USER, content="abcd"),
-        Message(role=Role.TOOL, tool_results=(ToolResult(tool_call_id="t", content="efg"),)),
+        Message(
+            role=Role.TOOL, tool_results=(ToolResult(tool_call_id="t", content="efg"),)
+        ),
     ]
     assert wire.size_of("xy", msgs) == 2 + 4 + 3
     assert wire.size_of(None, msgs) == 7
@@ -331,8 +386,11 @@ def test_a_request_over_the_bounds_is_a_400_not_a_500(client):
     """`app.py` already turns a `ValueError` from `to_canonical` into the protocol's 400."""
     r = client.post(
         "/v1/messages",
-        json={"model": "t", "max_tokens": wire.MAX_OUTPUT_TOKENS + 1,
-              "messages": [{"role": "user", "content": "hi"}]},
+        json={
+            "model": "t",
+            "max_tokens": wire.MAX_OUTPUT_TOKENS + 1,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
     )
     assert r.status_code == 400
     assert r.json()["type"] == "error"
@@ -343,8 +401,14 @@ def test_an_ordinary_request_is_nowhere_near_the_bounds(client):
     """The bounds are generous on purpose; a real turn must never trip them."""
     r = client.post(
         "/v1/messages",
-        json={"model": "t", "max_tokens": 4096, "system": CC_SYSTEM,
-              "messages": [{"role": "user", "content": "Fix the retry loop"} for _ in range(50)]},
+        json={
+            "model": "t",
+            "max_tokens": 4096,
+            "system": CC_SYSTEM,
+            "messages": [
+                {"role": "user", "content": "Fix the retry loop"} for _ in range(50)
+            ],
+        },
     )
     assert r.status_code == 200
 
@@ -432,7 +496,8 @@ def test_the_gate_reports_honestly_when_the_window_holds_no_compacted_turn():
 async def test_a_served_turn_still_lands_in_the_history(cfg):
     """The bound must not turn into "nothing is recorded"."""
     pipeline = Pipeline(cfg, MockBackend(use_tools=False))
-    await pipeline.run(GenRequest(system=CC_SYSTEM,
-                                  messages=[Message(role=Role.USER, content="hi")]))
+    await pipeline.run(
+        GenRequest(system=CC_SYSTEM, messages=[Message(role=Role.USER, content="hi")])
+    )
     assert pipeline.compactor.history
     assert pipeline.compactor.history[-1].applied
