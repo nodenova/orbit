@@ -105,6 +105,52 @@ def build_multi_adapter_linear(base_cls: Any, mx: Any, nn: Any) -> Any:
     return MultiAdapterLinear
 
 
+def build_logits_processor(token_filter: Any, mx: Any) -> Any:
+    """Adapt a `TokenFilter` to `mlx_lm`'s `logits_processors` protocol (sec 8.5.1).
+
+    `mlx_lm` calls `processor(tokens, logits)` with every token sampled so far and
+    the logits for the next one, shaped `[1, vocab]`, and takes the return value as
+    the new logits. Masking is additive `-inf` on the disallowed ids, applied before
+    `generate_step` takes its log-softmax, so a forbidden token has zero probability
+    rather than a small one.
+
+    `tokens` carries the last prompt token followed by everything generated —
+    `generate_step` prefills all but one token without invoking processors — and
+    that is exactly the sequence LMFE wants. It advances its parser on the *last*
+    token only and treats what came before as an opaque key, so the prompt never
+    reaches the schema parser and generation is parsed from the first sampled token.
+
+    Two guards, both for a mismatch that is otherwise silent:
+
+    * **An empty allowed-set returns the logits untouched.** Masking everything
+      makes the whole row `-inf`, and the log-softmax downstream turns that into
+      NaN, which samples a garbage token instead of raising. Unconstrained output
+      that repair then handles (sec 8.5.3) is a far better failure.
+    * **Ids at or past the logit width are dropped.** `len(tokenizer)` counts the
+      vocabulary; the model's output dimension is often padded to a different one.
+      Scattering an out-of-range id writes outside the row.
+
+    Measured on this host at a 248k vocabulary: ~0.34 ms per token, against a ~14 ms
+    decode step. The obvious optimisation — caching the mask, since LMFE hands back
+    the same allowed-set object for a repeated parser state — is not worth keying a
+    cache on object identity for 0.3 ms.
+    """
+
+    def processor(tokens: Any, logits: Any) -> Any:
+        allowed = token_filter(tokens.tolist())
+        if not allowed:
+            return logits
+        vocab = logits.shape[-1]
+        ids = [int(t) for t in allowed if 0 <= int(t) < vocab]
+        if not ids:
+            return logits
+        mask = mx.full((vocab,), -float("inf"), dtype=logits.dtype)
+        mask[mx.array(ids, dtype=mx.int32)] = 0.0
+        return logits + mask
+
+    return processor
+
+
 class MLXTier0Backend(Backend):
     """Resident Qwen3.6-35B-A3B @4-bit with N adapters mounted."""
 
@@ -132,6 +178,12 @@ class MLXTier0Backend(Backend):
         self._container_hash = hash_artefact(model_path)
         self._adapters: dict[str, AdapterSpec] = {}
         self._targets: dict[str, Any] = {}
+        # LMFE's vocabulary preprocessing, built on first constrained turn and kept
+        # for the life of the backend. Not built here: it costs ~1.1 s and ~0.6 GB
+        # against this tokenizer, and a deployment serving only free-form turns
+        # should not pay it. `unload()` drops it with the tokenizer it describes.
+        self._constrain_vocab: Any = None
+        self._constrain_vocab_failed = False
 
         self._wrap_targets()
         if adapter_dir:
@@ -155,6 +207,12 @@ class MLXTier0Backend(Backend):
         self.model = None
         self.tokenizer = None
         self._targets = {}
+        # The vocabulary describes the tokenizer that is going away. `load()` builds
+        # a fresh tokenizer, and handing a stale prefix tree to a reloaded model
+        # would constrain decoding against a vocabulary that is no longer the one
+        # being sampled from — wrong tokens allowed, silently.
+        self._constrain_vocab = None
+        self._constrain_vocab_failed = False
         for spec in self._adapters.values():
             spec.weights = {}
         try:
@@ -347,6 +405,40 @@ class MLXTier0Backend(Backend):
         result.text = "".join(chunks)
         return result
 
+    def _logits_processors(self, req: GenRequest) -> list[Any]:
+        """Constrained decoding for this request, or nothing (sec 8.5.1).
+
+        **This is the half that used to be missing, and its absence was silent.**
+        `Pipeline` attaches `json_schema` to every tool-bearing turn and this backend
+        never read it, so on real hardware the schema was computed, carried the whole
+        way down, and dropped — leaving tool-call correctness entirely to repair and
+        retry. `MockBackend` honoured the same field, which put the mock *stricter*
+        than the hardware and inverted the rule in CLAUDE.md: a green suite could not
+        see the gap. Measured cost of the gap on this host, before the fix: 0 clean
+        first-attempt tool calls in 100 turns.
+
+        The import is deliberately local. `gateway.toolcall` sits above the backend
+        line and `gateway/__init__` reaches `Pipeline`, which imports this package —
+        a module-level import here closes that cycle at interpreter start.
+        """
+        if req.json_schema is None or self._constrain_vocab_failed:
+            return []
+        from ..gateway.toolcall.constrain import Constrainer
+
+        constrainer = Constrainer()
+        if self._constrain_vocab is None:
+            self._constrain_vocab = constrainer.vocabulary(self.tokenizer)
+            if self._constrain_vocab is None:
+                # The enforcer is not installed. Remembered, because the answer
+                # cannot change while this process lives and probing it on every
+                # turn would import-and-fail once per request.
+                self._constrain_vocab_failed = True
+                return []
+        token_filter = constrainer.token_filter(req.json_schema, self._constrain_vocab)
+        if token_filter is None:
+            return []
+        return [build_logits_processor(token_filter, self.mx)]
+
     async def stream(self, req: GenRequest) -> AsyncIterator[Delta]:
         from mlx_lm import stream_generate  # type: ignore
         from mlx_lm.sample_utils import make_sampler  # type: ignore
@@ -370,6 +462,7 @@ class MLXTier0Backend(Backend):
                 prompt=prompt,
                 max_tokens=req.sampling.max_tokens,
                 sampler=sampler,
+                logits_processors=self._logits_processors(req),
             ):
                 out_tokens += 1
                 text_parts.append(step.text)

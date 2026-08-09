@@ -22,17 +22,50 @@ model = "mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit"
 container_path = "/Users/vmehera/.cache/huggingface/hub/models--mlx-community--Qwen3.6-35B-A3B-OptiQ-4bit/snapshots/70a3aa32c7feef511182bf16aa332f37e8d82014"
 adapter_dir = "adapters"
 mtp = true
-# 32k KV on top of 24.7 GB of weights leaves nothing on a 36 GB box once the ~8 GB
-# macOS floor is taken. 16k is the Gate A working figure; raise it only against a
-# measured resident-set number, never against this comment.
-max_kv_tokens = 16384
+# Measured, replacing a comment that was wrong by ~50x in the cautious direction.
+#
+# The old note said 32k of KV "leaves nothing" on a 36 GB box. It costs 640 MiB.
+# The real budget is Metal's `max_recommended_working_set_size` - 28.08 GiB, read
+# from `mx.device_info()`, not 36 GB and not "36 minus an 8 GB macOS floor". Tier 0
+# takes 23.0 GiB of it, leaving 5.08 GiB for KV and activations.
+#
+# This model's KV is small because most of its attention is linear: of 40 layers
+# only 10 are full attention, at 2 KV heads x 256 head_dim, so 20 KiB/token. The
+# other 30 carry a fixed ~30 MiB recurrent state that does not grow with context.
+#   65536 tokens -> 1.25 GiB   131072 -> 2.50 GiB   262144 (native max) -> 5.00 GiB
+#
+# 64k is a 4x raise that is comfortably inside the measured headroom. The
+# arithmetic supports 131072 as well, and the shipped `kv_config.json` would make
+# even 262144 fit by quantising exactly those 10 layers - but neither has been
+# checked against `mx.get_peak_memory()` on a loaded model, and the ceiling that
+# actually binds here is prefill time, not KV memory: 131k tokens is ~136 s of
+# wall clock at the measured 963 tok/s. Raise it against a peak-memory reading.
+max_kv_tokens = 65536
 
 [tier1]
-# Off until Gate A has an answer. Gate B is run by flipping this to true; see
-# specs/HOST_BRINGUP.md for the exact sequence and why the two gates do not overlap.
-# (That path is gitignored - if it is missing, the durable copy is docs/HANDOFF.md.)
+# Rung 3, not rung 1, and that is a measurement rather than a preference.
+#
+# Streamed experts are arithmetically dead on this host. The model's own config
+# gives 48 layers x 8 experts x 3.63 MB = 1.39 GB read per decoded token; this
+# machine's SSD delivers 6.93 GB/s at 1 MB blocks and queue depth 24 (measured,
+# page cache bypassed with F_NOCACHE). That is 4.2-5.0 tok/s. Gate B's floor is
+# 200. The gap is 40x, and the largest lever - the expert cache - is worth ~2x.
+# Three independent confirmations: the model card (~5 tok/s on an M3 Max 36 GB),
+# ssd-moe/deepseek-v4-flash-mlx on a 48 GB Mac (4.5-5), and DEEPSEEK_V4 sec 5's own
+# derivation (~3.5). A verifier that always returns a failed verdict is not a
+# verifier, so rung 1 stays off here until the host has more memory, not more tuning.
+#
+# Rung 3 costs no memory at all: it is tier 0 with the adapter stripped. Its known
+# weakness is that its verdicts are not independent - a verifier sharing the
+# generator's weights shares its blind spots - and `Tier1Attestation.rung` records
+# which rung served every verdict so a receipt never implies otherwise.
 enabled = true
-rung = "streamed"
+rung = "second_opinion"
+# Unused while `rung = "second_opinion"`, which serves from tier 0's own weights.
+# Kept because it is what Gate B would run against if this host ever gains the
+# memory to make rung 1 worth measuring, and because a resolved snapshot is the
+# thing that takes an hour to find again.
+#
 # Resolved snapshot, for the same reason tier 0 needs one: hash_artefact() answers
 # None for anything that is not a filesystem path, and a Gate B number quoted with no
 # container hash is not reproducible (sec 10.5).

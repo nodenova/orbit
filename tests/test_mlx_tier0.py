@@ -22,7 +22,16 @@ import pytest
 
 import fake_mlx
 from tandem.eval.gates import adapter_isolation_gate
-from tandem.types import GenRequest, Message, Role, Sampling, ToolCall, ToolDef, ToolResult
+from tandem.types import (
+    GenRequest,
+    Message,
+    Role,
+    Sampling,
+    StopReason,
+    ToolCall,
+    ToolDef,
+    ToolResult,
+)
 
 A1_KEYS = [
     "layers.0.self_attn.q_proj",
@@ -520,6 +529,66 @@ async def test_greedy_generation_is_reproducible(mlx, container, adapters):
 def test_count_tokens_uses_the_real_tokenizer_not_the_byte_estimate(mlx, container):
     backend = _backend(mlx, container)
     assert backend.count_tokens("one two three") == 3
+
+
+# --- constrained decoding reaches the logits (sec 8.5.1) --------------------
+
+
+@pytest.mark.asyncio
+async def test_a_logits_processor_is_called_once_per_sampled_token(mlx, container):
+    """Guards the fake against the bug the real backend actually had.
+
+    `MLXTier0Backend` accepted `json_schema` and never applied it, and the suite
+    stayed green because nothing checked that a constraint reached the logits. A
+    fake that took `logits_processors` and ignored it would reproduce exactly that
+    blindness one layer down.
+    """
+    backend = _backend(mlx, container)
+    seen: list[list[int]] = []
+
+    def record(tokens, logits):
+        seen.append(tokens.tolist())
+        return logits
+
+    backend._logits_processors = lambda req: [record]
+    result = await backend.generate(_req())
+
+    assert seen[0] == [], "the prompt's tokens are prefilled without invoking processors"
+    assert [len(s) for s in seen] == list(range(len(seen))), "one token added per step"
+    # One call more than there are emitted tokens: the last one masked the step that
+    # sampled the stop token. That is the call that has to happen — a mask which
+    # stops running once the schema is satisfied is a mask that cannot permit the
+    # terminator, and the turn would run to `max_tokens` instead of ending.
+    assert len(seen) == len(result.text.split()) + 1
+    assert result.stop_reason is StopReason.END_TURN
+
+
+@pytest.mark.asyncio
+async def test_a_processor_that_changes_the_logits_changes_the_output(mlx, container):
+    """`stay arithmetic`: the mask must reach the sampler, not just the signature."""
+    backend = _backend(mlx, container)
+    unconstrained = await backend.generate(_req())
+
+    def shift(tokens, logits):
+        return logits + fake_mlx.Array([[1.0] * logits.shape[1]])
+
+    backend._logits_processors = lambda req: [shift]
+    constrained = await backend.generate(_req())
+
+    assert constrained.text != unconstrained.text
+
+
+def test_the_fake_refuses_a_processor_that_is_not_callable(mlx, container):
+    with pytest.raises(TypeError):
+        list(
+            fake_mlx.stream_generate(
+                fake_mlx.FakeModel(),
+                fake_mlx.FakeTokenizer(),
+                prompt="hi",
+                sampler=fake_mlx.make_sampler(),
+                logits_processors=["not a processor"],
+            )
+        )
 
 
 # --- KV state (sec 8.4) -----------------------------------------------------

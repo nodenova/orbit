@@ -21,9 +21,15 @@ and is reported as such rather than passed over in silence.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, Sequence
 
 from ...types import ToolDef
+
+# A per-request token filter: given the tokens decoded so far, the ids that may
+# come next. Deliberately plain Python ints on both sides — this is the seam
+# between the schema layer and whatever tensor library a backend happens to use,
+# and putting an array type in it would drag MLX above `backends/base.py`.
+TokenFilter = Callable[[Sequence[int]], Sequence[int]]
 
 
 def tool_call_schema(tools: Iterable[ToolDef]) -> dict[str, Any]:
@@ -84,20 +90,87 @@ class Constrainer:
             return False, "lm-format-enforcer not installed (pip install 'tandem[constrain]')"
         return True, "ok"
 
-    def logits_processor(self, schema: dict[str, Any], tokenizer: Any) -> Any | None:
-        """Build a logits processor enforcing `schema`, or None if unavailable.
+    def vocabulary(self, tokenizer: Any) -> Any | None:
+        """LMFE's per-tokenizer preprocessing, or None if unavailable.
 
-        Returning None rather than raising is deliberate: an unconstrained
-        generation that then goes through repair is a worse outcome than a
-        constrained one, but it is a far better outcome than a failed request.
+        **Build this once and keep it.** It walks the whole vocabulary and builds a
+        prefix tree — measured on this host against the tier-0 tokenizer (248,077
+        tokens): 1.1 s and ~0.6 GB. Per request that would dwarf the generation it
+        constrains; per process it is noise. The caller owns the caching because the
+        natural lifetime is the backend's, and a module-level cache keyed on the
+        tokenizer would either leak it forever or key on `id()` and risk handing one
+        model's vocabulary to another after a swap (sec 5.5 rung 2 makes that a real
+        sequence, not a hypothetical).
+
+        Every stop id goes in, not just `eos_token_id`. The enforcer only permits a
+        stop token once the parser `can_end()`, so an id it does not know about is an
+        id the model may never emit — and `mlx_lm.stream_generate` breaks on
+        `tokenizer.eos_token_ids`, the set. Pass the singular id alone and a
+        completed object cannot be terminated: the mask forbids the one token that
+        would end the turn, and generation runs to `max_tokens` emitting whitespace.
         """
         ok, _ = self._probe()
         if not (self.enabled and ok):
             return None
-        from lmformatenforcer import JsonSchemaParser  # type: ignore
-        from lmformatenforcer.integrations.transformers import (  # type: ignore
-            build_transformers_prefix_allowed_tokens_fn,
+        from lmformatenforcer import TokenEnforcerTokenizerData  # type: ignore
+
+        inner = getattr(tokenizer, "_tokenizer", tokenizer)
+        vocab_size = len(inner)
+        special = set(getattr(inner, "all_special_ids", ()) or ())
+        # Prepending a known token and dropping its first character is how LMFE
+        # recovers the leading space a word-start token carries; the decode of a
+        # token on its own does not show it.
+        token_0 = inner.encode("0")[-1]
+        regular: list[tuple[int, str, bool]] = []
+        for token_id in range(vocab_size):
+            if token_id in special:
+                continue
+            after = inner.decode([token_0, token_id])[1:]
+            plain = inner.decode([token_id])
+            regular.append((token_id, after, len(after) > len(plain)))
+
+        def decode(ids: list[int]) -> str:
+            # A partial multi-byte character decodes to U+FFFD; feeding that to the
+            # parser would fail a schema the model is still spelling correctly.
+            return inner.decode(ids).rstrip("�")
+
+        return TokenEnforcerTokenizerData(
+            regular,
+            decode,
+            _stop_token_ids(tokenizer),
+            False,  # bitmask output requires torch, which an MLX runtime does not have
+            vocab_size,
         )
 
-        parser = JsonSchemaParser(schema)
-        return build_transformers_prefix_allowed_tokens_fn(tokenizer, parser)
+    def token_filter(self, schema: dict[str, Any], vocabulary: Any) -> TokenFilter | None:
+        """A filter enforcing `schema`, or None if unavailable.
+
+        **Fresh per request, and that is not an oversight.** A `TokenEnforcer` keys
+        its parser states on the full token tuple it has seen, so sharing one across
+        requests grows a dict without bound and holds one conversation's parse states
+        for the life of the process. Construction is free once `vocabulary` exists —
+        measured at under a millisecond — so there is nothing to amortise.
+
+        Returning None rather than raising keeps the degradation ordered: an
+        unconstrained generation that goes through repair (sec 8.5.3-4) is worse than
+        a constrained one and far better than a failed request.
+        """
+        ok, _ = self._probe()
+        if not (self.enabled and ok) or vocabulary is None:
+            return None
+        from lmformatenforcer import JsonSchemaParser, TokenEnforcer  # type: ignore
+
+        enforcer = TokenEnforcer(vocabulary, JsonSchemaParser(schema))
+
+        def allowed(tokens: Sequence[int]) -> Sequence[int]:
+            return enforcer.get_allowed_tokens(list(tokens)).allowed_tokens
+
+        return allowed
+
+
+def _stop_token_ids(tokenizer: Any) -> list[int]:
+    ids = getattr(tokenizer, "eos_token_ids", None)
+    if ids:
+        return sorted(int(i) for i in ids)
+    single = getattr(tokenizer, "eos_token_id", None)
+    return [int(single)] if single is not None else []

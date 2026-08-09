@@ -336,6 +336,23 @@ def make_sampler(temp: float = 0.0, top_p: float = 1.0):
     return sample
 
 
+class TokenSequence:
+    """What `generate_step` hands a logits processor as its first argument.
+
+    An `mx.array` of the tokens sampled so far. Only `.tolist()` is modelled,
+    because that is all the protocol needs, and a richer stand-in would invite a
+    processor to depend on array behaviour this file does not reproduce.
+    """
+
+    __slots__ = ("_ids",)
+
+    def __init__(self, ids: list[int]):
+        self._ids = list(ids)
+
+    def tolist(self) -> list[int]:
+        return list(self._ids)
+
+
 def stream_generate(
     model: FakeModel,
     tokenizer: FakeTokenizer,
@@ -343,8 +360,22 @@ def stream_generate(
     prompt: str,
     max_tokens: int = 256,
     sampler: Any = None,
+    logits_processors: list[Any] | None = None,
     **unexpected: Any,
 ) -> Iterator[Step]:
+    """Modelled on `mlx_lm.stream_generate`, including its processor contract.
+
+    `logits_processors` is **applied, not merely accepted**. A fake that took the
+    kwarg and ignored it would reproduce exactly the bug this parameter exists to
+    fix — sec 8.5.1 constrained decoding was computed, passed down, and dropped on
+    the floor by the real backend for the life of the repository, and a green suite
+    could not see it because nothing ever checked that the mask reached the logits.
+
+    The call order matches `generate_step`: each processor receives every token
+    sampled so far and the logits for the next one, and returns the logits to
+    sample from. The prompt's tokens are deliberately absent — the real one prefills
+    all but the last token without invoking processors.
+    """
     if unexpected:
         raise TypeError(f"stream_generate got unexpected kwargs: {sorted(unexpected)}")
     if not isinstance(prompt, str):
@@ -353,14 +384,23 @@ def stream_generate(
         raise TypeError("stream_generate needs a sampler")
     if model is None or tokenizer is None:
         raise RuntimeError("model is not resident — load() before generating")
+    for processor in logits_processors or ():
+        if not callable(processor):
+            raise TypeError("each logits processor must be callable(tokens, logits)")
 
     x = Array([_digest_floats(prompt, model.dim)])
+    sampled: list[int] = []
     for _ in range(max_tokens):
         logits = model(x)
+        for processor in logits_processors or ():
+            logits = processor(TokenSequence(sampled), logits)
+            if not isinstance(logits, Array):
+                raise TypeError("a logits processor must return logits, not a mask")
         index = sampler(logits)
         word = _VOCAB[index]
         if word == "<eos>":
             return
+        sampled.append(index)
         yield Step(text=word + " ", token=index)
         x = _normalise(logits + Array([_digest_floats(word, model.dim)]))
 
