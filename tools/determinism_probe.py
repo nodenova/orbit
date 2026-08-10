@@ -193,7 +193,7 @@ def compare(a: Arm, b: Arm) -> dict[str, Any]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--config", default="tandem.toml")
+    ap.add_argument("--config", default="orbit.toml")
     ap.add_argument("--decode-tokens", type=int, default=8)
     ap.add_argument("--cpu-tokens", type=int, default=0, help="0 skips the CPU arm")
     ap.add_argument("--chunk-a", type=int, default=2048)
@@ -210,7 +210,7 @@ def main() -> int:
 
     from mlx_lm import load
 
-    from tandem.config import Config
+    from orbit.config import Config
 
     cfg = Config.load(args.config)
     path = cfg.tier0.container_path or cfg.tier0.model
@@ -226,7 +226,7 @@ def main() -> int:
 
     content = args.prompt
     if args.prompt_tokens:
-        from tandem.backends.mlx_tier1 import prefill_filler
+        from orbit.backends.mlx_tier1 import prefill_filler
 
         # Gate B's filler, reused rather than reinvented: identifier-diverse code
         # shapes, which is what a chunk-arrangement comparison needs to route

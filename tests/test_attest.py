@@ -10,7 +10,7 @@ import sys
 
 import pytest
 
-from tandem.attest.audit import (
+from orbit.attest.audit import (
     GENESIS,
     AuditLog,
     AuditRecord,
@@ -18,22 +18,22 @@ from tandem.attest.audit import (
     receipt_fields,
     verify_chain,
 )
-from tandem.attest.hashing import hash_artefact, hash_text, hash_tree
-from tandem.attest.provenance import (
+from orbit.attest.hashing import hash_artefact, hash_text, hash_tree
+from orbit.attest.provenance import (
     ProvenanceError,
     ProvenanceRecord,
     SourceKind,
     corpus_hash_for,
     redact_source_repo,
 )
-from tandem.attest.receipt import (
+from orbit.attest.receipt import (
     REDUCTION_ORDER,
     Receipt,
     Tier0Attestation,
     Tier1Attestation,
     engine_commit,
 )
-from tandem.types import Sampling
+from orbit.types import Sampling
 
 
 def _record(i: int, **kw) -> AuditRecord:
@@ -402,7 +402,7 @@ def test_two_processes_appending_concurrently_do_not_fork_the_chain(tmp_path):
     path = tmp_path / "audit.jsonl"
     writer = (
         "import sys;"
-        "from tandem.attest.audit import AuditLog, AuditRecord, now;"
+        "from orbit.attest.audit import AuditLog, AuditRecord, now;"
         "log = AuditLog(sys.argv[1]);"
         "[log.append(AuditRecord("
         "    request_id=f'{sys.argv[2]}-{i}', ts=now(), harness='h',"
@@ -517,20 +517,20 @@ def test_receipt_carries_the_correlation_fields():
 def test_engine_commit_refuses_a_stamp_that_is_not_a_commit(monkeypatch):
     """M28: a tag or branch name in the env var was attested as the commit."""
     engine_commit.cache_clear()
-    monkeypatch.setenv("TANDEM_ENGINE_COMMIT", "v2-hotfix")
+    monkeypatch.setenv("ORBIT_ENGINE_COMMIT", "v2-hotfix")
     assert engine_commit() != "v2-hotfix"
     engine_commit.cache_clear()
-    monkeypatch.setenv("TANDEM_ENGINE_COMMIT", "  DEADBEEF1234  ")
+    monkeypatch.setenv("ORBIT_ENGINE_COMMIT", "  DEADBEEF1234  ")
     assert engine_commit() == "deadbeef1234"
     engine_commit.cache_clear()
 
 
 def test_engine_commit_never_attests_an_unrelated_repo(monkeypatch, tmp_path):
     """M28: from site-packages, `git -C <parents[3]>` names a stranger's HEAD."""
-    from tandem.attest import receipt as receipt_mod
+    from orbit.attest import receipt as receipt_mod
 
     (tmp_path / ".git").mkdir()  # an unrelated checkout of the user's
-    installed = tmp_path / "site-packages" / "tandem" / "attest" / "receipt.py"
+    installed = tmp_path / "site-packages" / "orbit" / "attest" / "receipt.py"
     installed.parent.mkdir(parents=True)
     installed.write_text("")
 
@@ -538,8 +538,8 @@ def test_engine_commit_never_attests_an_unrelated_repo(monkeypatch, tmp_path):
         raise AssertionError("git must not run outside this package's checkout")
 
     monkeypatch.setattr(receipt_mod, "__file__", str(installed))
-    monkeypatch.setattr("tandem.attest.receipt.subprocess.run", _no_git)
-    monkeypatch.delenv("TANDEM_ENGINE_COMMIT", raising=False)
+    monkeypatch.setattr("orbit.attest.receipt.subprocess.run", _no_git)
+    monkeypatch.delenv("ORBIT_ENGINE_COMMIT", raising=False)
     engine_commit.cache_clear()
     assert engine_commit() == "unknown"
     engine_commit.cache_clear()
@@ -670,5 +670,5 @@ def test_source_repo_keeps_a_remote_url_verbatim():
 
 
 def test_hash_text_is_stable():
-    assert hash_text("tandem") == hash_text("tandem")
-    assert hash_text("tandem") != hash_text("Tandem")
+    assert hash_text("orbit") == hash_text("orbit")
+    assert hash_text("orbit") != hash_text("Orbit")

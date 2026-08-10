@@ -24,15 +24,15 @@ import json
 import httpx
 import pytest
 
-from tandem.backends.mlx_tier1 import OptiqTier1Backend, prefill_filler
-from tandem.backends.remote_tier1 import RemoteTier1Backend
-from tandem.backends.tier1_call import (
+from orbit.backends.mlx_tier1 import OptiqTier1Backend, prefill_filler
+from orbit.backends.remote_tier1 import RemoteTier1Backend
+from orbit.backends.tier1_call import (
     Tier1Unavailable,
     build_payload,
     resolve_reasoning_control,
 )
-from tandem.tier1.schemas import rerank_schema
-from tandem.types import GenRequest, Message, Role, Sampling
+from orbit.tier1.schemas import rerank_schema
+from orbit.types import GenRequest, Message, Role, Sampling
 
 DEEPSEEK = "mlx-community/DeepSeek-V4-Flash-0731-OptiQ-2bit-mixed"
 QWEN = "mlx-community/Qwen3.5-122B-A10B-OptiQ-2bit"
@@ -111,7 +111,7 @@ def test_auto_claims_nothing_it_does_not_recognise(model):
 
 
 def test_an_unknown_control_is_a_startup_error_not_a_failed_verdict():
-    """Raised at construction, so a typo is found on `tandem doctor` rather than
+    """Raised at construction, so a typo is found on `orbit doctor` rather than
     on the first reranked turn of a real session."""
     with pytest.raises(ValueError, match="reasoning_control"):
         OptiqTier1Backend(
@@ -122,7 +122,7 @@ def test_an_unknown_control_is_a_startup_error_not_a_failed_verdict():
 def test_there_is_no_way_to_ask_for_reasoning():
     """The knob selects a dialect of "off". A value meaning "on" would be a knob
     for disabling the sec 5.1 clamp, which is not a knob this has."""
-    from tandem.backends.tier1_call import REASONING_CONTROLS
+    from orbit.backends.tier1_call import REASONING_CONTROLS
 
     assert REASONING_CONTROLS == ("auto", "deepseek_v4", "none")
 

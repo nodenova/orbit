@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from tandem.backends.mock import MockBackend
-from tandem.eval.regression import (
+from orbit.backends.mock import MockBackend
+from orbit.eval.regression import (
     Baseline,
     ItemResult,
     check_comparable,
@@ -19,8 +19,8 @@ from tandem.eval.regression import (
     grade,
     run,
 )
-from tandem.eval.regression_items import SUITE, Item, by_category
-from tandem.types import GenResult
+from orbit.eval.regression_items import SUITE, Item, by_category
+from orbit.types import GenResult
 
 # --- the shape of the suite -------------------------------------------------
 

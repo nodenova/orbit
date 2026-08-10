@@ -51,7 +51,7 @@ TOOLS_JSON: list[dict[str, Any]] = [
 TARGET_CALL = {
     "name": "edit_file",
     "arguments": {
-        "path": "src/tandem/gateway/pipeline.py",
+        "path": "src/orbit/gateway/pipeline.py",
         "old": "compact(req)",
         "new": "compact(req, budget=budget)",
     },
@@ -63,7 +63,7 @@ TARGET_CALL = {
 ESCAPED_CALL = {
     "name": "edit_file",
     "arguments": {
-        "path": "src/tandem/gateway/pipeline.py",
+        "path": "src/orbit/gateway/pipeline.py",
         "old": "compact(req)\n",
         "new": "compact(req, budget=budget)\n",
     },
@@ -84,8 +84,8 @@ def load_filter(model: Path) -> tuple[Any, Any, list[int]]:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
     from mlx_lm.tokenizer_utils import load as load_tokenizer
 
-    from tandem.gateway.toolcall.constrain import Constrainer, tool_call_schema
-    from tandem.types import ToolDef
+    from orbit.gateway.toolcall.constrain import Constrainer, tool_call_schema
+    from orbit.types import ToolDef
 
     tok = load_tokenizer(model)
     inner = tok._tokenizer
@@ -103,7 +103,7 @@ def load_filter(model: Path) -> tuple[Any, Any, list[int]]:
     token_filter = constrainer.token_filter(tool_call_schema(tools), vocabulary)
     if token_filter is None:
         raise SystemExit(
-            "lm-format-enforcer unavailable; pip install 'tandem[constrain]'"
+            "lm-format-enforcer unavailable; pip install 'orbit[constrain]'"
         )
     ids = list(inner.encode(json.dumps(TARGET_CALL), add_special_tokens=False))
     return token_filter, inner, ids
@@ -311,8 +311,8 @@ def cmd_filter(args: argparse.Namespace) -> None:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
     from mlx_lm.tokenizer_utils import load as load_tokenizer
 
-    from tandem.gateway.toolcall.constrain import Constrainer, tool_call_schema
-    from tandem.types import ToolDef
+    from orbit.gateway.toolcall.constrain import Constrainer, tool_call_schema
+    from orbit.types import ToolDef
 
     tok = load_tokenizer(args.model)
     inner = tok._tokenizer
@@ -524,8 +524,8 @@ def cmd_statekey(args: argparse.Namespace) -> None:
     """
     from mlx_lm.tokenizer_utils import load as load_tokenizer
 
-    from tandem.gateway.toolcall.constrain import Constrainer, tool_call_schema
-    from tandem.types import ToolDef
+    from orbit.gateway.toolcall.constrain import Constrainer, tool_call_schema
+    from orbit.types import ToolDef
 
     tok = load_tokenizer(args.model)
     inner = tok._tokenizer
@@ -801,8 +801,8 @@ def cmd_reuse(args: argparse.Namespace) -> None:
     import lmformatenforcer
     from mlx_lm.tokenizer_utils import load as load_tokenizer
 
-    from tandem.gateway.toolcall.constrain import Constrainer, tool_call_schema
-    from tandem.types import ToolDef
+    from orbit.gateway.toolcall.constrain import Constrainer, tool_call_schema
+    from orbit.types import ToolDef
 
     tok = load_tokenizer(args.model)
     inner = tok._tokenizer

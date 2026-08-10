@@ -21,8 +21,8 @@ import asyncio
 import pytest
 
 import fake_mlx
-from tandem.eval.gates import adapter_isolation_gate
-from tandem.types import (
+from orbit.eval.gates import adapter_isolation_gate
+from orbit.types import (
     GenRequest,
     Message,
     Role,
@@ -72,7 +72,7 @@ def adapters(tmp_path):
 
 
 def _backend(mlx, container, *, adapter_dir=None):
-    from tandem.backends.mlx_tier0 import MLXTier0Backend
+    from orbit.backends.mlx_tier0 import MLXTier0Backend
 
     return MLXTier0Backend(str(container), adapter_dir=adapter_dir)
 
@@ -98,7 +98,7 @@ def test_the_backend_constructs_and_wraps_its_targets(mlx, container):
 def test_targeting_follows_4_3_and_leaves_the_head_alone(mlx, container):
     """A change that starts wrapping everything is a rank-32 delta on the output
     embedding, which is both wasteful and not what the profile trained."""
-    from tandem.backends.mlx_tier0 import _is_target
+    from orbit.backends.mlx_tier0 import _is_target
 
     backend = _backend(mlx, container)
     assert "layers.0.self_attn.q_proj" in backend._targets
@@ -215,7 +215,7 @@ async def test_selection_is_read_at_call_time_and_is_per_task(mlx, container, ad
     decode loop has no true suspension point; what interleaves is the layer the
     race would actually corrupt.
     """
-    from tandem.backends.mlx_tier0 import ACTIVE_ADAPTER
+    from orbit.backends.mlx_tier0 import ACTIVE_ADAPTER
 
     backend = _backend(mlx, container, adapter_dir=str(adapters))
     wrapper = backend._targets["layers.0.self_attn.q_proj"]
@@ -253,7 +253,7 @@ async def test_the_contextvar_is_reset_when_a_stream_is_abandoned(
     without asking, and no receipt would catch it: the request never named an
     adapter, so there is nothing for the attestation to contradict.
     """
-    from tandem.backends.mlx_tier0 import ACTIVE_ADAPTER
+    from orbit.backends.mlx_tier0 import ACTIVE_ADAPTER
 
     backend = _backend(mlx, container, adapter_dir=str(adapters))
     stream = backend.stream(_req(adapter="a1-myrepo"))
@@ -269,7 +269,7 @@ async def test_the_contextvar_is_reset_when_a_stream_is_abandoned(
 async def test_adapter_isolation_gate_passes_against_the_real_tier0(
     mlx, container, adapters
 ):
-    """`tandem gate isolation`, against `MLXTier0Backend` rather than the mock.
+    """`orbit gate isolation`, against `MLXTier0Backend` rather than the mock.
 
     This is the sec 4.2 blocking gate — greedy output under adapter *i* with N
     mounted must be byte-identical to output with only *i* mounted — driven
@@ -791,7 +791,7 @@ def test_a_repeat_of_a_fully_cached_turn_still_has_a_token_to_feed(mlx, containe
 
 def test_a_state_over_the_byte_budget_is_not_stored(mlx, container):
     """Refusing costs one cold prefill; allocating it costs the machine (T9)."""
-    from tandem.backends.mlx_tier0 import MLXTier0Backend
+    from orbit.backends.mlx_tier0 import MLXTier0Backend
 
     backend = MLXTier0Backend(str(container), max_state_bytes=8)
     _result, state = _exported(backend, _req())
@@ -861,8 +861,8 @@ async def test_the_disk_cache_makes_a_restart_warm(mlx, container, tmp_path):
     mlx backend: `_probe_cache` and `_remember` both check it first, so every turn
     re-prefilled from scratch and the disk cache held nothing to hit.
     """
-    from tandem.config import Config
-    from tandem.gateway.pipeline import Pipeline
+    from orbit.config import Config
+    from orbit.gateway.pipeline import Pipeline
 
     cfg = Config()
     cfg.attest.audit_log = str(tmp_path / "audit.jsonl")

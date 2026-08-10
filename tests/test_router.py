@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from tandem.backends.mock import MockBackend
-from tandem.config import RouterConfig
-from tandem.router.cascade import Cascade
-from tandem.router.classify import classify, previous_turn_produced_diff
-from tandem.tier1.schemas import RERANK, REVIEW
-from tandem.tier1.verifier import Candidate, Tier1Verifier
-from tandem.types import (
+from orbit.backends.mock import MockBackend
+from orbit.config import RouterConfig
+from orbit.router.cascade import Cascade
+from orbit.router.classify import classify, previous_turn_produced_diff
+from orbit.tier1.schemas import RERANK, REVIEW
+from orbit.tier1.verifier import Candidate, Tier1Verifier
+from orbit.types import (
     GenRequest,
     GenResult,
     Message,
@@ -167,7 +167,7 @@ def test_rerank_schema_bounds_the_choice_to_the_candidates_on_offer():
     not exist — and the cost of catching that at runtime is a wasted ~18 s rerank
     and a merge-quality gate that did not happen.
     """
-    from tandem.tier1.schemas import rerank_schema
+    from orbit.tier1.schemas import rerank_schema
 
     schema = rerank_schema(3)
     assert schema["properties"]["choice"] == {
@@ -350,8 +350,8 @@ async def test_escalation_stays_dormant_without_a_test_runner():
 
 
 def _served(tmp_path, **eval_kw):
-    from tandem.config import Config
-    from tandem.gateway.pipeline import Pipeline
+    from orbit.config import Config
+    from orbit.gateway.pipeline import Pipeline
 
     cfg = Config()
     cfg.attest.audit_log = str(tmp_path / "audit.jsonl")

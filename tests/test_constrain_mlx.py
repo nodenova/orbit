@@ -30,8 +30,8 @@ import string
 
 import pytest
 
-from tandem.gateway.toolcall.constrain import Constrainer, tool_call_schema
-from tandem.types import ToolDef
+from orbit.gateway.toolcall.constrain import Constrainer, tool_call_schema
+from orbit.types import ToolDef
 
 lmformatenforcer = pytest.importorskip(
     "lmformatenforcer", reason="constrained decoding is the '[constrain]' extra"
@@ -277,7 +277,7 @@ class _MX:
 
 
 def _processor(allowed):
-    from tandem.backends.mlx_tier0 import build_logits_processor
+    from orbit.backends.mlx_tier0 import build_logits_processor
 
     return build_logits_processor(lambda _tokens: allowed, _MX())
 
@@ -336,7 +336,7 @@ def test_each_step_masks_from_its_own_allowed_set():
     pins the property that survives it and that the earlier identity-keyed attempt was
     reaching for: what the mask permits tracks the parser, step by step.
     """
-    from tandem.backends import mlx_tier0
+    from orbit.backends import mlx_tier0
 
     sets = [[1], [3]]
     processor = mlx_tier0.build_logits_processor(lambda _t: sets.pop(0), _MX())
@@ -358,7 +358,7 @@ def test_a_bound_the_row_does_not_reach_still_filters():
     A row narrower than that says nothing about which ids are safe, so the guard has
     to keep running — this is the case the F1 fast path must not swallow.
     """
-    from tandem.backends import mlx_tier0
+    from orbit.backends import mlx_tier0
 
     processor = mlx_tier0.build_logits_processor(lambda _t: [2, 99], _MX(), 200)
     out = processor(_Tokens(), _logits(5))
@@ -369,7 +369,7 @@ def test_a_bound_the_row_does_not_reach_still_filters():
 
 def test_skipping_the_filter_produces_the_mask_the_filter_would_have():
     """F1 is an optimisation, so the two paths have to agree on every in-range set."""
-    from tandem.backends import mlx_tier0
+    from orbit.backends import mlx_tier0
 
     guarded = mlx_tier0.build_logits_processor(lambda _t: [1, 3], _MX())
     skipped = mlx_tier0.build_logits_processor(lambda _t: [1, 3], _MX(), 5)
@@ -401,7 +401,7 @@ class _CountingMX:
 
 def test_an_unchanged_allowed_set_reuses_the_mask():
     """The 40% of consecutive positions F2 exists for — ~85% inside a string run."""
-    from tandem.backends import mlx_tier0
+    from orbit.backends import mlx_tier0
 
     mx = _CountingMX()
     processor = mlx_tier0.build_logits_processor(lambda _t: [1, 3], mx)
@@ -422,7 +422,7 @@ def test_the_cache_does_not_hit_on_a_list_mutated_in_place():
     against themselves, report a hit, and reuse a mask built from the old ones —
     a silently wrong constraint. Rebuilding is the correct way to lose that bet.
     """
-    from tandem.backends import mlx_tier0
+    from orbit.backends import mlx_tier0
 
     shared = [1]
     mx = _CountingMX()
@@ -450,13 +450,13 @@ def tier0(tmp_path):
         '{"model_type": "qwen3_moe"}', encoding="utf-8"
     )
     with fake_mlx.install():
-        from tandem.backends.mlx_tier0 import MLXTier0Backend
+        from orbit.backends.mlx_tier0 import MLXTier0Backend
 
         yield MLXTier0Backend(str(container))
 
 
 def _request(schema=None):
-    from tandem.types import GenRequest, Message, Role
+    from orbit.types import GenRequest, Message, Role
 
     return GenRequest(
         messages=[Message(role=Role.USER, content="find the importers")],
@@ -527,7 +527,7 @@ def test_the_mask_matches_real_mlx_where_mlx_is_installed(width):
     contract checked only against a stand-in is a contract nobody has tested.
     """
     mx = pytest.importorskip("mlx.core", reason="MLX is Apple-Silicon-only")
-    from tandem.backends.mlx_tier0 import build_logits_processor
+    from orbit.backends.mlx_tier0 import build_logits_processor
 
     allowed = [1, width - 2]
     processor = build_logits_processor(lambda _tokens: allowed, mx)

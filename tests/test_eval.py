@@ -7,15 +7,15 @@ from typing import ClassVar
 
 import pytest
 
-from tandem.backends.mock import Fault, MockBackend
-from tandem.config import Config
-from tandem.eval.gates import (
+from orbit.backends.mock import Fault, MockBackend
+from orbit.config import Config
+from orbit.eval.gates import (
     adapter_isolation_gate,
     g1_backend_equivalence,
     g2_placement_invariance,
     toolcall_gate,
 )
-from tandem.eval.latency import (
+from orbit.eval.latency import (
     Environment,
     LatencyReport,
     LatencySample,
@@ -23,7 +23,7 @@ from tandem.eval.latency import (
     m0_gate_a,
     measure,
 )
-from tandem.eval.merge_eval import (
+from orbit.eval.merge_eval import (
     Arm,
     ArmSummary,
     EvalCase,
@@ -37,10 +37,10 @@ from tandem.eval.merge_eval import (
     tier1_review_proxy,
     touched_files,
 )
-from tandem.eval.worktree import PatchOutcome
-from tandem.gateway.pipeline import Pipeline
-from tandem.tier1.verifier import Tier1Verifier
-from tandem.types import GenRequest
+from orbit.eval.worktree import PatchOutcome
+from orbit.gateway.pipeline import Pipeline
+from orbit.tier1.verifier import Tier1Verifier
+from orbit.types import GenRequest
 
 REF_DIFF = (
     "diff --git a/src/app.py b/src/app.py\n"
@@ -88,7 +88,7 @@ def test_blast_radius_is_a_ratio_to_the_merged_diff():
 
 def test_blast_accuracy_penalises_both_directions():
     """A patch touching twice as much and one touching half must not cancel."""
-    from tandem.eval.merge_eval import _blast_accuracy
+    from orbit.eval.merge_eval import _blast_accuracy
 
     exact = ArmSummary(arm="x", mean_blast_files=1.0, mean_blast_lines=1.0)
     broad = ArmSummary(arm="y", mean_blast_files=2.0, mean_blast_lines=2.0)
@@ -512,7 +512,7 @@ def placement_reaches_engine(monkeypatch):
     compare two arms whose only difference never leaves this process.
     """
     monkeypatch.setattr(
-        "tandem.backends.mlx_tier1.expert_cache_provenance",
+        "orbit.backends.mlx_tier1.expert_cache_provenance",
         lambda configured_bytes, engine_version="": {
             "configured_bytes": configured_bytes,
             "reached_engine": True,
@@ -654,8 +654,8 @@ def _slow_host_sample():
 
 def test_gate_a_defaults_are_the_spec_figures():
     """An absent [gates] block and a [gates] block full of spec values agree."""
-    from tandem import thresholds
-    from tandem.config import GatesConfig
+    from orbit import thresholds
+    from orbit.config import GatesConfig
 
     g = GatesConfig()
     assert g.gate_a_ttft_s == thresholds.SPEC_GATE_A_TTFT_S == 5.0
@@ -718,7 +718,7 @@ def test_contract_relaxation_is_independent_of_gate_a():
 
 
 def test_latency_report_records_the_budgets_that_produced_its_verdicts():
-    """A recorded JSON must not depend on what tandem.toml says when it is read back."""
+    """A recorded JSON must not depend on what orbit.toml says when it is read back."""
     report = LatencyReport(samples=_slow_host_sample(), contract_ttft_s=35.0)
     contract = report.as_dict()["contract"]
     assert contract["chat_ttft_s"]["budget"] == 35.0
@@ -727,9 +727,9 @@ def test_latency_report_records_the_budgets_that_produced_its_verdicts():
 
 def test_gates_config_rejects_an_unknown_key(tmp_path):
     """Sec-11 knobs get the same typo discipline as everything else in the file."""
-    from tandem.config import Config
+    from orbit.config import Config
 
-    p = tmp_path / "tandem.toml"
+    p = tmp_path / "orbit.toml"
     p.write_text("[gates]\ngate_a_ttft_ms = 35000\n", encoding="utf-8")
     with pytest.raises(ValueError, match=r"GatesConfig\.gate_a_ttft_ms"):
         Config.load(p)

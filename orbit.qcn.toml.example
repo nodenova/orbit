@@ -1,0 +1,180 @@
+# Gate B against Qwen3-Coder-Next. NOT a serving config — `orbit.toml` is what ships.
+#
+# The only differences from `orbit.toml` are in [tier1]: rung "second_opinion" ->
+# "streamed", and the model and snapshot repointed. Everything else is left identical on
+# purpose, so a number produced here compares row-for-row with the 122B's in
+# `docs/BASELINE.md` §4.1a rather than differing by an unrecorded knob.
+#
+# Serving from this file would be wrong: rung 1 needs `optiq serve` already up on 8081
+# (Orbit never spawns it — sec 5.4), and tier 0 at 23.0 GiB plus that engine does not
+# fit inside Metal's 28.08 GiB working set. Gate B is a one-model measurement, which is
+# why it can use this at all — `cmd_bench` builds no tier 0 for rung 1.
+#
+# Full record: `docs/QWEN3_CODER_NEXT.md`. Bring-up: `docs/PROCESSES.md` §7.
+
+backend = "mlx"
+
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[tier0]
+# 24.7 GB on disk, measured from the HF blob listing, not the card.
+model = "mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit"
+# The resolved snapshot, not the repo id. hash_artefact() takes a filesystem path
+# and answers None for anything that is not one, so with only the repo id above the
+# receipt reports no container hash at all - honest, and useless for attestation.
+container_path = "/Users/vmehera/.cache/huggingface/hub/models--mlx-community--Qwen3.6-35B-A3B-OptiQ-4bit/snapshots/70a3aa32c7feef511182bf16aa332f37e8d82014"
+adapter_dir = "adapters"
+mtp = true
+# Measured, replacing a comment that was wrong by ~50x in the cautious direction.
+#
+# The old note said 32k of KV "leaves nothing" on a 36 GB box. It costs 640 MiB.
+# The real budget is Metal's `max_recommended_working_set_size` - 28.08 GiB, read
+# from `mx.device_info()`, not 36 GB and not "36 minus an 8 GB macOS floor". Tier 0
+# takes 23.0 GiB of it, leaving 5.08 GiB for KV and activations.
+#
+# This model's KV is small because most of its attention is linear: of 40 layers
+# only 10 are full attention, at 2 KV heads x 256 head_dim, so 20 KiB/token. The
+# other 30 carry a fixed recurrent state that does not grow with context, measured
+# at 64.4 MB in a snapshot - twice the ~30 MiB this line used to claim.
+#   65536 tokens -> 1.25 GiB   131072 -> 2.50 GiB   262144 (native max) -> 5.00 GiB
+#
+# 64k is a 4x raise that is comfortably inside the measured headroom. The
+# arithmetic supports 131072 as well, and the shipped `kv_config.json` would make
+# even 262144 fit by quantising exactly those 10 layers - but neither has been
+# checked against `mx.get_peak_memory()` on a loaded model, and the ceiling that
+# actually binds here is prefill time, not KV memory: 131k tokens is ~136 s of
+# wall clock at the measured 963 tok/s. Raise it against a peak-memory reading.
+max_kv_tokens = 65536
+
+[tier1]
+# Rung 1, streamed, because this file exists to measure it.
+#
+# Measured 2026-08-10 against `optiq serve --stream-experts --prefill-step-size 8192`
+# on the snapshot below: Gate B worst-of-run 262.6 / 257.9 / 253.5, mean 258.0, and
+# `meets_spec: true` - the first configuration on this host to clear sec 11's 200 tok/s
+# floor. Decode 8.96 tok/s, resident 1.36 GB, load peak 1.36 GB.
+#
+# Note which quantity the floor is: gate_b_prefill_tok_per_s bounds *prefill*. Decode
+# here is 8.96 tok/s, ~29x lower, and that gap is the premise tier 1 is built on rather
+# than a shortfall against the gate - a verifier reads far more than it writes.
+# Comparing the decode rate to this floor divides the premise away.
+#
+# What this does NOT settle: rung 3 is still ~3.5x faster at a 30k review (~33 s
+# against ~116 s) and costs no memory, so it still ships. This model's case is verdict
+# *independence*, which is unmeasured - docs/HANDOFF.md T5, docs/QWEN3_CODER_NEXT.md §6.
+enabled = true
+rung = "streamed"
+# Resolved snapshot, for the same reason tier 0 needs one: hash_artefact() answers
+# None for anything that is not a filesystem path, and a Gate B number quoted with no
+# container hash is not reproducible (sec 10.5). It is absolute rather than `~`-relative
+# because nothing in config.py calls expanduser, so a `~` here silently hashes nothing.
+container_path = "/Users/vmehera/.cache/huggingface/hub/models--mlx-community--Qwen3-Coder-Next-4bit/snapshots/7b9321eabb85ce79625cac3f61ea691e4ea984b5"
+# 44.84 GB, 3 B active of 80 B. Not an OptiQ build - there is none, and the engine does
+# not need one: `--stream-experts` detection is name-keyed on `.switch_mlp.`, which this
+# quant's 144 expert tensors match. Its quantisation is uniform (bits 4, group_size 64,
+# affine; only the router gates are overridden), so unlike the DeepSeek OptiQ quant there
+# is no main-tower per-path override for load_streaming to disagree with.
+model = "mlx-community/Qwen3-Coder-Next-4bit"
+endpoint = "http://127.0.0.1:8081/v1"
+stream_experts = true
+# Inert, and the receipt says so rather than printing it beside a throughput: nothing
+# plumbs this to the engine and `--stream-experts-cache` is a per-projection count that
+# mlx-optiq 0.4.18 discards (T34). The lever that DOES work on this model is the
+# environment variable `OPTIQ_STREAM_SCALES_BUDGET_GB=6`, worth 1.08x - see
+# docs/QWEN3_CODER_NEXT.md §4.2. Left at orbit.toml's value so the two configs differ
+# only where this file says they differ.
+expert_cache_bytes = 12884901888
+# 300 s, not the 180 s default, and live here rather than inert. At the measured
+# 258 tok/s a 30k review costs ~116 s of prefill plus ~14 s of decode - inside the
+# timeout with ~170 s of margin, against the 122B's ~86 s and DeepSeek's ~30 s.
+request_timeout_s = 300.0
+# "deepseek_v4" on a Qwen is not a mistake: the value names the *dialect* of
+# "off" — all three spellings of the disable key — not the vendor.
+#
+# It is set explicitly because `auto` guesses from the model name and does not
+# recognise Qwen3 as a reasoning family, which is deliberate upstream (an unknown
+# key is a 400 on a strict engine, so the guess stays narrow).
+#
+# Carried over from `orbit.toml` rather than measured on THIS model: the empty-verdict
+# behaviour under `auto` was observed on the 122B (mlx-optiq 0.4.18, 2026-08-10), and
+# Gate B never exercises it because `measure_prefill` reads prefill rate, not content.
+# Whether Qwen3-Coder-Next needs it is untested. `refuse_reasoned_answer` is what makes
+# guessing wrong here loud rather than silent.
+reasoning_control = "deepseek_v4"
+swap_budget_s = 0.0
+remote_transport = "tools/remote_tier1.py"
+remote_api_key_env = "ORBIT_REMOTE_API_KEY"
+remote_consent = ""
+
+[router]
+candidates = 3
+candidate_temperature = 0.6
+rerank_enabled = true
+max_escalations_per_turn = 1
+degrade_after_s = 45.0
+
+[compaction]
+enabled = true
+strip_tool_schemas = true
+keep_original = true
+
+# Gate targets for THIS host. Every default in `GatesConfig` is the sec 11 figure;
+# the four overrides below are the ones this machine cannot reach on arithmetic
+# rather than on a bug, and each is written as `host (spec) — why`.
+#
+# The point of overriding rather than deleting the gates: a gate that can only ever
+# report red is a gate nobody runs, and the failures behind these four are already
+# understood and recorded. Relaxing them lets the system run end to end so the
+# *next* weakness — the one nobody has characterised — becomes the thing the gate
+# finds. Nothing is hidden by doing it: every report carries `spec_budget` and
+# `meets_spec` beside the effective number, and `relaxed_criteria` names each row
+# that is green only because of this block. Read a pass here as "this host cleared
+# its own floor", never as "Gate A passed".
+#
+# Restore the spec everywhere by deleting this section. Do that before quoting a
+# gate result anywhere outside this machine.
+[gates]
+# 35.0 s (spec 5.0) — measured 30.47 s at the 32k frontier, warm. Arithmetic, not
+# tuning: TTFT = context / prefill rate, and 32k at the measured 963 tok/s *is*
+# ~32 s. Meeting 5.0 s at 32k needs 16,000 tok/s of prefill, which is 2.4x more
+# FLOP/s than this GPU has at 100% efficiency — unreachable on any M4 Max at any
+# memory size. The mitigations that can close it (compaction, the prompt cache) are
+# upstream of what this suite measures. `mlx_tier0.supports_state()` is True now, but
+# a restore covers 0 tokens on this container (HANDOFF.md 3.9, T15), so today every
+# turn still re-prefills. Lower this back toward 5.0 once a restore actually fires;
+# do not read the 35.0 as a target anyone is aiming at.
+gate_a_ttft_s = 35.0
+# 25.0 tok/s (spec 30.0) — free-form decode is 65.6 and passes outright. The
+# override exists for the constrained arm: tool-bearing turns are masked against a
+# JSON schema and run at 27.1-27.6 tok/s. That 2.4x is what buys 100/100
+# first-attempt tool calls against 0/100 unconstrained, so it is a cost worth
+# paying, and a budget that forbids it would be forbidding the wrong thing.
+gate_a_decode_tok_per_s = 25.0
+# 150.0 tok/s, left at `orbit.toml`'s value on purpose and WRONG for this model.
+#
+# That floor is 3 sigma below the 122B's six-run mean of 153.7 (T14). This model
+# measures 258.0, so 150.0 sits 42% under it and would not catch the regression it
+# exists to catch - the engine falling back to 2048-token chunks, which here lands
+# near 190 and would still pass. It is not retuned because three runs on one session
+# is not a distribution, and a floor set from them would flap; `meets_spec` against
+# sec 11's 200 is the number to read from this config, and it is true.
+#
+# Set this to ~245 (3 sigma below 258.0 at the observed 3.5% spread) only after a
+# six-run session on a host passing PROCESSES.md 3.1, the way T14 arrived at 150.0.
+gate_b_prefill_tok_per_s = 150.0
+# 35.0 s (spec 2.0) — the sec 7.3 chat contract reported beside Gate A by
+# `orbit bench latency`, relaxed for the same reason as `gate_a_ttft_s` and to the
+# same value, so the two verdicts in one report do not disagree about one number.
+contract_chat_ttft_s = 35.0
+# Left at the spec's 40.0 deliberately, so this report still fails one criterion
+# honestly: free-form decode clears it at 65.6 and the constrained arm does not.
+# `gate_a_decode_tok_per_s` above already records the decision about that arm; two
+# relaxations for one fact would make the shortfall look like two hosts' worth.
+# contract_chat_tok_per_s = 40.0
+#
+# `gate_a_toolcall_failure_rate` is not overridden and should not be. Unlike TTFT
+# and decode it is not a hardware fact — measured 0/100 failures here — so a host
+# that cannot meet 5% has a bug in the tool-call layer, which is exactly what the
+# gate is for.

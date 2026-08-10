@@ -14,15 +14,15 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from tandem.backends.base import Delta
-from tandem.backends.mock import MockBackend
-from tandem.config import Config
-from tandem.gateway import wire
-from tandem.gateway.app import create_app
-from tandem.gateway.compaction import Compactor
-from tandem.gateway.pipeline import Pipeline
-from tandem.gateway.wire import anthropic, openai_chat, openai_responses
-from tandem.types import GenRequest, GenResult, Message, Role, StopReason, Usage
+from orbit.backends.base import Delta
+from orbit.backends.mock import MockBackend
+from orbit.config import Config
+from orbit.gateway import wire
+from orbit.gateway.app import create_app
+from orbit.gateway.compaction import Compactor
+from orbit.gateway.pipeline import Pipeline
+from orbit.gateway.wire import anthropic, openai_chat, openai_responses
+from orbit.types import GenRequest, GenResult, Message, Role, StopReason, Usage
 
 CC_SYSTEM = (
     "You are Claude Code, Anthropic's official CLI for Claude.\n\n"
@@ -185,7 +185,7 @@ def test_chat_stream_stays_silent_about_usage_when_not_asked():
 
 def test_chat_usage_chunk_survives_a_tool_call_turn():
     enc = openai_chat.StreamEncoder(model="t", include_usage=True)
-    from tandem.types import ToolCall
+    from orbit.types import ToolCall
 
     result = GenResult(
         tool_calls=(ToolCall(id="c1", name="read_file", arguments={"path": "a"}),),
@@ -308,7 +308,7 @@ def test_responses_text_stream_announces_and_closes_its_content_part():
 
 def test_responses_tool_only_stream_announces_no_content_part():
     """A turn that produces only tool calls must not claim a text part it never filled."""
-    from tandem.types import ToolCall
+    from orbit.types import ToolCall
 
     enc = openai_responses.StreamEncoder(model="t")
     result = GenResult(
@@ -370,7 +370,7 @@ def test_input_size_is_bounded(monkeypatch):
 
 
 def test_size_of_counts_tool_results_and_the_system_prompt():
-    from tandem.types import ToolResult
+    from orbit.types import ToolResult
 
     msgs = [
         Message(role=Role.USER, content="abcd"),

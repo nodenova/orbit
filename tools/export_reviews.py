@@ -2,14 +2,14 @@
 """Export first-review timestamps for merged PRs, for A2 extraction (spec sec 6.3).
 
     python tools/export_reviews.py --owner pallets --repo click --out reviews.json
-    tandem extract a2 --repo ./click --reviews reviews.json
+    orbit extract a2 --repo ./click --reviews reviews.json
 
-**Deliberately outside the package.** `src/tandem/` makes no outbound network call
+**Deliberately outside the package.** `src/orbit/` makes no outbound network call
 anywhere, and the offline posture (sec 8.6) is a claim the verification script has
 to be able to prove by running `lsof` during a session and seeing nothing but
 loopback. A network-capable module inside the package would make that claim rest on
 "we do not call it" rather than "it is not there". So this lives in `tools/`, is not
-installed, and imports nothing from tandem.
+installed, and imports nothing from orbit.
 
 Stdlib only, for the same reason: every dependency is a security surface, not a
 convenience, and this one would be a dependency the runtime does not otherwise need.
@@ -46,7 +46,7 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 API = "https://api.github.com"
-USER_AGENT = "tandem-export-reviews/1.0"
+USER_AGENT = "orbit-export-reviews/1.0"
 
 Fetch = Callable[[str], Any]
 

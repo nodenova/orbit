@@ -13,13 +13,13 @@ venv/
 /var/
 *.jsonl
 !tests/**/*.jsonl
-!src/tandem/**/*.jsonl
+!src/orbit/**/*.jsonl
 
 # Model containers, adapters, routing profiles, KV snapshots.
 #
 # Every one of these is anchored with a leading slash so it matches only the
 # working-directory artefact, not a source package that happens to share the
-# name. Unanchored, `adapters/` also matched `src/tandem/adapters/` and silently
+# name. Unanchored, `adapters/` also matched `src/orbit/adapters/` and silently
 # excluded the entire adapter pipeline from the first commit — the package was
 # on disk, imported fine locally, and simply was not in the repository.
 /models/

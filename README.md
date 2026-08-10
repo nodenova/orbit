@@ -1,4 +1,4 @@
-# Tandem
+# Orbit
 
 [![CI](https://github.com/nodenova/orbit/actions/workflows/ci.yml/badge.svg)](https://github.com/nodenova/orbit/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
@@ -17,7 +17,7 @@ process, so Claude Code, OpenCode, Crush and Codex all point at the same
 
 ```bash
 pip install -e '.[dev,constrain]'
-tandem serve --backend mock                       # gateway on 127.0.0.1:8080
+orbit serve --backend mock                       # gateway on 127.0.0.1:8080
 ANTHROPIC_BASE_URL=http://127.0.0.1:8080 claude   # point a harness at it
 ```
 
@@ -136,14 +136,14 @@ is the standing precedent.
 ## Run
 
 ```bash
-tandem doctor                          # runtime status + offline posture
-tandem serve --backend mock            # gateway on 127.0.0.1:8080
+orbit doctor                          # runtime status + offline posture
+orbit serve --backend mock            # gateway on 127.0.0.1:8080
 ```
 
 Point a harness at it:
 
 ```bash
-source <(tandem offline-env)           # the airgap environment (sec 8.6)
+source <(orbit offline-env)           # the airgap environment (sec 8.6)
 ANTHROPIC_BASE_URL=http://127.0.0.1:8080 claude
 OPENAI_BASE_URL=http://127.0.0.1:8080/v1 opencode
 ```
@@ -158,24 +158,24 @@ product decision from zero:
 | `POST /v1/chat/completions` | OpenCode, Crush, generic |
 | `POST /v1/responses` | Codex |
 
-Local introspection, no network: `/tandem/health`, `/tandem/stats`,
-`/tandem/compaction/last` (the diff view), `/tandem/trace/last`, `/tandem/audit/verify`.
+Local introspection, no network: `/orbit/health`, `/orbit/stats`,
+`/orbit/compaction/last` (the diff view), `/orbit/trace/last`, `/orbit/audit/verify`.
 
 Streaming is incremental where it honestly can be: a `chat` turn carrying no tools emits
 tokens as they are decoded. A `code_change` turn under best-of-N runs to completion
-first and says so in `/tandem/trace/last` — there are no tokens to emit until the
+first and says so in `/orbit/trace/last` — there are no tokens to emit until the
 verifier has chosen a candidate, and streaming candidate 0 then retracting it would be
 worse than a pause.
 
 > [!WARNING]
-> On Apple Silicon, `tandem doctor`, `serve`, both gates, `bench`, `eval` and `train`
+> On Apple Silicon, `orbit doctor`, `serve`, both gates, `bench`, `eval` and `train`
 > each load 23.0 GiB eagerly, and only one process can hold the GPU.
 > [`docs/PROCESSES.md`](docs/PROCESSES.md) is the pre-flight procedure — read it before
 > starting a second serving process.
 
 ## Configure
 
-Copy [`tandem.toml.example`](tandem.toml.example) to `tandem.toml`. Every knob is
+Copy [`orbit.toml.example`](orbit.toml.example) to `orbit.toml`. Every knob is
 documented in place, and **unknown keys are a hard error** rather than a silent no-op —
 a typo'd `expert_cache_bytes` that appears to take effect and does not is how a wrong
 number ends up in a published measurement.
@@ -215,18 +215,18 @@ block. A pass against a relaxed floor means "this host cleared its own floor", n
 
 ```bash
 # A0 — harness adapter. Universal, cheapest, the sleeper win.
-tandem extract a0 --n 4000 --out corpus/a0
-tandem train sft --corpus corpus/a0/train.jsonl --out adapters/a0 \
+orbit extract a0 --n 4000 --out corpus/a0
+orbit train sft --corpus corpus/a0/train.jsonl --out adapters/a0 \
     --name a0-harness --source-kind synthetic_harness
 
 # A1 — repository adapter from your own git history.
-tandem extract a1 --repo . --holdout 25 --out corpus/a1
-tandem train sft --corpus corpus/a1/train.jsonl --out adapters/a1-myrepo \
+orbit extract a1 --repo . --holdout 25 --out corpus/a1
+orbit train sft --corpus corpus/a1/train.jsonl --out adapters/a1-myrepo \
     --name a1-myrepo --repo .
 
 # A2 — reviewer adapter, DPO from review history. Starts from A1.
-tandem extract a2 --repo . --out corpus/a2
-tandem train dpo --corpus corpus/a2/train.jsonl --out adapters/a2-myrepo \
+orbit extract a2 --repo . --out corpus/a2
+orbit train dpo --corpus corpus/a2/train.jsonl --out adapters/a2-myrepo \
     --name a2-myrepo --repo . --mount-adapter adapters/a1-myrepo
 ```
 
@@ -242,16 +242,16 @@ produced it.
 ## Gates and evals
 
 ```bash
-tandem gate toolcall --runs 100    # sec 10.2 — blocking, ≥99% well-formed
-tandem gate isolation              # sec 4.2  — blocking, adapter deltas must not leak
-tandem eval merge --repo . --a1 a1-myrepo    # sec 10.1 — the four bars
-tandem eval regression             # sec 10.3 — diff against a baseline, not a score
-tandem bench latency               # sec 10.4 + M0 Gate A
-tandem bench tier1                 # M0 Gate B — streamed prefill
-tandem audit verify                # sec 9.2 — hash-chained log
+orbit gate toolcall --runs 100    # sec 10.2 — blocking, ≥99% well-formed
+orbit gate isolation              # sec 4.2  — blocking, adapter deltas must not leak
+orbit eval merge --repo . --a1 a1-myrepo    # sec 10.1 — the four bars
+orbit eval regression             # sec 10.3 — diff against a baseline, not a score
+orbit bench latency               # sec 10.4 + M0 Gate A
+orbit bench tier1                 # M0 Gate B — streamed prefill
+orbit audit verify                # sec 9.2 — hash-chained log
 ```
 
-`tandem eval merge` is the one that matters. **If the adapter doesn't beat the base
+`orbit eval merge` is the one that matters. **If the adapter doesn't beat the base
 model on the customer's own repo, there is no product** — and it is designed to say so
 at M3, week 8, before tier 1 is built.
 
@@ -260,7 +260,7 @@ parent commit, and the `[eval]` commands run there — never in your checkout, a
 against the files as they sit on disk, which would score the repository rather than the
 patch.
 
-`tandem eval regression` reports a **diff against a recorded baseline, not a score**.
+`orbit eval regression` reports a **diff against a recorded baseline, not a score**.
 `RegressionReport` has no field holding a pass rate, and a first run can only write a
 baseline and say so. A field holding one is all it takes for a number to end up on a
 slide.
@@ -307,7 +307,7 @@ an exact prompt silently stops matching when the harness updates, and the custom
 quietly loses the win with no error anywhere. Detection is scored, and a drifted prompt
 is reported rather than absorbed.
 
-**Nothing under `src/tandem/` makes an outbound network call.** The offline posture
+**Nothing under `src/orbit/` makes an outbound network call.** The offline posture
 (sec 8.6) is a claim you can verify with `lsof`, so the two network-capable files live in
 `tools/` and are not installed. A test pins the package's network surface to one file —
 the loopback process boundary to the tier-1 engine — and a second import there is a test
@@ -318,7 +318,7 @@ failure rather than a discovery.
 ## Repository map
 
 ```
-src/tandem/
+src/orbit/
   gateway/      wire protocols, compaction, caches, tool-call layer  (sec 8)
   router/       turn classification, best-of-N, escalation           (sec 7)
   tier1/        the verifier API and its schemas                     (sec 5)
@@ -378,7 +378,7 @@ blocking:
 - **tests** — the full suite with `[constrain]` installed, so the prevention layer is
   exercised rather than skipped as unavailable. On Python 3.11 and 3.14, the two ends of
   `requires-python`.
-- **cli and gateway smoke** — starts a real `tandem serve`, drives all three wire
+- **cli and gateway smoke** — starts a real `orbit serve`, drives all three wire
   protocols against it, asserts the receipt carries an engine commit, and verifies the
   audit chain over the records those requests wrote. Then the blocking gates and both
   extractors. This covers the one thing unit tests cannot: an actual uvicorn process
@@ -396,12 +396,12 @@ Issues and pull requests are welcome. Four things worth knowing before you open 
   are blocking in CI. Where a rule is wrong for this codebase specifically, a scoped
   `# noqa: RULE` or `# type: ignore[code]` with a reason is the right answer; a bare
   suppression is not, and mypy's `ignore-without-code` rejects it outright.
-- **Absolute imports only** — `from tandem.types import GenRequest`, never
+- **Absolute imports only** — `from orbit.types import GenRequest`, never
   `from ..types import ...` or `from .base import ...`. Enforced as `TID252` with
   `ban-relative-imports = "all"`.
 - **Run both install states.** `[dev]` and `[dev,constrain]` exercise different code
   paths, and CI runs the second.
-- **`tandem gate toolcall --runs 100` is blocking**, and CI runs it. If you touched the
+- **`orbit gate toolcall --runs 100` is blocking**, and CI runs it. If you touched the
   gateway, the tool-call layer, compaction or sampling, run it locally first.
 - **`MockBackend` must never be easier to satisfy than a real backend.** It has failed
   this three times. When extending it, ask both whether the change makes it more

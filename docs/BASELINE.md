@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Purpose** | The reference machine every budget in this repository derives from, and what it measurably does. |
-| **Answers** | "Will this model run here?" · "Why is tier-1 rung 1 off?" · "Why does `tandem.toml` relax a gate?" |
+| **Answers** | "Will this model run here?" · "Why is tier-1 rung 1 off?" · "Why does `orbit.toml` relax a gate?" |
 | **Does not answer** | What should be running right now (`PROCESSES.md`) · what to do next (`HANDOFF.md`). |
 | **Hardware** | `Mac16,6`, Apple M4 Max (14 CPU / 32 GPU cores), 36 GiB unified, 1 TB SSD (926 GiB usable), macOS 26.5.2 (25F84), Metal 4 |
 | **Stack** | MLX 0.32.0, mlx-lm 0.31.3, mlx-optiq 0.4.18, Python 3.13.5 |
@@ -23,7 +23,7 @@ What that settles, so it is not re-litigated:
 
 The v1 specification budgets a larger machine, so a few of its figures (`sec 2`'s
 expert cache, the 32k KV frontier) are re-derived here rather than copied. Where they
-differ, this file is what `tandem.toml` implements and the spec figure is recorded
+differ, this file is what `orbit.toml` implements and the spec figure is recorded
 beside it.
 
 ---
@@ -176,7 +176,7 @@ projections in §5 can be trusted.
 > `CONSTRAINED_DECODE.md` §8.
 
 **The sec 10.2 gate has been re-run against F1+F2 and passes: 100/100 well-formed, rate
-1.00, 115.9 s** (`tandem gate toolcall --runs 100`, 2026-08-09). Load peak 23.61 GB, steady
+1.00, 115.9 s** (`orbit gate toolcall --runs 100`, 2026-08-09). Load peak 23.61 GB, steady
 headroom 27.1 GB, pageouts +134 — no thrashing.
 
 ~21 ms/token of overhead, of which only ~6 ms is building the mask (LMFE 3.30 ms, id
@@ -210,7 +210,7 @@ Whether a newline occupies that state is decided by the *tokenizer*: `"…(req)\
 into `')\'` + `'n'` and pays; `"line0\nline1"` emits `'\n'` whole and pays nothing. So the
 cost of a tool call scales with **split escapes, not tokens** — measured dead linear at
 ~428 ms each — and a twenty-line code edit whose lines end in `)` costs ~8.5 s of host
-time on its own. **This is the workload Tandem is for, and the 2.38× decode ratio does not
+time on its own. **This is the workload Orbit is for, and the 2.38× decode ratio does not
 express it.**
 
 **The paragraph above read 2.5 ms/token because its fixture had no escape at all.**
@@ -350,7 +350,7 @@ engine; the gate's own are below.
 
 #### 4.1a Gate B itself — 2026-08-10
 
-*Same engine, same flags, **six** consecutive runs of `tandem bench tier1`, one session at
+*Same engine, same flags, **six** consecutive runs of `orbit bench tier1`, one session at
 ~11 h uptime. Prompts from the gate's `prefill_filler`, not the hand-built `curl` ones.*
 
 | input tokens | mean tok/s | min–max | spread | sd |
@@ -449,7 +449,7 @@ names and nobody has measured.
 > **Superseded as the target, later the same day: the OptiQ repos are no longer 401.**
 > `mlx-community/DeepSeek-V4-Flash-0731-OptiQ-2bit` is ungated, and now on disk — §4.6.
 > Everything below still stands as a measurement *of this quant*, and it is the only
-> DeepSeek-V4 number anyone has; it is no longer the quant Tandem would serve.
+> DeepSeek-V4 number anyone has; it is no longer the quant Orbit would serve.
 
 **Nothing here required the weights.** The shape came off the 18 safetensors headers by
 HTTP Range request, and the throughput came from replaying the loader's exact read
@@ -694,7 +694,7 @@ the cause until something has distinguished the two decoders.
 **Consequence for T7.** The question was never throughput — it was whether ~8× rung 3's
 latency is worth verdict independence. That is now moot at a lower level: **there is no
 rung-1 deployment of this model to decide about.** Fixing it is upstream work in an engine
-Tandem deliberately does not spawn (sec 5.4), and the fallback ds4 (`PROCESSES.md` §6.4)
+Orbit deliberately does not spawn (sec 5.4), and the fallback ds4 (`PROCESSES.md` §6.4)
 has never been brought up here.
 
 ### 4.8 A streamed rung 1 that serves, and passes at spec
@@ -775,7 +775,7 @@ reason rung 4 exists, not candidates.
 
 ## 6. Environment
 
-Two virtualenvs, on purpose: mlx-optiq pins `transformers<5.13` and tandem's stack
+Two virtualenvs, on purpose: mlx-optiq pins `transformers<5.13` and orbit's stack
 resolves 5.14.1. They never share an interpreter anyway — sec 5.4 puts the engine
 behind a process boundary and `backends/mlx_tier1.py` imports no MLX.
 
@@ -804,14 +804,14 @@ The bundle is a snapshot; re-run the three commands if the gateway rotates its r
 
 ## 7. Gate thresholds on this host
 
-`[gates]` in `tandem.toml` sets what this machine is judged against. Code defaults are
-the sec 11 figures (`tandem.thresholds`), so an absent block judges the spec.
+`[gates]` in `orbit.toml` sets what this machine is judged against. Code defaults are
+the sec 11 figures (`orbit.thresholds`), so an absent block judges the spec.
 
 | Knob | Spec | Here | Measured | Why it moved |
 |---|---|---|---|---|
 | `gate_a_ttft_s` | 5.0 | **35.0** | 30.47 s @32k | Arithmetic, not tuning: TTFT = context ÷ prefill rate. Meeting 5.0 s at 32k needs 16,000 tok/s — 2.4× more FLOP/s than the GPU has. §2.2. |
 | `gate_a_decode_tok_per_s` | 30.0 | **25.0** | 27.1 constrained / 65.6 free | The constrained arm costs 2.4× and buys 100/100 first-attempt tool calls against 0/100. §2.3. |
-| `gate_b_prefill_tok_per_s` | 200.0 | **150.0** | **153.7 mean, sd 1.07** (gate, 6 runs) — **and 258.0 on `Qwen3-Coder-Next`, where this floor is 42% low and catches nothing; §4.8, `tandem.qcn.toml.example`** | Was 20.0, set against a projected ~26 tok/s and wrong by ~6× in the pessimistic direction — it passed anything and measured nothing. Raised once the gate actually ran (§4.1a). 150.0 is 3σ below the six-run mean and under every run observed, so it does not flap but still catches a few-percent host degradation (T18); a fallback to 2048-token chunks lands near 118. `meets_spec` still reports the honest 1.3× shortfall — and **T32** on why that red is not the architecture verdict sec 11 intended. |
+| `gate_b_prefill_tok_per_s` | 200.0 | **150.0** | **153.7 mean, sd 1.07** (gate, 6 runs) — **and 258.0 on `Qwen3-Coder-Next`, where this floor is 42% low and catches nothing; §4.8, `orbit.qcn.toml.example`** | Was 20.0, set against a projected ~26 tok/s and wrong by ~6× in the pessimistic direction — it passed anything and measured nothing. Raised once the gate actually ran (§4.1a). 150.0 is 3σ below the six-run mean and under every run observed, so it does not flap but still catches a few-percent host degradation (T18); a fallback to 2048-token chunks lands near 118. `meets_spec` still reports the honest 1.3× shortfall — and **T32** on why that red is not the architecture verdict sec 11 intended. |
 | `contract_chat_ttft_s` | 2.0 | **35.0** | 30.47 s @32k | Same fact as `gate_a_ttft_s`, relaxed to the same value so one report does not disagree with itself about one number. |
 | `contract_chat_tok_per_s` | 40.0 | *unchanged* | 27.1 constrained | Left failing on purpose. `gate_a_decode_tok_per_s` already records the decision about the constrained arm; two relaxations for one fact would read as two hosts' worth of shortfall. |
 | `gate_a_toolcall_failure_rate` | 0.05 | *unchanged* | 0/100 | Not a hardware fact. A host that cannot meet it has a bug in the tool-call layer, which is what the gate is for. |
@@ -841,10 +841,10 @@ python3 tools/ds4_headers.py mlx-community/DeepSeek-V4-Flash-0731-2.4bit-mixed  
 python3 tools/ds4_streambench.py
 
 # §2.2 Gate A
-.venv/bin/tandem bench latency --out var/gate-a.json
+.venv/bin/orbit bench latency --out var/gate-a.json
 
 # §2.3 the tool-call gate on real weights
-.venv/bin/tandem gate toolcall --runs 100
+.venv/bin/orbit gate toolcall --runs 100
 
 # §2.3's escape finding. No weights, ~1 min, reproduces the hardware cost to within 2%.
 HF_HUB_OFFLINE=1 .venv/bin/python tools/constrained_decode_bench.py escape
@@ -862,12 +862,12 @@ HF_HUB_OFFLINE=1 .venv/bin/python tools/determinism_probe.py \
   --decode-tokens 4 --cpu-tokens 4 --out var/determinism-device.json
 
 # §4.5 does rung 3 ever disagree with candidate 0. Loads tier 0; ~6 min for 12 tasks.
-python tools/rung3_agreement.py --config tandem.toml --prompts 12 --candidates 5 \
+python tools/rung3_agreement.py --config orbit.toml --prompts 12 --candidates 5 \
   --out var/rung3-agreement.json
 
-# §4.1 tier-1 streaming. The engine is started by hand and Tandem never spawns it
+# §4.1 tier-1 streaming. The engine is started by hand and Orbit never spawns it
 # (sec 5.4 is a process boundary), so stopping it is also by hand — a stale optiq
-# outlives every Tandem restart and shows up only as memory pressure.
+# outlives every Orbit restart and shows up only as memory pressure.
 HF_HUB_OFFLINE=1 .venv-optiq/bin/optiq serve --stream-experts \
   --model ~/.cache/huggingface/hub/models--mlx-community--Qwen3.5-122B-A10B-OptiQ-2bit/snapshots/<hash> \
   --host 127.0.0.1 --port 8081 --max-context 32768 --prefill-step-size 8192

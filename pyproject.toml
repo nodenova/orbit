@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "tandem"
+name = "orbit"
 version = "0.1.0"
 description = "A local coding-agent runtime that optimises for merge quality."
 readme = "README.md"
@@ -50,15 +50,15 @@ mlx = ["mlx>=0.32.0", "mlx-lm>=0.28"]
 dev = ["pytest>=9.0", "pytest-asyncio>=1.0", "ruff>=0.16.2,<0.17", "mypy>=2.3"]
 
 [project.scripts]
-tandem = "tandem.cli:main"
+orbit = "orbit.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/tandem"]
+packages = ["src/orbit"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-filterwarnings = ["error::DeprecationWarning:tandem.*"]
+filterwarnings = ["error::DeprecationWarning:orbit.*"]
 # Strict is already the default. Written out because CLAUDE.md documents the
 # explicit `@pytest.mark.asyncio` it implies, and a default that flips upstream
 # would turn every unmarked coroutine into a silent skip rather than an error.
@@ -149,14 +149,14 @@ ignore = [
 "tests/fake_mlx.py" = ["N802"]
 
 [tool.ruff.lint.flake8-tidy-imports]
-# Absolute imports only, no exceptions — `from tandem.types import GenRequest`,
+# Absolute imports only, no exceptions — `from orbit.types import GenRequest`,
 # never `from ..types import GenRequest`. TID252 enforces it and autofixes it.
 # "all" rather than "parents": banning only `..` leaves single-dot imports legal,
 # and a rule with a legal shortcut is the shortcut.
 ban-relative-imports = "all"
 
 [tool.ruff.lint.isort]
-known-first-party = ["tandem"]
+known-first-party = ["orbit"]
 
 [tool.ruff.format]
 # Both are ruff's defaults; written out because the repo's convention matches them

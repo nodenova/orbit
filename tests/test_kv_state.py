@@ -20,11 +20,11 @@ from __future__ import annotations
 
 import pytest
 
-from tandem.backends.mock import MockBackend
-from tandem.config import Config
-from tandem.gateway.cache.kv_disk import DiskKVCache, KVSnapshot
-from tandem.gateway.pipeline import Pipeline
-from tandem.types import GenRequest, KVState, Message, Role
+from orbit.backends.mock import MockBackend
+from orbit.config import Config
+from orbit.gateway.cache.kv_disk import DiskKVCache, KVSnapshot
+from orbit.gateway.pipeline import Pipeline
+from orbit.types import GenRequest, KVState, Message, Role
 
 LONG_BODY = "def handler(request):\n    return process(request)\n\n" * 300
 # The same shape of body with the multi-byte characters a real diff carries: a CJK
@@ -186,7 +186,7 @@ async def test_disabled_disk_cache_still_serves(cfg):
 @pytest.mark.asyncio
 async def test_replay_map_is_restored_alongside_the_state(cfg, tmp_path):
     """A restored prefix whose tool calls re-render differently is not that prefix."""
-    from tandem.types import ToolDef
+    from orbit.types import ToolDef
 
     schema = {
         "type": "object",

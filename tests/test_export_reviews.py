@@ -1,7 +1,7 @@
 """The A2 forge exporter's pure logic (spec sec 6.3).
 
 Loaded by path, because `tools/` is deliberately not part of the installed package:
-nothing under `src/tandem/` makes an outbound network call, and keeping the exporter
+nothing under `src/orbit/` makes an outbound network call, and keeping the exporter
 out of the package is what makes the sec 8.6 offline claim structural rather than a
 promise.
 
@@ -165,7 +165,7 @@ def test_unmerged_and_unreviewed_pulls_are_omitted():
 
 def test_output_is_loadable_by_extract_a2(tmp_path):
     """The contract that actually matters: what this writes, extraction reads."""
-    from tandem.adapters.extract_a2 import _load_reviews
+    from orbit.adapters.extract_a2 import _load_reviews
 
     records = [
         {"merge_sha": "abc123", "first_review_at": "2026-03-02T10:00:00Z", "pr": 7},
@@ -230,9 +230,9 @@ def test_rate_limit_is_distinguished_from_refusal(headers, body, expected):
 
 
 def test_the_exporter_is_not_part_of_the_package():
-    import tandem
+    import orbit
 
-    pkg_root = Path(tandem.__file__).resolve().parent
+    pkg_root = Path(orbit.__file__).resolve().parent
     assert _PATH.parent.name == "tools"
     assert pkg_root not in _PATH.parents
 
@@ -352,9 +352,9 @@ def test_the_package_s_network_surface_stays_one_known_file():
     by `requests.post`, and `subprocess.run(["curl", …])` all passed it. An import
     statement is a grammatical construct, so the grammar is the right thing to ask.
     """
-    import tandem
+    import orbit
 
-    pkg_root = Path(tandem.__file__).resolve().parent
+    pkg_root = Path(orbit.__file__).resolve().parent
     allowed = {"backends/mlx_tier1.py": ["httpx"]}
 
     found = {
@@ -385,7 +385,7 @@ def test_the_package_s_network_surface_stays_one_known_file():
 def test_every_import_form_of_a_network_module_is_caught(source, tmp_path):
     """The forms the substring pin let through, one per case.
 
-    Each of these is a way to make an outbound call from inside `src/tandem/`, and
+    Each of these is a way to make an outbound call from inside `src/orbit/`, and
     each used to pass. They are asserted here rather than only implicitly through
     the package walk, so the pin cannot regress to matching literals without a
     failure that names the form it stopped catching.
@@ -415,8 +415,8 @@ def test_the_pin_does_not_fire_on_names_that_only_look_like_it():
 def test_the_adapter_pipeline_never_reaches_the_network():
     """A2's fallback to first-branch-commit pairs is what lets a corpus be built with
     the network off; an import here would quietly make that untrue."""
-    import tandem
+    import orbit
 
-    pkg_root = Path(tandem.__file__).resolve().parent
+    pkg_root = Path(orbit.__file__).resolve().parent
     for py in sorted((pkg_root / "adapters").rglob("*.py")):
         assert not _network_surface(py), f"{py.name} reaches the network"

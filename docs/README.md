@@ -1,4 +1,4 @@
-# Tandem documentation
+# Orbit documentation
 
 Eight documents. **Each fact has exactly one home**, and the others link to it rather than
 repeating it — that rule is the whole point of this directory, and it is the rule the

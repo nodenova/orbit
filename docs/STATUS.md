@@ -35,7 +35,7 @@ Not code. The numbers appear where they bind:
 
 | Number | Where | State |
 |---|---|---|
-| Expert cache 18 GB | `Tier1Config.expert_cache_bytes` | built (config); re-derived for 36 GB in `tandem.toml` |
+| Expert cache 18 GB | `Tier1Config.expert_cache_bytes` | built (config); re-derived for 36 GB in `orbit.toml` |
 | KV frontier 32k | `Tier0Config.max_kv_tokens` | built; this host runs 65536, see `BASELINE.md` §3 |
 | Tier 1 unloaded to train | `train.preflight()` | built |
 | SSD capacity recorded with every measurement | `eval/latency.Environment` | built — capacity *is* a performance spec (sec 2.3) |
@@ -44,12 +44,12 @@ Not code. The numbers appear where they bind:
 
 | Component | Module | State |
 |---|---|---|
-| Gateway | `tandem/gateway/` | built |
-| Router | `tandem/router/` | built |
-| Tier 0 | `tandem/backends/mlx_tier0.py` | **measured** — `Qwen3.6-35B-A3B-OptiQ-4bit`, 23.0 GiB, on a 36 GB M4 Max |
-| Tier 1 | `tandem/backends/mlx_tier1.py`, `tandem/tier1/` | **measured 2026-08-10** — Tandem itself drove the streamed engine, for Gate B and for schema-constrained reranks (`BASELINE.md` §4.1a) |
-| Attestation | `tandem/attest/` | built |
-| Adapter pipeline | `tandem/adapters/` | built |
+| Gateway | `orbit/gateway/` | built |
+| Router | `orbit/router/` | built |
+| Tier 0 | `orbit/backends/mlx_tier0.py` | **measured** — `Qwen3.6-35B-A3B-OptiQ-4bit`, 23.0 GiB, on a 36 GB M4 Max |
+| Tier 1 | `orbit/backends/mlx_tier1.py`, `orbit/tier1/` | **measured 2026-08-10** — Orbit itself drove the streamed engine, for Gate B and for schema-constrained reranks (`BASELINE.md` §4.1a) |
+| Attestation | `orbit/attest/` | built |
+| Adapter pipeline | `orbit/adapters/` | built |
 
 ### sec 4 — Tier 0
 
@@ -119,7 +119,7 @@ produced every verdict, so a base-model second opinion never reads as a streamed
 
 | Rung | Note |
 |---|---|
-| 3 | Tier 0 with the adapter unmounted. Needs no second model; the rung available during M0–M3 and the one `tandem.toml` runs here. The adapter strip is the whole mechanism — an adapted model judging its own candidates is asking whether it agrees with itself. **Known weakness: verdicts are not independent.** A verifier sharing the generator's weights shares its blind spots. |
+| 3 | Tier 0 with the adapter unmounted. Needs no second model; the rung available during M0–M3 and the one `orbit.toml` runs here. The adapter strip is the whole mechanism — an adapted model judging its own candidates is asking whether it agrees with itself. **Known weakness: verdicts are not independent.** A verifier sharing the generator's weights shares its blind spots. |
 | 2 | Evicts tier 0 to admit an 80B. Residency is exclusive, so `ResidencySwitch` is real mutual exclusion and `Pipeline` puts tier 0 behind `SwapGuard`. Swap back is lazy; the backend declines once the *measured* round trip exceeds `tier1.swap_budget_s`. The evictable tier-0 occupant runs against the fake; **the resident 80B on the far side does not exist**, and `build_tier1` says so rather than building a swap with nothing to swap into. |
 | 4 | Sends the repository's code to a third party, so the gates in front of it are the implementation: never reached by falling back, `tier1.remote_consent` must carry "tier 1 leaves this machine" verbatim, the transport is a file outside the package, and `OfflineReport.ok` is false whenever the rung is armed. A remote verdict has **no container attestation** — `container_hash()` is None by construction, and the rung in the receipt is what says the null is a property rather than a gap. |
 
@@ -142,7 +142,7 @@ produced every verdict, so a base-model second opinion never reads as a streamed
 | 7.2 T1 best-of-N rerank | `router/cascade.py` | built |
 | 7.2 T2 failure escalation, bounded to one per turn | `router/cascade.py`, `eval/worktree.py` | built |
 | 7.3 latency contract + automatic pressure valve | `cascade._record`, `eval/latency.CONTRACT` | built |
-| 7.3 contract thresholds, per host | `config.GatesConfig`, `tandem.thresholds` | built |
+| 7.3 contract thresholds, per host | `config.GatesConfig`, `orbit.thresholds` | built |
 
 T2 needs a host that can run the repository's tests, so `Pipeline` builds a
 `WorktreeRunner` from `[eval]` and hands it to `Cascade`. Off unless the config opts
@@ -161,7 +161,7 @@ made.
 | 8.4 prompt cache + disk KV | `gateway/cache/` | built |
 | 8.4 tier-0 KV state serialisation | `backends/mlx_kv.py`, `mlx_tier0.{export_state,_warm_start}` | **built, measured inert** — the codec round-trips against real `mlx_lm` cache classes, and on this container a real follow-up restores 0 tokens (`HANDOFF.md` §3.9) |
 | 8.5 prevent / train / repair / retry / replay | `gateway/toolcall/` | built |
-| 8.6 offline posture + verification script | `tandem/offline.py`, `tandem doctor` | built |
+| 8.6 offline posture + verification script | `orbit/offline.py`, `orbit doctor` | built |
 
 ### sec 9 — Attestation
 
@@ -204,15 +204,15 @@ but a cascade-arm win on that metric is partly the verifier agreeing with itself
 
 | Gate | Command | Threshold source | State |
 |---|---|---|---|
-| M0 Gate A | `tandem bench latency` | `gates.gate_a_*` | **measured** — decode passes, TTFT fails at 32k |
-| M0 Gate B | `tandem bench tier1` | `gates.gate_b_prefill_tok_per_s` | **measured** — 153.7 tok/s mean over 6 runs, passes the host floor, `meets_spec: false`. **The red is compute, not the architecture the 200 was written to detect — `HANDOFF.md` T32 before quoting it** |
-| M2 tool-call | `tandem gate toolcall --runs 100` | `toolcall_gate` (0.99, not host-configurable) | **measured** — 1.00 |
-| M2 isolation | `tandem gate isolation` | byte-identity, no threshold | built; never run on hardware |
-| M3 merge eval | `tandem eval merge` | ≥3 of 5 metrics | open — needs a trained A1 |
-| M6 audit | `tandem audit verify` | chain integrity | built |
+| M0 Gate A | `orbit bench latency` | `gates.gate_a_*` | **measured** — decode passes, TTFT fails at 32k |
+| M0 Gate B | `orbit bench tier1` | `gates.gate_b_prefill_tok_per_s` | **measured** — 153.7 tok/s mean over 6 runs, passes the host floor, `meets_spec: false`. **The red is compute, not the architecture the 200 was written to detect — `HANDOFF.md` T32 before quoting it** |
+| M2 tool-call | `orbit gate toolcall --runs 100` | `toolcall_gate` (0.99, not host-configurable) | **measured** — 1.00 |
+| M2 isolation | `orbit gate isolation` | byte-identity, no threshold | built; never run on hardware |
+| M3 merge eval | `orbit eval merge` | ≥3 of 5 metrics | open — needs a trained A1 |
+| M6 audit | `orbit audit verify` | chain integrity | built |
 
 **Gate thresholds are host-relative and the spec figure travels with every result.**
-`tandem.thresholds` holds the sec 11 numbers; `[gates]` in `tandem.toml` sets what a
+`orbit.thresholds` holds the sec 11 numbers; `[gates]` in `orbit.toml` sets what a
 given host is judged against. Each report carries `budget` (effective), `spec_budget`,
 `pass` and `meets_spec`, plus `relaxed_criteria` naming every row that is green only
 because a floor was lowered. A pass against a relaxed floor means "this host cleared
@@ -286,7 +286,7 @@ the project's state:
 
 | # | Gap | Blocks | Note |
 |---|---|---|---|
-| 1 | **Streaming is not incremental for multi-candidate, `plan`, or tool-bearing turns** | Nothing — deliberate | Best-of-N cannot honestly stream: you cannot emit tokens from a candidate before the verifier has chosen it, and streaming candidate 0 then retracting would be worse than a pause. A `plan` turn's text is rewritten when the critique is appended; a tool-bearing turn needs the whole reply before repair can run. Those run to completion and emit one delta, with the reason in `/tandem/trace/last`. |
+| 1 | **Streaming is not incremental for multi-candidate, `plan`, or tool-bearing turns** | Nothing — deliberate | Best-of-N cannot honestly stream: you cannot emit tokens from a candidate before the verifier has chosen it, and streaming candidate 0 then retracting would be worse than a pause. A `plan` turn's text is rewritten when the critique is appended; a tool-bearing turn needs the whole reply before repair can run. Those run to completion and emit one delta, with the reason in `/orbit/trace/last`. |
 
 ### What is no longer a gap
 

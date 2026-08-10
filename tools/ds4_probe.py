@@ -65,7 +65,7 @@ def pageouts() -> int:
 
 def repo_source(target_chars: int) -> str:
     """Real code, in a fixed order so a frontier is reproducible."""
-    root = Path(__file__).resolve().parent.parent / "src" / "tandem"
+    root = Path(__file__).resolve().parent.parent / "src" / "orbit"
     parts: list[str] = []
     total = 0
     for path in sorted(root.rglob("*.py")):

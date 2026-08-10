@@ -10,18 +10,18 @@ from __future__ import annotations
 
 import pytest
 
-from tandem.backends import (
+from orbit.backends import (
     SECOND_OPINION_RUNG,
     SecondOpinionBackend,
     build_tier0,
     build_tier1,
 )
-from tandem.backends.mock import MockBackend
-from tandem.config import Config
-from tandem.gateway.pipeline import Pipeline
-from tandem.router.cascade import Cascade
-from tandem.tier1.verifier import Candidate, Tier1Verifier
-from tandem.types import GenRequest, Message, Role, ToolDef
+from orbit.backends.mock import MockBackend
+from orbit.config import Config
+from orbit.gateway.pipeline import Pipeline
+from orbit.router.cascade import Cascade
+from orbit.tier1.verifier import Candidate, Tier1Verifier
+from orbit.types import GenRequest, Message, Role, ToolDef
 
 EDIT = ToolDef(
     name="edit_file",

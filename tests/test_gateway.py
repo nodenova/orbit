@@ -7,17 +7,17 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from tandem.attest.audit import verify_chain
-from tandem.backends.base import Delta
-from tandem.backends.mock import Fault, MockBackend
-from tandem.config import Config
-from tandem.gateway.app import create_app
-from tandem.gateway.cache.kv_disk import DiskKVCache, KVSnapshot, align_down
-from tandem.gateway.cache.prompt_cache import CacheEntry, PromptCache, chunk_digests
-from tandem.gateway.compaction import Compactor, detect, one_line, strip_tool
-from tandem.gateway.context_scale import ContextScaler
-from tandem.gateway.pipeline import Pipeline
-from tandem.types import GenRequest, Message, Role, ToolDef
+from orbit.attest.audit import verify_chain
+from orbit.backends.base import Delta
+from orbit.backends.mock import Fault, MockBackend
+from orbit.config import Config
+from orbit.gateway.app import create_app
+from orbit.gateway.cache.kv_disk import DiskKVCache, KVSnapshot, align_down
+from orbit.gateway.cache.prompt_cache import CacheEntry, PromptCache, chunk_digests
+from orbit.gateway.compaction import Compactor, detect, one_line, strip_tool
+from orbit.gateway.context_scale import ContextScaler
+from orbit.gateway.pipeline import Pipeline
+from orbit.types import GenRequest, Message, Role, ToolDef
 
 CC_SYSTEM = (
     "You are Claude Code, Anthropic's official CLI for Claude.\n\n"
@@ -68,7 +68,7 @@ def test_messages_endpoint_round_trip(client):
     r = client.post(
         "/v1/messages",
         json={
-            "model": "tandem",
+            "model": "orbit",
             "max_tokens": 128,
             "system": CC_SYSTEM,
             "messages": [{"role": "user", "content": "Fix the retry loop"}],
@@ -85,7 +85,7 @@ def test_messages_endpoint_round_trip(client):
 def test_chat_completions_round_trip(client):
     r = client.post(
         "/v1/chat/completions",
-        json={"model": "tandem", "messages": [{"role": "user", "content": "hello"}]},
+        json={"model": "orbit", "messages": [{"role": "user", "content": "hello"}]},
     )
     assert r.status_code == 200
     body = r.json()
@@ -94,7 +94,7 @@ def test_chat_completions_round_trip(client):
 
 
 def test_responses_round_trip(client):
-    r = client.post("/v1/responses", json={"model": "tandem", "input": "hello"})
+    r = client.post("/v1/responses", json={"model": "orbit", "input": "hello"})
     assert r.status_code == 200
     body = r.json()
     assert body["object"] == "response"
@@ -147,7 +147,7 @@ def test_tool_calls_survive_each_protocol(client):
 
 
 def test_tool_results_round_trip_from_each_protocol():
-    from tandem.gateway.wire import anthropic, openai_chat, openai_responses
+    from orbit.gateway.wire import anthropic, openai_chat, openai_responses
 
     a = anthropic.to_canonical(
         {
@@ -225,7 +225,7 @@ def test_tool_results_round_trip_from_each_protocol():
 
 
 def test_responses_folds_instructions_and_system_into_one_prompt():
-    from tandem.gateway.wire import openai_responses
+    from orbit.gateway.wire import openai_responses
 
     req = openai_responses.to_canonical(
         {
@@ -242,7 +242,7 @@ def test_responses_folds_instructions_and_system_into_one_prompt():
 
 def test_responses_ignores_hosted_tools():
     """Hosted tools are not ours to serve; a local model cannot execute them (sec 12)."""
-    from tandem.gateway.wire import openai_responses
+    from orbit.gateway.wire import openai_responses
 
     req = openai_responses.to_canonical(
         {
@@ -375,7 +375,7 @@ def test_a_tool_bearing_turn_does_not_stream_incrementally(client):
         },
     )
     assert "tool_use" in r.text
-    trace = client.get("/tandem/trace/last").json()
+    trace = client.get("/orbit/trace/last").json()
     assert trace["stream"]["incremental"] is False
     assert "tool" in trace["stream"]["reason"]
 
@@ -464,9 +464,9 @@ def test_api_key_is_enforced_when_set(tmp_path):
 
 
 # Every registered route, not just /v1/messages. The admin routes carried no auth
-# at all: /tandem/compaction/last returned the previous request's full raw system
+# at all: /orbit/compaction/last returned the previous request's full raw system
 # prompt — for a coding agent, repository context, file paths and project
-# instructions — to any unauthenticated caller, and /tandem/health enumerated the
+# instructions — to any unauthenticated caller, and /orbit/health enumerated the
 # mounted adapter names.
 @pytest.mark.parametrize(
     "method,path",
@@ -476,11 +476,11 @@ def test_api_key_is_enforced_when_set(tmp_path):
         ("post", "/v1/chat/completions"),
         ("post", "/v1/responses"),
         ("get", "/v1/models"),
-        ("get", "/tandem/health"),
-        ("get", "/tandem/stats"),
-        ("get", "/tandem/audit/verify"),
-        ("get", "/tandem/compaction/last"),
-        ("get", "/tandem/trace/last"),
+        ("get", "/orbit/health"),
+        ("get", "/orbit/stats"),
+        ("get", "/orbit/audit/verify"),
+        ("get", "/orbit/compaction/last"),
+        ("get", "/orbit/trace/last"),
     ],
 )
 def test_every_route_requires_the_api_key_when_set(tmp_path, method, path):
@@ -517,7 +517,7 @@ def test_the_compaction_view_does_not_disclose_the_prompt_without_the_key(tmp_pa
         },
         headers={"x-api-key": "secret"},
     )
-    leaked = client.get("/tandem/compaction/last")
+    leaked = client.get("/orbit/compaction/last")
     assert leaked.status_code == 401
     assert "acme-payments" not in leaked.text
 
@@ -526,7 +526,7 @@ def test_an_unknown_adapter_is_refused_rather_than_silently_served_by_the_base(c
     r = client.post(
         "/v1/messages",
         json={"messages": [{"role": "user", "content": "hi"}], "max_tokens": 8},
-        headers={"x-tandem-adapter": "no-such-adapter"},
+        headers={"x-orbit-adapter": "no-such-adapter"},
     )
     # Serving the base model here would attest an adapter that never ran.
     assert r.status_code == 400
@@ -610,7 +610,7 @@ def test_count_tokens_honours_the_no_compact_escape_hatch(client):
         "input_tokens"
     ]
     raw = client.post(
-        "/v1/messages/count_tokens", json=body, headers={"x-tandem-no-compact": "1"}
+        "/v1/messages/count_tokens", json=body, headers={"x-orbit-no-compact": "1"}
     ).json()["input_tokens"]
     assert raw > compacted
 
@@ -633,7 +633,7 @@ def test_count_tokens_probes_do_not_displace_the_diff_view(client):
                 "messages": [{"role": "user", "content": "probe"}],
             },
         )
-    assert client.get("/tandem/compaction/last").status_code == 200
+    assert client.get("/orbit/compaction/last").status_code == 200
 
 
 def test_the_response_id_is_the_audited_request_id(client, cfg):
@@ -653,7 +653,7 @@ def test_a_cache_store_failure_degrades_to_a_miss_and_still_audits(
     client, cfg, monkeypatch
 ):
     """C3: a cache must never fail a served request or suppress its audit record."""
-    from tandem.gateway.cache.prompt_cache import PromptCache
+    from orbit.gateway.cache.prompt_cache import PromptCache
 
     def boom(*_a, **_k):
         raise RuntimeError("cache exploded")
@@ -674,7 +674,7 @@ def test_a_cache_store_failure_degrades_to_a_miss_and_still_audits(
     with open(cfg.attest.audit_log, encoding="utf-8") as fh:
         records = [json.loads(line) for line in fh if line.strip()]
     assert len(records) == 1, "the answered turn vanished from the sec 9.2 chain"
-    trace = client.get("/tandem/trace/last").json()
+    trace = client.get("/orbit/trace/last").json()
     assert "store_error" in trace["cache"]
 
 
@@ -738,10 +738,10 @@ def test_no_compact_escape_hatch_and_diff_view(client):
             "system": CC_SYSTEM,
             "messages": [{"role": "user", "content": "hi"}],
         },
-        headers={"x-tandem-no-compact": "1"},
+        headers={"x-orbit-no-compact": "1"},
     )
     assert r.status_code == 200
-    last = client.get("/tandem/compaction/last").json()
+    last = client.get("/orbit/compaction/last").json()
     assert last["applied"] is False
     assert last["reason"] == "compaction disabled"
 
@@ -972,7 +972,7 @@ async def test_tool_turns_are_cooled(cfg):
     """Sec 8.5: temperature 0.2 for tool-bearing turns, caller's value otherwise."""
     backend = MockBackend()
     pipeline = Pipeline(cfg, backend)
-    from tandem.types import Sampling
+    from orbit.types import Sampling
 
     await pipeline.run(
         GenRequest(

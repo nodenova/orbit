@@ -20,22 +20,22 @@ procedural and belongs to whoever starts the second process.
 
 ## 1. Inventory
 
-| Process | Port | Started by | Tandem talks to it? | Idle cost | Serving cost |
+| Process | Port | Started by | Orbit talks to it? | Idle cost | Serving cost |
 |---|---|---|---|---|---|
 | `ollama serve` | 11434 | Ollama.app, at login | **No** | ~0 (no model resident) | 17–23 GB, whichever model is asked for |
 | Ollama.app helper | 49157 | Ollama.app | No | ~0 | — |
-| `tandem serve` | 8080 | you | it *is* Tandem | — | 23.0 GiB, loaded at startup |
+| `orbit serve` | 8080 | you | it *is* Orbit | — | 23.0 GiB, loaded at startup |
 | `mlx-optiq --stream-experts` | 8081 | you, manually | rung 1 only | — | 3.46 GiB resident + streamed experts (122B) |
 
 Resident cost is a property of the model, not of streaming: the 122B measures 3.46 GB,
 DeepSeek-V4-Flash is 6.49 GB, and 15.15 GB if its expert scales are made resident
 (`BASELINE.md` §4.4). None of them co-resides with tier 0's 23.0 GiB.
 
-Ports 8080 and 8081 come from `tandem.toml` (`[server] port`, `tier1.endpoint`).
+Ports 8080 and 8081 come from `orbit.toml` (`[server] port`, `tier1.endpoint`).
 
 ### 1.1 ollama is a neighbour, not a dependency
 
-Nothing under `src/tandem/` opens a connection to 11434, and nothing can: the package
+Nothing under `src/orbit/` opens a connection to 11434, and nothing can: the package
 makes no outbound network call at all, which `tests/test_export_reviews.py` pins. Tier
 0 loads through `mlx_lm.load()` on a snapshot directory (`backends/mlx_tier0.py`) and
 tier 1 rung 1 is an httpx client against `tier1.endpoint` on loopback.
@@ -44,7 +44,7 @@ It is still the most likely way to wedge a run, because it is resident at login 
 answers anyone who asks:
 
 - Idle it holds nothing, and the daemon itself is a few MB.
-- One request loads a model into the same 28.08 GiB pool Tandem wants, and holds it
+- One request loads a model into the same 28.08 GiB pool Orbit wants, and holds it
   for `OLLAMA_KEEP_ALIVE` (unset here, so the 5-minute default) after the last token.
 - **The requester need not be you.** An editor extension, a shell alias, a background
   tool configured against 11434 — any of them can pull 17–23 GB in while tier 0 loads.
@@ -59,14 +59,14 @@ Idle is fine. Do not kill it reflexively; do check it.
 
 ### 1.2 mlx-optiq must NOT be running here
 
-`tandem.toml` sets `rung = "second_opinion"` (rung 3), which serves the verifier from
+`orbit.toml` sets `rung = "second_opinion"` (rung 3), which serves the verifier from
 tier 0's own weights with the adapter stripped. It costs no memory and needs no second
 process. `tier1.container_path` and `tier1.endpoint` are still filled in deliberately —
 a resolved snapshot takes an hour to find again — but they are inert at rung 3.
 
 Starting mlx-optiq on 8081 anyway gets ~12 GiB resident that nobody reads, next to
-tier 0's 23.0. **Tandem never spawns this process** (`backends/mlx_tier1.py` is a
-client), so a stale mlx-optiq from an earlier experiment survives every Tandem restart
+tier 0's 23.0. **Orbit never spawns this process** (`backends/mlx_tier1.py` is a
+client), so a stale mlx-optiq from an earlier experiment survives every Orbit restart
 and shows up only as memory pressure.
 
 Rung 1 is off because rung 3 is 6–9× faster and costs no memory, not because it cannot
@@ -82,9 +82,9 @@ HF_HUB_OFFLINE=1 .venv-optiq/bin/optiq serve --stream-experts --model "$S" \
   --host 127.0.0.1 --port 8081 --max-context 32768 --prefill-step-size 8192 &
 # expect: `swapped 144 expert projections; resident 3.46 GB (load peak 3.46 GB)`
 
-sed 's/^rung = "second_opinion"$/rung = "streamed"/' tandem.toml > var/gate-b.toml
-HF_HUB_OFFLINE=1 .venv/bin/tandem --config var/gate-b.toml bench tier1
-pkill -f "optiq serve"          # it does not exit with Tandem; Tandem never spawned it
+sed 's/^rung = "second_opinion"$/rung = "streamed"/' orbit.toml > var/gate-b.toml
+HF_HUB_OFFLINE=1 .venv/bin/orbit --config var/gate-b.toml bench tier1
+pkill -f "optiq serve"          # it does not exit with Orbit; Orbit never spawned it
 ```
 
 Only the engine is resident, so this runs in ~3.5 GB against a 28.08 GiB ceiling — it is
@@ -103,28 +103,28 @@ every command that builds tier 0 pays the full 23.0 GiB before it prints anythin
 
 | Command | Why |
 |---|---|
-| `tandem serve` | `gateway/app.py` builds tier 0 at startup |
-| `tandem doctor` | builds tier 0 to report its container hash — **not a cheap probe** |
-| `tandem gate toolcall` | builds tier 0, then runs N turns |
-| `tandem gate isolation` | builds tier 0 **more than once** — §4 |
-| `tandem eval merge`, `tandem eval regression`, `tandem bench` | build tier 0, some also tier 1 |
-| `tandem train` | the trainer holds the base model |
+| `orbit serve` | `gateway/app.py` builds tier 0 at startup |
+| `orbit doctor` | builds tier 0 to report its container hash — **not a cheap probe** |
+| `orbit gate toolcall` | builds tier 0, then runs N turns |
+| `orbit gate isolation` | builds tier 0 **more than once** — §4 |
+| `orbit eval merge`, `orbit eval regression`, `orbit bench` | build tier 0, some also tier 1 |
+| `orbit train` | the trainer holds the base model |
 
 **Free** — no weights, safe to run alongside anything:
 
-`pytest -q` · `tandem extract` · `tandem profile` · `tandem audit verify` ·
-`tandem offline-env` · `tandem serve --backend mock` · any command with a config whose
+`pytest -q` · `orbit extract` · `orbit profile` · `orbit audit verify` ·
+`orbit offline-env` · `orbit serve --backend mock` · any command with a config whose
 `backend = "mock"`.
 
 ### 2.1 Asking the cheap questions
 
-That `tandem doctor` costs a full load is worth internalising: it reads like `git
+That `orbit doctor` costs a full load is worth internalising: it reads like `git
 status` and behaves like a model load. For offline posture, constrained-decoding
 availability and environment, point it at a mock config.
 
 ```bash
 printf 'backend = "mock"\n[tier1]\nenabled = true\nrung = "second_opinion"\n' > /tmp/mock.toml
-tandem --config /tmp/mock.toml doctor
+orbit --config /tmp/mock.toml doctor
 ```
 
 `--config` is a global flag and goes **before** the subcommand.
@@ -137,8 +137,8 @@ tandem --config /tmp/mock.toml doctor
 |---|---|
 | Editing, tests, mock backend | Nothing. ollama may stay up; it is idle. |
 | **Anything whose output is a number** | §3.1 first, every time. A gate run on a degraded host answers nothing in either direction. |
-| **Gateway against real weights** | `curl -s http://127.0.0.1:11434/api/ps` → `{"models":[]}`; `lsof -nP -iTCP:8081 -sTCP:LISTEN` → nothing (rung 3 needs no mlx-optiq); then `HF_HUB_OFFLINE=1 tandem serve` |
-| **A gate or an eval** | The same two, plus no `tandem serve` already holding 8080. One gate at a time — they each want the whole GPU. |
+| **Gateway against real weights** | `curl -s http://127.0.0.1:11434/api/ps` → `{"models":[]}`; `lsof -nP -iTCP:8081 -sTCP:LISTEN` → nothing (rung 3 needs no mlx-optiq); then `HF_HUB_OFFLINE=1 orbit serve` |
+| **A gate or an eval** | The same two, plus no `orbit serve` already holding 8080. One gate at a time — they each want the whole GPU. |
 | **In doubt about headroom** | Read `total − active`, never `Pages free`. Tier 0 needs ~27 GB by that measure. Script in `BASELINE.md` §8. |
 
 Thrashing is `Pageouts`, not `vm.swapusage used` — loading tier 0 legitimately moves
@@ -176,7 +176,7 @@ Once it passes, the queue that was waiting on it, in order:
 1. **`mlxbench.py` again immediately after the next large model load.** The onset
    hypothesis is that a big load triggers the degradation, and this is the one cheap
    chance to catch it in the act rather than infer it a session later.
-2. Gate A re-run (T4, T19), then `tandem bench tier1` (T2).
+2. Gate A re-run (T4, T19), then `orbit bench tier1` (T2).
 3. T20's constrained-decode fixes, which need a healthy host to show 6.4 → 0.9 ms/token
    end to end.
 
@@ -184,7 +184,7 @@ Once it passes, the queue that was waiting on it, in order:
 
 ## 4. The isolation gate multiplies the load
 
-`tandem gate isolation` is the one command that asks for tier 0 several times over.
+`orbit gate isolation` is the one command that asks for tier 0 several times over.
 Building a backend with a subset of adapters mounted is the point of the test, so it
 cannot reuse one instance (`eval/gates.py:178-180`). On the mlx backend each
 `factory()` call constructs a fresh `MLXTier0Backend`, and each loads 23.0 GiB:
@@ -229,7 +229,7 @@ directory of OptiQ safetensors, ollama stores opaque Q4_K_M blobs with no
 `config.json`. The MLX copy is the one this project loads.
 
 **Check the model can run here before spending an hour fetching it.** The 46.9 GB
-`Qwen3.5-122B-A10B-OptiQ-2bit` is in the cache and is not loaded by Tandem: rung 3 serves
+`Qwen3.5-122B-A10B-OptiQ-2bit` is in the cache and is not loaded by Orbit: rung 3 serves
 the verifier instead, at 6–9× the speed and no memory. Rung 1 is **slow, not dead** —
 165 tok/s of streamed prefill, and a 30k review fits inside `request_timeout_s`
 (`BASELINE.md` §4.3). The snapshot is kept deliberately, because resolving one takes an
@@ -256,12 +256,12 @@ latency, and Gate B derives to ≤168 tok/s, failing on compute at every step si
 container is on disk: 42 shards, 92.49 GB referenced, resolved snapshot path in
 `HANDOFF.md` §4.9.
 
-### 6.1 `tandem doctor` will wedge the machine here, and it looks like the next step
+### 6.1 `orbit doctor` will wedge the machine here, and it looks like the next step
 
-**`tandem doctor` builds tier 0 first**, to report its container hash — §2 is the general
+**`orbit doctor` builds tier 0 first**, to report its container hash — §2 is the general
 rule and this is the case where it bites hardest.
 
-> **`tandem bench tier1` no longer does, as of 2026-08-10.** It was
+> **`orbit bench tier1` no longer does, as of 2026-08-10.** It was
 > `build_tier1(cfg, build_tier0(cfg))`, which is 23.0 GiB eagerly loaded for a rung that
 > reaches its engine over a socket and never reads it. Tier 0 is now built only for the
 > rungs that serve from it (3 and 2), and those carry no prefill instrument, so the
@@ -278,7 +278,7 @@ rule and this is the case where it bites hardest.
 | DeepSeek-V4 at its *smallest* footprint (6.49 GB non-routed) | **6.04** |
 
 **It does not fit beside tier 0 at any setting**, and the scales-resident configuration
-below is 14.11 GiB rather than 6.04. That arithmetic is what `tandem doctor` still runs
+below is 14.11 GiB rather than 6.04. That arithmetic is what `orbit doctor` still runs
 into, and it is not a reason to relax a threshold.
 
 It is no longer a reason Gate B cannot run: with `cmd_bench` no longer building tier 0, the
@@ -288,7 +288,7 @@ crash in §6, not the memory, that blocks it.**
 
 ### 6.2 Serve it
 
-Pre-flight first: §3.1, then nothing on 11434, nothing already on 8081, no `tandem serve`
+Pre-flight first: §3.1, then nothing on 11434, nothing already on 8081, no `orbit serve`
 holding 8080.
 
 ```bash
@@ -338,7 +338,7 @@ minutes.
 | Does the load peak stay under the working set? | **measured** — 6.49 GB streamed, 23.80 GB with scales resident (`BASELINE.md` §4.7) |
 | Does it serve over HTTP? | **measured — no.** Aborts on the first request. `DEEPSEEK_V4.md` §2 |
 | Does it generate at all? | **measured — yes, single-threaded.** 48 tok/s prefill, 2.6 decode, peak 14.15 GB at 12.8k tokens. `DEEPSEEK_V4.md` §3 |
-| What does `container_hash` cost over 92.49 GB? | still derived ~60 s at ~1.5 GB/s. `blake3`'s `max_threads` is the lever, **not** mmap (sec 8.4). Unreachable via `tandem doctor` here anyway — §6.1 |
+| What does `container_hash` cost over 92.49 GB? | still derived ~60 s at ~1.5 GB/s. `blake3`'s `max_threads` is the lever, **not** mmap (sec 8.4). Unreachable via `orbit doctor` here anyway — §6.1 |
 | Does `OPTIQ_STREAM_SCALES_BUDGET_GB` pay? | arithmetic only, ~33% of decode, and untestable until it generates |
 | **Do 2-bit routed experts produce usable verdicts at all?** | the only question about the model rather than the machine, and the crash keeps it closed |
 
@@ -388,7 +388,7 @@ avoids building tier 0 at all, and rung 1 serving means a gateway that holds bot
 
 ### 7.2 Serve it
 
-Pre-flight first: §3.1, then nothing on 11434, nothing on 8081, no `tandem serve` on 8080.
+Pre-flight first: §3.1, then nothing on 11434, nothing on 8081, no `orbit serve` on 8080.
 
 ```bash
 S=~/.cache/huggingface/hub/models--mlx-community--Qwen3-Coder-Next-4bit/snapshots/7b9321eabb85ce79625cac3f61ea691e4ea984b5
@@ -423,10 +423,10 @@ own filler overshoots its frontier by ~36–39% (T31), so its 16,000 frontier de
 ### 7.4 Gate B
 
 ```bash
-.venv/bin/tandem --config tandem.qcn.toml.example bench tier1
+.venv/bin/orbit --config orbit.qcn.toml.example bench tier1
 ```
 
-That config is `tandem.toml` with `[tier1]` repointed and nothing else touched, so its
+That config is `orbit.toml` with `[tier1]` repointed and nothing else touched, so its
 result compares row-for-row with the 122B's in `BASELINE.md` §4.1a. It builds no tier 0.
 Expect worst-of-run ~253–263 and `meets_spec: true`; a reading near 190 is the engine
 falling back to 2048-token chunks, and **the configured 150.0 floor will not catch it** —

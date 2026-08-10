@@ -19,14 +19,14 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from tandem.backends.mlx_tier1 import (
+from orbit.backends.mlx_tier1 import (
     OptiqTier1Backend,
     PrefillSample,
     _reported_decode_seconds,
 )
-from tandem.backends.tier1_call import Tier1Unavailable
-from tandem.tier1.schemas import rerank_schema
-from tandem.types import GenRequest, Message, Role, Sampling
+from orbit.backends.tier1_call import Tier1Unavailable
+from orbit.tier1.schemas import rerank_schema
+from orbit.types import GenRequest, Message, Role, Sampling
 
 RERANK_BODY = '{"choice": 1, "reason": "candidate 1 matches the repo\'s error style"}'
 
@@ -234,7 +234,7 @@ async def test_an_empty_choices_list_is_refused():
 
 @pytest.mark.asyncio
 async def test_health_reports_the_endpoint_in_its_failure_string():
-    """`tandem doctor` prints this. "unreachable at <endpoint>" is actionable;
+    """`orbit doctor` prints this. "unreachable at <endpoint>" is actionable;
     "False" is not."""
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -460,7 +460,7 @@ async def test_a_remote_container_is_not_attested_to():
 
 
 def test_gate_b_measures_rung_1_without_building_tier_0(tmp_path, monkeypatch, capsys):
-    """`tandem bench tier1` must not load the resident model.
+    """`orbit bench tier1` must not load the resident model.
 
     Rung 1 reaches the engine over a socket, so tier 0 is not a dependency of the
     measurement — and on the 36 GB baseline host, building one is 23.0 GiB against
@@ -471,8 +471,8 @@ def test_gate_b_measures_rung_1_without_building_tier_0(tmp_path, monkeypatch, c
     import argparse
     import json
 
-    import tandem.backends
-    from tandem.cli import cmd_bench
+    import orbit.backends
+    from orbit.cli import cmd_bench
 
     config = tmp_path / "rung3.toml"
     config.write_text(
@@ -483,7 +483,7 @@ def test_gate_b_measures_rung_1_without_building_tier_0(tmp_path, monkeypatch, c
     def refuse(_cfg):
         raise AssertionError("Gate B built tier 0")
 
-    monkeypatch.setattr(tandem.backends, "build_tier0", refuse)
+    monkeypatch.setattr(orbit.backends, "build_tier0", refuse)
 
     code = cmd_bench(argparse.Namespace(config=str(config), which="tier1"))
 
@@ -500,7 +500,7 @@ def test_the_reasoning_refusal_reads_the_spelling_mlx_optiq_emits():
     live 122B on 2026-08-10, and the reason `resolve_reasoning_control`'s "fails
     loudly on the first call" claim was false for the engine this repo runs.
     """
-    from tandem.backends.tier1_call import refuse_reasoned_answer
+    from orbit.backends.tier1_call import refuse_reasoned_answer
 
     body = {
         "choices": [

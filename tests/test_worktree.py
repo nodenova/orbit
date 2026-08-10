@@ -13,8 +13,8 @@ import sys
 
 import pytest
 
-from tandem.config import EvalConfig
-from tandem.eval.worktree import (
+from orbit.config import EvalConfig
+from orbit.eval.worktree import (
     WorktreeRunner,
     extract_diff,
     from_config,
@@ -73,8 +73,8 @@ def repo(tmp_path):
     r = tmp_path / "repo"
     r.mkdir()
     _git(r, "init", "-q", "-b", "main")
-    _git(r, "config", "user.email", "tandem@example.com")
-    _git(r, "config", "user.name", "tandem")
+    _git(r, "config", "user.email", "orbit@example.com")
+    _git(r, "config", "user.name", "orbit")
     (r / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
     _git(r, "add", "-A")
     _git(r, "commit", "-qm", "initial")
@@ -183,7 +183,7 @@ async def test_no_test_command_means_not_measured(repo, tmp_path):
 @pytest.mark.asyncio
 async def test_a_missing_linter_is_unmeasured_rather_than_failed(repo, tmp_path):
     absent = WorktreeRunner(
-        repo, linters=[["tandem-no-such-linter"]], scratch_dir=tmp_path / "scratch"
+        repo, linters=[["orbit-no-such-linter"]], scratch_dir=tmp_path / "scratch"
     )
     outcome = await absent.evaluate(PATCH)
     assert outcome.applied
@@ -199,7 +199,7 @@ async def test_the_checkout_is_untouched_and_no_worktree_survives(
     assert _git(repo, "status", "--porcelain") == ""
     listed = _git(repo, "worktree", "list", "--porcelain")
     assert "scratch" not in listed
-    assert not list((tmp_path / "scratch").glob("tandem-*"))
+    assert not list((tmp_path / "scratch").glob("orbit-*"))
 
 
 @pytest.mark.asyncio

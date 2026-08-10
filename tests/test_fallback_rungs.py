@@ -9,7 +9,7 @@ verdict is worse" but "the system did something nobody asked for":
   under test. So most of what follows tests the policy, not the models.
 * **Rung 4** sends the repository's code to a third party. Every test here is about
   the gates in front of it: it is never reached by falling back, it needs the consent
-  sentence written out, and it makes `tandem doctor` stop claiming an offline posture.
+  sentence written out, and it makes `orbit doctor` stop claiming an offline posture.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import json
 
 import pytest
 
-from tandem.backends import (
+from orbit.backends import (
     REMOTE_RUNG,
     RESIDENT_SWAP_RUNG,
     SECOND_OPINION_RUNG,
@@ -32,23 +32,23 @@ from tandem.backends import (
     build_tier0,
     build_tier1,
 )
-from tandem.backends.base import Backend
-from tandem.backends.mock import MockBackend
-from tandem.backends.remote_tier1 import CONSENT
-from tandem.backends.resident_swap import TIER0, TIER1, SwapBudgetExceeded
-from tandem.backends.tier1_call import (
+from orbit.backends.base import Backend
+from orbit.backends.mock import MockBackend
+from orbit.backends.remote_tier1 import CONSENT
+from orbit.backends.resident_swap import TIER0, TIER1, SwapBudgetExceeded
+from orbit.backends.tier1_call import (
     CALL_BUDGETS,
     Tier1Unavailable,
     build_payload,
     clamp_max_tokens,
     validate_or_raise,
 )
-from tandem.config import Config
-from tandem.gateway.pipeline import Pipeline
-from tandem.offline import OfflineReport, verify
-from tandem.tier1.schemas import REVIEW, rerank_schema
-from tandem.tier1.verifier import Candidate, Tier1Verifier
-from tandem.types import GenRequest, Message, Role, Sampling, ToolDef
+from orbit.config import Config
+from orbit.gateway.pipeline import Pipeline
+from orbit.offline import OfflineReport, verify
+from orbit.tier1.schemas import REVIEW, rerank_schema
+from orbit.tier1.verifier import Candidate, Tier1Verifier
+from orbit.types import GenRequest, Message, Role, Sampling, ToolDef
 
 EDIT = ToolDef(
     name="edit_file",
@@ -404,7 +404,7 @@ def test_rung_2_without_a_tier0_backend_is_an_error(tmp_path):
 def test_rung_2_says_what_is_missing_on_a_real_backend(tmp_path):
     """The residency policy is built; the MLX occupants are not. Saying so beats
     building a swap with nothing to swap in."""
-    from tandem.backends.base import BackendUnavailable
+    from orbit.backends.base import BackendUnavailable
 
     cfg = _cfg(tmp_path, RESIDENT_SWAP_RUNG)
     cfg.backend = "mlx"
@@ -450,7 +450,7 @@ def test_consent_tolerates_case_and_surrounding_whitespace(tmp_path):
 
 
 def test_the_endpoint_label_is_the_host_and_nothing_else(tmp_path):
-    """It ends up in stats() and in `tandem doctor`; a path or a query string is how
+    """It ends up in stats() and in `orbit doctor`; a path or a query string is how
     a token ends up in a support bundle."""
     cfg = _cfg(tmp_path, REMOTE_RUNG)
     cfg.tier1.remote_endpoint = "https://api.example.com/v1/secret?key=abc123"
@@ -465,10 +465,10 @@ def test_the_key_is_read_from_the_environment_not_the_config(tmp_path, monkeypat
     cfg = _cfg(tmp_path, REMOTE_RUNG)
     cfg.tier1.remote_endpoint = "https://api.example.com/v1"
     cfg.tier1.remote_consent = CONSENT
-    monkeypatch.delenv("TANDEM_REMOTE_API_KEY", raising=False)
-    with pytest.raises(ValueError, match="TANDEM_REMOTE_API_KEY is not set"):
+    monkeypatch.delenv("ORBIT_REMOTE_API_KEY", raising=False)
+    with pytest.raises(ValueError, match="ORBIT_REMOTE_API_KEY is not set"):
         build_tier1(cfg, build_tier0(cfg))
-    monkeypatch.setenv("TANDEM_REMOTE_API_KEY", "sk-test")
+    monkeypatch.setenv("ORBIT_REMOTE_API_KEY", "sk-test")
     assert isinstance(build_tier1(cfg, build_tier0(cfg)), RemoteTier1Backend)
 
 
@@ -485,11 +485,11 @@ def test_the_shipped_transport_is_outside_the_package():
     """Same reason as the A2 exporter: the offline claim has to be structural."""
     from pathlib import Path
 
-    import tandem
+    import orbit
 
     path = Path(Config().tier1.remote_transport)
     assert path.is_file()
-    assert Path(tandem.__file__).resolve().parent not in path.resolve().parents
+    assert Path(orbit.__file__).resolve().parent not in path.resolve().parents
 
 
 # --- rung 4: what it does and does not attest to ----------------------------
@@ -595,9 +595,9 @@ def test_verify_reports_why_the_posture_fails():
 
 
 def test_doctor_reports_the_rung_it_would_use(tmp_path, capsys):
-    from tandem.cli import main
+    from orbit.cli import main
 
-    cfg_path = tmp_path / "tandem.toml"
+    cfg_path = tmp_path / "orbit.toml"
     cfg_path.write_text(
         "backend = 'mock'\n\n[tier1]\nenabled = true\nrung = 'remote'\n"
         f"remote_endpoint = 'https://api.example.com/v1'\nremote_consent = '{CONSENT}'\n"
@@ -684,7 +684,7 @@ def test_an_unparseable_judgement_is_refused_rather_than_coerced(text, match):
 
 
 def test_every_rung_is_reachable_by_name(tmp_path, monkeypatch):
-    monkeypatch.setenv("TANDEM_REMOTE_API_KEY", "sk-test")
+    monkeypatch.setenv("ORBIT_REMOTE_API_KEY", "sk-test")
     built: dict[str, Backend] = {}
     for rung in (STREAMED_RUNG, RESIDENT_SWAP_RUNG, SECOND_OPINION_RUNG, REMOTE_RUNG):
         cfg = _cfg(tmp_path, rung)

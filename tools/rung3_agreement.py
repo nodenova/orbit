@@ -24,7 +24,7 @@ That is the degenerate case, and its number is the floor for every other rung.
 Lives in `tools/` rather than the package: it is a measurement, not a shipped feature.
 It loads tier 0 (23.0 GiB on the mlx backend) -- read `docs/PROCESSES.md` first.
 
-    python tools/rung3_agreement.py --config tandem.toml --prompts 12 --candidates 5
+    python tools/rung3_agreement.py --config orbit.toml --prompts 12 --candidates 5
 """
 
 from __future__ import annotations
@@ -41,11 +41,11 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from tandem.backends import build_tier0, build_tier1
-from tandem.config import Config
-from tandem.router.cascade import _context_of
-from tandem.tier1.verifier import Candidate, Tier1Verifier
-from tandem.types import GenRequest, Message, Role, Sampling
+from orbit.backends import build_tier0, build_tier1
+from orbit.config import Config
+from orbit.router.cascade import _context_of
+from orbit.tier1.verifier import Candidate, Tier1Verifier
+from orbit.types import GenRequest, Message, Role, Sampling
 
 # Fixed on purpose, for the same reason `regression_items` is: a corpus that drifts
 # between runs measures the corpus. Each asks for a small, self-contained edit with more
@@ -261,7 +261,7 @@ async def run(cfg: Config, n_prompts: int, n_candidates: int) -> Report:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--config", default="tandem.toml")
+    ap.add_argument("--config", default="orbit.toml")
     ap.add_argument("--prompts", type=int, default=len(TASKS))
     ap.add_argument("--candidates", type=int, default=5)
     ap.add_argument("--out", default="")

@@ -1,0 +1,230 @@
+# Orbit configuration. Copy to orbit.toml and edit.
+#
+# Every knob here that changes what the model computes also appears in the receipt
+# (sec 9.1). Unknown keys are a hard error rather than a silent no-op: a typo'd
+# `expert_cache_bytes` that appears to take effect and does not is how a wrong
+# number ends up in a published measurement.
+
+# "mock" runs everywhere and is what the tests use. "mlx" requires Apple Silicon.
+backend = "mock"
+
+[server]
+# Loopback only. The offline posture (sec 8.6) is a claim a customer can verify
+# with lsof, and binding 0.0.0.0 would break it silently.
+host = "127.0.0.1"
+port = 8080
+# api_key = "..."   # unset = no auth, correct for a single-user laptop
+
+[tier0]
+model = "mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit"
+# Set this, or receipts carry no container hash at all. `hash_artefact` takes a
+# filesystem path and answers None for anything that is not one, so the repo id
+# above hashes to nothing — honestly ("not mounted"), and uselessly. Point it at the
+# resolved snapshot directory, e.g. the HF cache:
+#   ~/.cache/huggingface/hub/models--mlx-community--Qwen3.6-35B-A3B-OptiQ-4bit/snapshots/<rev>
+# container_path = "/models/qwen3.6-35b-a3b-4bit"
+adapter_dir = "adapters"
+# default_adapter = "a1-myrepo"
+mtp = true                      # ~1.4x decode at ~70% acceptance at depth 2
+max_kv_tokens = 32768
+
+[tier1]
+# Off by default. The fallback ladder (sec 5.5) ends at "no tier 1", and the router
+# degrades to tier-0-only rather than failing the turn.
+enabled = false
+# Which rung of the sec 5.5 ladder serves the verifier role. Selected, never
+# descended: nothing here falls from one rung to the next on an error.
+#
+#   "streamed"        rung 1 — the 122B design target, experts streamed from NVMe.
+#   "resident_swap"   rung 2 — an 80B swapped into residency, evicting tier 0.
+#                     ~10 s each way, and tier 0 cannot serve while it is in, so a
+#                     verified turn costs about three times an unverified one.
+#   "second_opinion"  rung 3 — tier 0 with its adapter unmounted. Free, weak, needs
+#                     no second model, and still catches adapter overfit. This is
+#                     the rung that is actually available during M0-M3, and on any
+#                     machine where both tiers turn out not to co-reside.
+#   "remote"          rung 4 — somebody else's API. Breaks the sec 8.6 offline claim
+#                     and needs the consent sentence below written out in full.
+rung = "streamed"
+model = "mlx-community/Qwen3.5-122B-A10B-OptiQ-2bit"
+endpoint = "http://127.0.0.1:8081/v1"
+# Pin the version and vendor the wheel: mlx-optiq's source is in a private
+# monorepo, so it is unforkable and unauditable (sec 13).
+pinned_version = ""
+stream_experts = true
+# 18 GB, per the sec 2.1 budget — but read this before quoting it in a measurement.
+# This value does NOT reach the engine, and there is nothing for it to reach: the
+# engine is a process you launch yourself (sec 5.4), and `optiq serve` has no byte
+# budget. Its `--stream-experts-cache N` is a per-projection count, and at 0.4.18 it
+# is accepted and then discarded before the shard reader sees it, so every expert is
+# read per call and the only cache in play is the OS page cache. Receipts therefore
+# report this as `expert_cache_configured_bytes` and Gate B reports it as provenance,
+# both saying plainly that it was not in force. Keep it as the budget you sized the
+# host for; do not read a throughput next to it as having been measured under it.
+expert_cache_bytes = 19327352832
+request_timeout_s = 180.0
+# Which dialect of "thinking off" to send. A verifier must not reason: the <think>
+# block spends the sec 5.1 output clamp before the verdict exists, and thinking mode
+# silently ignores `temperature`, which turns the greedy judgement the receipt
+# attests to (sec 9.3) into a sample. There is no value here that turns reasoning on.
+#
+#   "auto"         guess from the model name (DeepSeek-V4 family -> deepseek_v4)
+#   "deepseek_v4"  send it explicitly, for a model the guess does not recognise
+#   "none"         send nothing; the engine is configured for non-think itself
+#
+# Guessing is safe because it is not the guarantee: a reasoned answer is refused on
+# arrival whatever was asked for, on every rung and every model.
+reasoning_control = "auto"
+
+# --- swapping the rung-1 model ----------------------------------------------
+# Any model mlx-optiq can stream serves this rung: same engine, same process
+# boundary (`optiq serve --stream-experts` on 8081), so it is a model swap and not
+# a code path. Two things to carry with the swap.
+#
+# 1. Raise `request_timeout_s` to match the throughput you measure. At Gate B's
+#    200 tok/s floor a 30k review costs ~150 s of prefill plus ~46 s of decode —
+#    past the 180 s default, so the largest reviews would degrade to failed
+#    verdicts on a *passing* gate. 300 s is the value that fits that arithmetic.
+#
+# 2. Check whether the model reasons by default. If it does, `reasoning_control`
+#    above is not optional: a <think> block spends the output clamp before the
+#    verdict exists, and thinking mode discards `temperature` without erroring.
+#    A reasoned verdict is refused on arrival whatever the config says, so the
+#    symptom of getting this wrong is every verdict failing, not a wrong answer.
+#
+# Leave speculative decoding (DSpark/MTP) off at the engine. It buys nothing for a
+# verifier writing <=128 tokens and threatens the byte-identity G1/G2 assert.
+
+# --- rung 2 -----------------------------------------------------------------
+# Decline a verdict once the *measured* swap round trip costs more than this many
+# seconds; the call degrades to a failed verdict and the turn continues on tier 0
+# alone. 0 leaves the guard off, which is the default: a ceiling that fires on a
+# machine nobody has measured yet disables verification for a cost never observed.
+swap_budget_s = 0.0
+
+# --- rung 4 -----------------------------------------------------------------
+# Only read when rung = "remote". Nothing under src/orbit/ makes an outbound call
+# (sec 8.6), so the HTTP is a file outside the package.
+# remote_endpoint = "https://api.example.com/v1"
+# remote_model = "some-large-model"
+remote_transport = "tools/remote_tier1.py"
+# The *name* of an environment variable, never the key: this file is committed,
+# diffed and pasted into issues.
+remote_api_key_env = "ORBIT_REMOTE_API_KEY"
+# Must read exactly "tier 1 leaves this machine". A rung name is one word copied
+# from a README; a sentence saying the code leaves the machine is not.
+remote_consent = ""
+
+[router]
+candidates = 3                  # N=1 disables best-of-N and reranking
+candidate_temperature = 0.6
+rerank_enabled = true
+max_escalations_per_turn = 1    # bounds the worst case
+degrade_after_s = 45.0          # pressure valve: past this, drop to N=1 (sec 7.3)
+
+[compaction]
+enabled = true
+strip_tool_schemas = true
+keep_original = true            # needed for --no-compact and the diff view
+
+[cache]
+prompt_cache_bytes = 2147483648
+disk_kv_dir = "var/kvcache"
+disk_kv_enabled = true
+disk_kv_budget_bytes = 21474836480
+kv_chunk_tokens = 256
+
+[context_scale]
+# Harnesses auto-compact by comparing usage against an assumed window. A local
+# model with a smaller real window overflows before compaction fires (sec 8.3).
+enabled = true
+assumed_window = 200000
+real_window = 32768
+
+[toolcall]
+constrain = true                # needs orbit[constrain]
+repair = true
+max_retries = 2
+tool_turn_temperature = 0.2
+replay_map_size = 512
+
+[attest]
+audit_log = "var/audit.jsonl"
+# Turn on in a deployed install: ~1 ms on NVMe, and it is a compliance log.
+fsync = false
+attach_to_response = true
+
+[eval]
+# What this repository runs to check itself. Three of the merge eval's five
+# metrics (sec 10.1) and the whole of T2 failure escalation (sec 7.2) come down to
+# this block; with it empty they are reported as "not measured", and `compare_arms`
+# will not call an unmeasured metric an M3 pass.
+#
+# Patches are applied in a detached git worktree under `worktree_dir` and the
+# commands below run there — never in your checkout, and never against the files
+# as they are on disk, which would score the repository rather than the patch.
+repo = "."
+# Run over the files a patch touches. Empty = convention conformance unmeasured.
+# linters = [["ruff", "check"], ["black", "--check"]]
+linters = []
+# The suite. Empty = test pass unmeasured, and T2 escalation stays dormant.
+# test_command = ["pytest", "-q", "-x"]
+test_command = []
+# Run once per worktree before the suite, if the repo needs it.
+# setup_command = ["pip", "install", "-e", "."]
+setup_command = []
+base_rev = "HEAD"
+test_timeout_s = 600.0
+lint_timeout_s = 120.0
+setup_timeout_s = 600.0
+# Resolved against orbit's working directory, not against `repo`: a scratch tree
+# inside the repository under test is one its own test runner will collect.
+worktree_dir = "var/worktrees"
+
+# T2 escalation on the *served* path. Off by default, and the default is the
+# interesting part — turning it on runs `test_command` on every code_change turn,
+# which is a latency decision and a decision to execute that repository's code on
+# every turn. The merge eval measures the same thing offline without either cost.
+escalate_on_test_failure = false
+# Whether a patch that will not apply counts as an observed failure while serving.
+# Off because the served base_rev is a committed revision and your working tree
+# usually is not, so a patch against uncommitted work fails to apply for reasons
+# that are not the model's.
+escalate_on_apply_failure = false
+
+[gates]
+# What THIS host is judged against. Every value below is the sec 11 figure, which is
+# also the code default — an absent [gates] block and this block are the same thing.
+#
+# Lower one only when the host cannot meet it for a reason that is arithmetic rather
+# than a bug: an SSD-streamed tier against a resident one, a prefill rate the GPU
+# resident one. A gate that can only ever report red is a gate nobody runs, and the
+# point of relaxing is that the system gets to run end to end so the *next* weakness
+# becomes the thing the gate finds.
+#
+# Relaxing hides nothing. Every gate reports `spec_budget` beside `budget` and a
+# `meets_spec` verdict beside `pass`, and `relaxed_criteria` names each row that is
+# green only because of this block. A pass against a lowered floor means "this host
+# cleared its own floor" and never "Gate A passed" — delete this section before
+# quoting a gate result off the machine that produced it.
+
+# M0 Gate A (sec 11): can tier 0 serve interactively at all?
+gate_a_ttft_s = 5.0
+gate_a_decode_tok_per_s = 30.0
+# Almost never worth moving. Unlike the two above this is not a hardware fact, so a
+# host that cannot meet it has a bug in the tool-call layer — which is the thing the
+# gate exists to find. Note the number is *passed in* from `orbit gate toolcall`,
+# not measured by `orbit bench latency`, and defaults to 0.0, which passes: a Gate A
+# report is not evidence about tool calls unless that gate was run and its number
+# handed over.
+gate_a_toolcall_failure_rate = 0.05
+
+# M0 Gate B (sec 11, 5.3): streamed prefill throughput. Below this the engine is
+# reading each expert per token instead of once per chunk, and the in-house loader
+# becomes M-blocking rather than optional. Only rung 1 has this instrument — at any
+# other rung `orbit bench tier1` reports which rung is configured and exits 1.
+gate_b_prefill_tok_per_s = 200.0
+
+# The sec 7.3 chat contract, reported beside Gate A by `orbit bench latency`.
+contract_chat_ttft_s = 2.0
+contract_chat_tok_per_s = 40.0

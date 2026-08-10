@@ -13,7 +13,7 @@ targeted, that `mount()` reaches them, that `MultiAdapterLinear` selects on the
 with the same identity, and that a request's bytes are the bytes the cache keys
 on. It proves nothing about numerics on real weights, quantised dtypes, Metal
 determinism, or whether mlx's own `Module` API matches the one modelled here. A
-green run means the plumbing is sound; `tandem gate isolation` on an M4 Max is
+green run means the plumbing is sound; `orbit gate isolation` on an M4 Max is
 still what proves tier 0.
 
 Two rules govern anything added below, both learned the hard way on `MockBackend`

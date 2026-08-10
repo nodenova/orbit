@@ -100,7 +100,7 @@ this engine and aborts during prompt processing before any token, every time.
 
 ### 4.1 Gate B
 
-*`tandem bench tier1`, `--prefill-step-size 8192`, three consecutive runs, one session.
+*`orbit bench tier1`, `--prefill-step-size 8192`, three consecutive runs, one session.
 Filler is the gate's own `prefill_filler`, so these compare row-for-row with
 `BASELINE.md` §4.1a's six runs on the 122B.*
 
@@ -255,8 +255,8 @@ HF_HUB_OFFLINE=1 .venv-optiq/bin/optiq serve --stream-experts --model "$S" \
     --host 127.0.0.1 --port 8081 --max-context 32768 --prefill-step-size 8192
 
 # 4.1, Gate B. Needs a config with tier1.rung = "streamed" pointing at the snapshot
-# above; tandem.qcn.toml.example is that config.
-.venv/bin/tandem --config tandem.qcn.toml.example bench tier1
+# above; orbit.qcn.toml.example is that config.
+.venv/bin/orbit --config orbit.qcn.toml.example bench tier1
 
 # 4.2, the scales lever. Same command, engine restarted with the budget above 4.84 GB.
 OPTIQ_STREAM_SCALES_BUDGET_GB=6 HF_HUB_OFFLINE=1 .venv-optiq/bin/optiq serve ...

@@ -333,7 +333,7 @@ while True:
 Measured as variant G: 13.01 ms/token against 13.12 unconstrained, with a full 6 ms of host
 work in the loop. **Zero overhead.**
 
-**Cost:** Tandem must own its decode loop rather than passing `logits_processors` to
+**Cost:** Orbit must own its decode loop rather than passing `logits_processors` to
 `mlx_lm.stream_generate`. That is a real increase in surface area — prompt-cache
 integration, `max_tokens`, stop-token handling and `mx.clear_cache()` cadence all currently
 come free from `generate_step`. It is the largest change here and the last one to make.
@@ -436,7 +436,7 @@ Any implementation must hold these. Each failure mode is silent.
    whole gate green for free.
 5. **`MockBackend` must not become easier to satisfy than the real backend.** It has failed
    that twice.
-6. **Re-run `tandem gate toolcall --runs 100` after any change here** — blocking, and
+6. **Re-run `orbit gate toolcall --runs 100` after any change here** — blocking, and
    `CLAUDE.md` names this layer explicitly. It needs a healthy host (`HANDOFF.md` T18).
 
 ---
@@ -448,7 +448,7 @@ Any implementation must hold these. Each failure mode is silent.
 | 0 | Synthetic loop, component microbenchmarks, real tokenizer + LMFE | **Complete, and re-run on both fixtures 2026-08-10** — §3, §4. On `ESCAPED_CALL` it reads 21.02 ms/token against rung 1's 22.15, so rung 0 is now a predictor rather than a 5×-low proxy |
 | 1 | One generation per variant, real weights | **Complete, 2026-08-09** — §8.1 |
 | 2 | Eight runs | **Complete** — reproduces rung 1 to within ~1% |
-| 3 | `tandem gate toolcall --runs 100` | **Complete — passes 1.00, 100/100** |
+| 3 | `orbit gate toolcall --runs 100` | **Complete — passes 1.00, 100/100** |
 
 The two earlier rung-1 attempts were void because the host was degraded (`HANDOFF.md` T18).
 It is not degraded now: `mlxbench.py` read **321/347 GB/s and 11.92 TFLOP/s** before the
@@ -592,7 +592,7 @@ emitted had two newlines and **both split**.
 **What it means for the product.** Cost scales with split escapes, not with tokens: a
 tool call carrying twenty lines of code whose lines end in `)` costs ~8.5 s of host time
 on its own. That is a latency question the 2.38× decode ratio does not express, and it
-lands on exactly the workload Tandem exists to serve.
+lands on exactly the workload Orbit exists to serve.
 
 **Not decided here.** The state is the same one every time, so LMFE's own
 `allowed_token_cache` would collapse every occurrence after the first — it is disabled
@@ -707,7 +707,7 @@ HF_HUB_OFFLINE=1 .venv/bin/python tools/constrained_decode_realweights.py \
     --runs 8 --max-tokens 64 --out var/constrained-decode.json
 
 # rung 3 — the sec 10.2 gate, blocking. ~2 min, loads tier 0.
-HF_HUB_OFFLINE=1 .venv/bin/tandem gate toolcall --runs 100
+HF_HUB_OFFLINE=1 .venv/bin/orbit gate toolcall --runs 100
 ```
 
 **`var/` is gitignored, so `var/constrained-decode.json` does not survive a clone** — §8's

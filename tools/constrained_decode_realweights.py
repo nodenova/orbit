@@ -69,7 +69,7 @@ TOOLS_JSON: list[dict[str, Any]] = [
 ]
 
 PROMPT = (
-    "In src/tandem/gateway/pipeline.py the call `compact(req)` must pass the token "
+    "In src/orbit/gateway/pipeline.py the call `compact(req)` must pass the token "
     "budget through as a keyword argument named `budget`. Make that edit."
 )
 
@@ -258,8 +258,8 @@ def main() -> None:
     import mlx.core as mx
     from mlx_lm import load, stream_generate
 
-    from tandem.gateway.toolcall.constrain import Constrainer, tool_call_schema
-    from tandem.types import ToolDef
+    from orbit.gateway.toolcall.constrain import Constrainer, tool_call_schema
+    from orbit.types import ToolDef
 
     print(f"pre-load : headroom {headroom_gb():.1f} GB")
     t0 = time.perf_counter()

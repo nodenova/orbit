@@ -19,8 +19,8 @@ decision the result feeds; `BASELINE.md` owns every number quoted here.
 
 | Input | State | What it costs to get |
 |---|---|---|
-| **A repository with ≥500 usable pairs** | **missing, and it is the owner's call** | `tandem extract a1` exits **2** below 500 pairs (`extract_a1.py:99`, `min_usable_pairs`). This repo has **43 commits**, so it cannot be its own corpus — not close. A mature repo yields 1–5k. |
-| **An `[eval]` block in `tandem.toml`** | **missing** | Names the repo's linters and test command (§3). Without it three of five merge-eval metrics report *not measured* and `compare_arms` refuses the M3 gate — which is the guard working, not a thing to route around. |
+| **A repository with ≥500 usable pairs** | **missing, and it is the owner's call** | `orbit extract a1` exits **2** below 500 pairs (`extract_a1.py:99`, `min_usable_pairs`). This repo has **43 commits**, so it cannot be its own corpus — not close. A mature repo yields 1–5k. |
+| **An `[eval]` block in `orbit.toml`** | **missing** | Names the repo's linters and test command (§3). Without it three of five merge-eval metrics report *not measured* and `compare_arms` refuses the M3 gate — which is the guard working, not a thing to route around. |
 | **A trainer on PATH** | **present** | `trainer_available()` prefers `optiq` and falls back to `python3 -m mlx_lm lora`. `optiq` is **not** on PATH here, so the mlx-lm path is what runs. |
 | **Memory for the training step** | **insufficient as configured** — §4 | The binding constraint, measured. Not fixable by waiting. |
 
@@ -157,21 +157,21 @@ cheap to check and it bears on whether all-linear is even the right target here.
    `max_seq_length` instead of letting it become a `nan`.
 2. **Decide the targeting/sequence trade** against §4 — this is the owner's call because it
    changes what the adapter is, and it is the reason step 3 is not simply "run the command".
-3. **Choose the repository** and confirm `tandem extract a1 --repo … --holdout 25` clears
+3. **Choose the repository** and confirm `orbit extract a1 --repo … --holdout 25` clears
    500 pairs. Exit 2 is an answer.
-4. **Add `[eval]`**, then re-run `tandem eval regression` so the pre-change reference point
+4. **Add `[eval]`**, then re-run `orbit eval regression` so the pre-change reference point
    exists (`HANDOFF.md` §4.5 — already recorded at `baselines/regression-baseline.json`).
-5. **Train, then `tandem eval merge`.** Exit criterion: A1 beats base on **≥3 of 5**. Below
+5. **Train, then `orbit eval merge`.** Exit criterion: A1 beats base on **≥3 of 5**. Below
    that, stop and re-plan before tier 1 (§4.7).
 
 ## 6. Reproduction
 
 ```bash
 # a corpus this repo cannot supply: 43 commits against a 500-pair floor
-tandem extract a1 --repo <real repo> --holdout 25 --out corpus/a1   # exit 2 if thin
+orbit extract a1 --repo <real repo> --holdout 25 --out corpus/a1   # exit 2 if thin
 
 # what would actually run, printed rather than executed
-tandem train sft --corpus corpus/a1/train.jsonl --out adapters/a1-x --name a1-x \
+orbit train sft --corpus corpus/a1/train.jsonl --out adapters/a1-x --name a1-x \
     --repo <real repo> --dry-run
 
 # the §4 measurement. Loads 23.0 GiB and trains: read PROCESSES.md §3.1 first, and do

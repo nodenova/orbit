@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from tandem.adapters import extract_a0, extract_a1, extract_a2, profile
-from tandem.adapters.filters import (
+from orbit.adapters import extract_a0, extract_a1, extract_a2, profile
+from orbit.adapters.filters import (
     ExtractionFilters,
     is_bot,
     is_lockfile,
@@ -23,7 +23,7 @@ from tandem.adapters.filters import (
     is_vendored,
     keep_path,
 )
-from tandem.adapters.train import (
+from orbit.adapters.train import (
     DPOConfig,
     SFTConfig,
     build_dpo_command,
@@ -234,7 +234,7 @@ def test_excerpt_marks_the_gap_between_distant_hunks():
 
 
 def test_clean_message_strips_trailers_and_issue_refs():
-    from tandem.adapters.gitwalk import Commit
+    from orbit.adapters.gitwalk import Commit
 
     commit = Commit(
         sha="x",
@@ -338,7 +338,7 @@ def test_a0_generates_deterministic_traces():
 
 def test_a0_emits_the_one_canonical_call_shape():
     """A0, the repair layer and the constrainer must agree on one target shape."""
-    from tandem.gateway.toolcall.repair import repair
+    from orbit.gateway.toolcall.repair import repair
 
     traces = extract_a0.generate(n=40, seed=1)
     for trace in traces:

@@ -1,6 +1,6 @@
 ---
 name: real-weights
-description: Pre-flight, pilot ladder and memory accounting for running Tandem against real MLX weights on the 36 GB M4 Max. Use before any command that loads a model — doctor, serve, bench, eval, train, either gate, or any mlx_lm call — and before downloading, converting or timing a model. Also use when a run is slow, wedged, OOM-killed, or reports throughput that looks wrong.
+description: Pre-flight, pilot ladder and memory accounting for running Orbit against real MLX weights on the 36 GB M4 Max. Use before any command that loads a model — doctor, serve, bench, eval, train, either gate, or any mlx_lm call — and before downloading, converting or timing a model. Also use when a run is slow, wedged, OOM-killed, or reports throughput that looks wrong.
 ---
 
 # Running against real weights
@@ -17,14 +17,14 @@ Everything below exists to keep a measurement from becoming a reboot.
 ```bash
 curl -s localhost:11434/api/ps                 # expect {"models":[]}
 lsof -nP -iTCP:8081 -sTCP:LISTEN               # expect nothing at rung 3
-lsof -nP -iTCP:8080 -sTCP:LISTEN               # a Tandem gateway already holding weights
+lsof -nP -iTCP:8080 -sTCP:LISTEN               # a Orbit gateway already holding weights
 memory_pressure | tail -5                      # or the vm_stat reading in §3
 ```
 
 - `ollama serve` is resident from login. It holds nothing until asked, then loads
   17–23 GB for whoever asks. It is a **neighbour, not a dependency** — do not start it,
-  and do not assume Tandem's failure is its fault.
-- A stale `mlx-optiq` on 8081 survives Tandem restarts, because Tandem never spawned it.
+  and do not assume Orbit's failure is its fault.
+- A stale `mlx-optiq` on 8081 survives Orbit restarts, because Orbit never spawned it.
   At rung 3 nothing should be there; if something is, find out whose it is before you
   add 23 GiB next to it.
 
@@ -83,13 +83,13 @@ sysctl vm.swapusage
 For a cheap question, point a `backend = "mock"` config at it:
 
 ```bash
-tandem --config tandem.mock.toml doctor        # --config is GLOBAL: before the subcommand
+orbit --config orbit.mock.toml doctor        # --config is GLOBAL: before the subcommand
 ```
 
-`tandem --config … doctor` with the mlx backend is a 23 GiB answer to a question about
+`orbit --config … doctor` with the mlx backend is a 23 GiB answer to a question about
 config parsing. `--config` after the subcommand is a different, silent mistake.
 
-`tandem gate isolation` builds tier 0 **once per adapter plus two**, with two live across
+`orbit gate isolation` builds tier 0 **once per adapter plus two**, with two live across
 one `asyncio.gather` (`eval/gates.py:178-180`). Mounting a subset is the point of the
 test, so it cannot reuse one instance. It is harmless only while `adapters/` does not
 exist and the gate short-circuits — the moment a trained adapter lands, this is the
@@ -114,7 +114,7 @@ likeliest way to wedge the machine.
   overlap.
 - **Neither format can serve the other.** Tier 0 needs a snapshot directory of OptiQ
   safetensors with a `config.json`; ollama stores opaque GGUF blobs and has none.
-- **Check the model can run here before spending an hour fetching it.** `tandem.toml`
+- **Check the model can run here before spending an hour fetching it.** `orbit.toml`
   documents tier-1 rung 1 as arithmetically dead on this host — 122B does not fit, at any
   quantisation, alongside anything.
 - `HF_HUB_OFFLINE=1` for anything touching a local snapshot, so a cache miss fails loudly

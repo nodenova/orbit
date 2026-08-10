@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Tandem is a local coding-agent runtime that optimises for merge quality: a resident model
+Orbit is a local coding-agent runtime that optimises for merge quality: a resident model
 carrying repo-derived LoRA adapters generates candidate patches, and a large streamed
 model verifies them rather than generating.
 
@@ -18,11 +18,11 @@ pytest -q                            # whole suite, ~8 s
 pytest tests/test_router.py::test_n_equals_one_disables_reranking -q
 ruff format <paths> && ruff check --fix <paths>   # touched paths, never `.`
 mypy                                 # strict over src/; whole-project, no useful per-file mode
-tandem doctor                        # runtime status, offline posture, tier-1 rung
-tandem serve --backend mock          # gateway on 127.0.0.1:8080
-tandem gate toolcall --runs 100      # blocking (sec 10.2)
-tandem gate isolation                # blocking (sec 4.2); loads two models — read the skill first
-tandem audit verify                  # hash-chained log (sec 9.2)
+orbit doctor                         # runtime status, offline posture, tier-1 rung
+orbit serve --backend mock           # gateway on 127.0.0.1:8080
+orbit gate toolcall --runs 100       # blocking (sec 10.2)
+orbit gate isolation                 # blocking (sec 4.2); loads two models — read the skill first
+orbit audit verify                   # hash-chained log (sec 9.2)
 ```
 
 `--config` is global and goes **before** the subcommand. CI is four blocking jobs
@@ -75,10 +75,10 @@ binary lints a twentieth of what CI does and reports success. mypy sets **no
   `# type: ignore[code]` **with a reason** — never a bare suppression. mypy runs
   `ignore-without-code`, so a bare `# type: ignore` is itself an error.
 - `pytest -q` after a series of changes; a single file while iterating. Async tests need an
-  explicit `@pytest.mark.asyncio` (strict mode), and a `DeprecationWarning` from `tandem.*`
+  explicit `@pytest.mark.asyncio` (strict mode), and a `DeprecationWarning` from `orbit.*`
   is an error.
 - **Changed the gateway, tool-call layer, compaction or sampling? Also run
-  `tandem gate toolcall --runs 100`** — CI does, and it is blocking.
+  `orbit gate toolcall --runs 100`** — CI does, and it is blocking.
 - Update `docs/HANDOFF.md` when the state it describes changes. It is committed so a cold
   clone carries it — the repo is public, so keep anything private out.
 - **`/specs/` is gitignored**: a local copy of the v1 spec, not ours to publish. Nothing a
@@ -99,8 +99,8 @@ loads on demand — read it before any run that touches MLX. What must not need 
 - **One model at a time, and check who else already has one**: `curl -s
   localhost:11434/api/ps` (expect `{"models":[]}` — `ollama serve` is resident from login
   and loads 17–23 GB for anyone who asks) and `lsof -nP -iTCP:8081 -sTCP:LISTEN` (expect
-  nothing at rung 3; a stale `mlx-optiq` outlives Tandem, which never spawned it).
-- **`tandem doctor` loads 23.0 GiB on the mlx backend**, as do `serve`, both gates, `bench`,
+  nothing at rung 3; a stale `mlx-optiq` outlives Orbit, which never spawned it).
+- **`orbit doctor` loads 23.0 GiB on the mlx backend**, as do `serve`, both gates, `bench`,
   `eval` and `train` — `MLXTier0Backend.__init__` calls `mlx_lm.load()` eagerly. For cheap
   questions point `--config` at a `backend = "mock"` file. `pytest`, `extract`, `profile`
   and `audit verify` never load weights.
@@ -144,7 +144,7 @@ the model, the cache key or the audit record.
   `types.py`.
 - Tier 1 is a verifier — `rerank`, `review`, `plan_critique`, all schema-constrained, each
   degrading to a failed `Verdict` rather than failing the turn.
-- `[eval]` in `tandem.toml` is load-bearing: without it three of the merge eval's five
+- `[eval]` in `orbit.toml` is load-bearing: without it three of the merge eval's five
   metrics report *not measured*, `compare_arms` refuses the M3 gate, and T2 escalation stays
   dormant.
 
@@ -174,17 +174,17 @@ Each has a comment in the code saying why; the full list with rationale is
   them. Both halves are load-bearing: dropping the schema is silent, and on hardware it is
   the sec 10.2 gate at **0.81** instead of **1.00**, and 0 first-attempt tool calls
   instead of 100.
-- `src/tandem/` makes no outbound network call — `tools/export_reviews.py` sits outside the
+- `src/orbit/` makes no outbound network call — `tools/export_reviews.py` sits outside the
   package for that reason and `tests/test_export_reviews.py` pins the surface. A new
-  `httpx`/`socket`/`urllib` import under `src/tandem/` fails that test.
+  `httpx`/`socket`/`urllib` import under `src/orbit/` fails that test.
 
 ## Gotchas
 
 - `sec N.M` points at a specification **not in this repository**; `docs/STATUS.md` maps each
   section to its code. Do not invent a meaning for one you cannot resolve.
-- `tandem extract` exits **2** on a thin corpus (< 500 pairs). That is an answer, not a
+- `orbit extract` exits **2** on a thin corpus (< 500 pairs). That is an answer, not a
   failure to route around — CI depends on it.
-- Unknown keys in `tandem.toml` raise rather than being ignored.
+- Unknown keys in `orbit.toml` raise rather than being ignored.
 - **`MockBackend` must never be easier to satisfy than a real backend.** It has failed that
   twice: ignoring `const`/`anyOf`, then `minimum`/`maximum`.
 - Anchor new `.gitignore` patterns with a leading `/`. An unanchored `adapters/` once

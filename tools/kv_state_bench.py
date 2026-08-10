@@ -43,9 +43,9 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from tandem.backends import build_tier0
-from tandem.config import Config
-from tandem.types import GenRequest, GenResult, Message, Role, Sampling
+from orbit.backends import build_tier0
+from orbit.config import Config
+from orbit.types import GenRequest, GenResult, Message, Role, Sampling
 
 # A body with the shape of the thing being reviewed. Fixed, because a corpus that
 # drifts between runs measures the corpus.
@@ -382,7 +382,7 @@ def _emit(report: dict[str, Any], args: argparse.Namespace) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--config", default="tandem.toml")
+    ap.add_argument("--config", default="orbit.toml")
     ap.add_argument("--rung", type=int, default=1, choices=(1, 2, 3))
     ap.add_argument("--min-headroom-gib", type=float, default=2.0)
     ap.add_argument("--sizes", type=int, nargs="*", default=None)

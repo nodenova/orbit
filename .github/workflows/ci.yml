@@ -124,7 +124,7 @@ jobs:
   smoke:
     name: cli and gateway smoke
     runs-on: ubuntu-latest
-    # The committed `tandem.toml` is the baseline M4 Max profile — `backend =
+    # The committed `orbit.toml` is the baseline M4 Max profile — `backend =
     # "mlx"`, a tier-0 snapshot path under a home directory — and every step below
     # resolves config the same way the CLI does, from the working directory. A
     # Linux runner cannot build that backend, so `doctor` exits 1 and both gates
@@ -134,7 +134,7 @@ jobs:
     # and makes CI fail if the example ever drifts out of the schema, since
     # unknown keys are a hard error.
     env:
-      TANDEM_CONFIG: tandem.toml.example
+      ORBIT_CONFIG: orbit.toml.example
     steps:
       - uses: actions/checkout@v7
         with:
@@ -156,7 +156,7 @@ jobs:
       # Exercises the console entry point plus the wiring the unit tests reach
       # around it: config loading, backend construction, the offline audit.
       - name: doctor
-        run: tandem doctor
+        run: orbit doctor
 
       # The one thing unit tests cannot prove: a real uvicorn process serving all
       # three wire protocols (sec 8.1) from one model, and writing the audit chain
@@ -164,18 +164,18 @@ jobs:
       - name: Serve and exercise all three wire protocols
         run: |
           set -euo pipefail
-          tandem serve --backend mock --port 8099 > /tmp/serve.log 2>&1 &
+          orbit serve --backend mock --port 8099 > /tmp/serve.log 2>&1 &
           echo $! > /tmp/serve.pid
           for _ in $(seq 1 30); do
-            curl -sf http://127.0.0.1:8099/tandem/health > /dev/null && break
+            curl -sf http://127.0.0.1:8099/orbit/health > /dev/null && break
             sleep 1
           done
-          curl -sf http://127.0.0.1:8099/tandem/health
+          curl -sf http://127.0.0.1:8099/orbit/health
 
           curl -sf -X POST http://127.0.0.1:8099/v1/messages \
             -H 'content-type: application/json' \
             -d '{"model":"t","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}' \
-            | python -c "import json,sys; d=json.load(sys.stdin); assert d['type']=='message', d; assert d['tandem_receipt']['engine_commit'], 'receipt carries no engine commit'"
+            | python -c "import json,sys; d=json.load(sys.stdin); assert d['type']=='message', d; assert d['orbit_receipt']['engine_commit'], 'receipt carries no engine commit'"
 
           curl -sf -X POST http://127.0.0.1:8099/v1/chat/completions \
             -H 'content-type: application/json' \
@@ -207,7 +207,7 @@ jobs:
           PY
 
           # The chain must now hold over the records those three requests wrote.
-          curl -sf http://127.0.0.1:8099/tandem/audit/verify \
+          curl -sf http://127.0.0.1:8099/orbit/audit/verify \
             | python -c "import json,sys; d=json.load(sys.stdin); assert d['ok'], d; print(d['reason'])"
 
       - name: Stop the server
@@ -219,20 +219,20 @@ jobs:
 
       # Sec 9.2, against the log the served requests just wrote.
       - name: Audit chain verifies
-        run: tandem audit verify
+        run: orbit audit verify
 
       # Sec 10.2, blocking. Re-run on every change to compaction, quantization,
       # adapter or sampling — which in practice means every change.
       - name: Tool-call gate
-        run: tandem gate toolcall --runs 100
+        run: orbit gate toolcall --runs 100
 
       # Sec 4.2, blocking. Vacuous with no adapters mounted, which is the state in
       # CI; it is here so the gate cannot rot unnoticed between real runs.
       - name: Adapter isolation gate
-        run: tandem gate isolation
+        run: orbit gate isolation
 
       - name: A0 corpus generation
-        run: tandem extract a0 --n 200 --out /tmp/corpus-a0
+        run: orbit extract a0 --n 200 --out /tmp/corpus-a0
 
       # A1 against this repository's own history. `extract` exits 2 on a thin
       # corpus (< 500 pairs), which this repo is and will be for a long time, so 2
@@ -242,7 +242,7 @@ jobs:
       - name: A1 extraction from this repo
         run: |
           set +e
-          tandem extract a1 --repo . --holdout 2 --out /tmp/corpus-a1
+          orbit extract a1 --repo . --holdout 2 --out /tmp/corpus-a1
           code=$?
           set -e
           if [ "$code" -ne 0 ] && [ "$code" -ne 2 ]; then

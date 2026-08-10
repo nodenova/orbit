@@ -3,7 +3,7 @@
 
     python tools/remote_tier1.py --endpoint https://api.example.com/v1 --model m --ping
 
-    # tandem.toml
+    # orbit.toml
     [tier1]
     enabled = true
     rung = "remote"
@@ -13,12 +13,12 @@
     remote_consent = "tier 1 leaves this machine"
 
 **Deliberately outside the package**, for the same reason as `export_reviews.py`:
-`src/tandem/` makes no outbound network call anywhere, and the offline posture
+`src/orbit/` makes no outbound network call anywhere, and the offline posture
 (sec 8.6) is a claim the verification script proves by running `lsof` during a
 session and seeing nothing but loopback. A network-capable module inside the package
 would make that claim rest on "we do not call it" rather than "it is not there" — and
 it would weaken it for every deployment, including the ones that never enable this
-rung. So the socket lives here, `tandem.backends.remote_tier1` holds none, and
+rung. So the socket lives here, `orbit.backends.remote_tier1` holds none, and
 `build_tier1` loads this file by path only when the config names the rung *and*
 carries the consent string.
 
@@ -47,7 +47,7 @@ import urllib.request
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-USER_AGENT = "tandem-remote-tier1/1.0"
+USER_AGENT = "orbit-remote-tier1/1.0"
 
 
 def _is_loopback(netloc: str) -> bool:
@@ -137,7 +137,7 @@ def transport_from_config(
     api_key_env: str = "",
     timeout_s: float = 180.0,
 ) -> Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]:
-    """Entry point `tandem.backends.build_tier1` calls after loading this file.
+    """Entry point `orbit.backends.build_tier1` calls after loading this file.
 
     Named separately from `build_transport` so the config-facing signature can grow
     without changing the one a test or a script calls directly. `model` is accepted
@@ -159,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--endpoint", required=True)
     p.add_argument("--model", required=True)
-    p.add_argument("--api-key-env", default="TANDEM_REMOTE_API_KEY")
+    p.add_argument("--api-key-env", default="ORBIT_REMOTE_API_KEY")
     p.add_argument("--timeout", type=float, default=180.0)
     p.add_argument(
         "--ping",

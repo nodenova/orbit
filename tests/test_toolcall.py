@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from tandem.gateway.toolcall.constrain import tool_call_schema
-from tandem.gateway.toolcall.repair import (
+from orbit.gateway.toolcall.constrain import tool_call_schema
+from orbit.gateway.toolcall.repair import (
     _balance,
     find_json_objects,
     lenient_loads,
@@ -19,8 +19,8 @@ from tandem.gateway.toolcall.repair import (
     repair,
     resolve_name,
 )
-from tandem.gateway.toolcall.replay import ReplayMap, coverage, render_call
-from tandem.types import Message, Role, ToolCall, ToolDef
+from orbit.gateway.toolcall.replay import ReplayMap, coverage, render_call
+from orbit.types import Message, Role, ToolCall, ToolDef
 
 READ = ToolDef(
     name="read_file",
