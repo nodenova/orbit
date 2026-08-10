@@ -21,7 +21,6 @@ invalidate a claim the product makes:
 
 from __future__ import annotations
 
-import asyncio
 import json
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
@@ -187,6 +186,24 @@ async def toolcall_gate(
 # mounted is the whole point of the test, so it cannot be done against one instance.
 BackendFactory = Callable[[Sequence[str]], Backend]
 
+
+async def _release(backend: Backend) -> None:
+    """Hand back a comparison arm's weights before the next arm is built.
+
+    Every gate below compares a backend built one way against a backend built
+    another, and on the baseline platform one tier 0 is 23.0 GiB against Metal's
+    28.08 GiB ceiling. Two live is not a slow gate, it is a wedged machine — which
+    is why these arms are recorded and compared in sequence rather than gathered.
+    `unload()` is the rung-2 `Occupant` seam and is what actually returns the
+    tensors; `close()` alone does not, and a backend with neither is a no-op here.
+    """
+    unload = getattr(backend, "unload", None)
+    if callable(unload):
+        await unload()
+    else:
+        await backend.close()
+
+
 _ISOLATION_PROMPTS = (
     "Fix the off-by-one in the pagination helper.",
     "Add a timeout parameter to the client constructor.",
@@ -206,6 +223,12 @@ async def adapter_isolation_gate(
     to greedy output with only adapter *i* mounted. A failure means adapter deltas
     are leaking across requests — which under concurrency is a silent wrong-answer
     bug, and which makes every receipt naming an adapter false.
+
+    The N-mounted arm is run to completion and *recorded*, then released, before any
+    solo arm is built. It used to hold both live across one `asyncio.gather`, which
+    on this platform is 2 × 23.0 GiB against a 28.08 GiB ceiling — the gate could
+    not run here at all, and `PROCESSES.md` §4 called it the likeliest way to wedge
+    the machine. Recording costs one dict of ≤128-token strings per comparison.
     """
     if not adapters:
         return GateResult(
@@ -214,31 +237,44 @@ async def adapter_isolation_gate(
             reason="no adapters mounted; nothing to isolate",
         )
 
+    requests = {
+        (name, prompt): GenRequest(
+            messages=[Message(role=Role.USER, content=prompt)],
+            adapter=name,
+            sampling=Sampling(temperature=0.0, top_p=1.0, seed=0, max_tokens=128),
+        )
+        for name in adapters
+        for prompt in prompts
+    }
+
     all_mounted = factory(list(adapters))
+    try:
+        recorded = {
+            key: (await all_mounted.generate(req)).text for key, req in requests.items()
+        }
+    finally:
+        await _release(all_mounted)
+
     mismatches: list[dict[str, str]] = []
     checked = 0
 
     for name in adapters:
         solo = factory([name])
-        for prompt in prompts:
-            req = GenRequest(
-                messages=[Message(role=Role.USER, content=prompt)],
-                adapter=name,
-                sampling=Sampling(temperature=0.0, top_p=1.0, seed=0, max_tokens=128),
-            )
-            many_out, solo_out = await asyncio.gather(
-                all_mounted.generate(req), solo.generate(req)
-            )
-            checked += 1
-            if many_out.text != solo_out.text:
-                mismatches.append(
-                    {
-                        "adapter": name,
-                        "prompt": prompt[:60],
-                        "n_mounted": many_out.text[:120],
-                        "solo": solo_out.text[:120],
-                    }
-                )
+        try:
+            for prompt in prompts:
+                solo_out = await solo.generate(requests[(name, prompt)])
+                checked += 1
+                if recorded[(name, prompt)] != solo_out.text:
+                    mismatches.append(
+                        {
+                            "adapter": name,
+                            "prompt": prompt[:60],
+                            "n_mounted": recorded[(name, prompt)][:120],
+                            "solo": solo_out.text[:120],
+                        }
+                    )
+        finally:
+            await _release(solo)
 
     passed = not mismatches
     return GateResult(
@@ -270,16 +306,34 @@ async def g1_backend_equivalence(
     *,
     prompts: Sequence[str] = _ISOLATION_PROMPTS,
 ) -> GateResult:
-    """G1: greedy output byte-identical between the CPU reference and Metal paths."""
+    """G1: greedy output byte-identical between the CPU reference and Metal paths.
+
+    Measured against real weights 2026-08-10, and both halves of this signature are
+    wrong for MLX — `HANDOFF.md` §3.12 has the numbers:
+
+    * The arms cannot be concurrent, and on one process they cannot coexist at all.
+      `mlx_lm.generate` binds a module-level `generation_stream` to the default
+      device **at import**, and wraps generate_step's body in it, so a caller's
+      `mx.stream(mx.cpu)` is overridden from the inside: the CPU arm silently
+      returns Metal's logits. Swapping devices means mutating that global, which is
+      backend-global state of exactly the kind §6 forbids under concurrency.
+    * Byte-identity is not the platform's to give. 30 of this model's 40 layers are
+      `linear_attention`, and `mlx_lm/models/gated_delta.py` dispatches on
+      `mx.default_device() != mx.gpu` to a *different algorithm* — so a red here is
+      not a reduction order anyone can pin, and CPU-vs-Metal measured 4.375 logits
+      of divergence against a 1.625 greedy margin on the first step.
+
+    So this runs its arms in sequence, and a real G1 on this platform is two
+    processes compared by recorded output rather than two backends in one (T33).
+    """
     mismatches: list[dict[str, str]] = []
     for prompt in prompts:
         req = GenRequest(
             messages=[Message(role=Role.USER, content=prompt)],
             sampling=Sampling(temperature=0.0, top_p=1.0, seed=0, max_tokens=128),
         )
-        ref, acc = await asyncio.gather(
-            reference.generate(req), accelerated.generate(req)
-        )
+        ref = await reference.generate(req)
+        acc = await accelerated.generate(req)
         if ref.text != acc.text:
             mismatches.append(
                 {
@@ -315,29 +369,71 @@ async def g2_placement_invariance(
     not change the answer. If it does, placement is silently changing the model, and
     the determinism claim — the thing the regulated buyer is actually buying — is
     false.
+
+    **Which is why it must not report a pass it did not measure.** The two arms here
+    differ only in `tier1.expert_cache_bytes`, and `expert_cache_provenance` already
+    records that this value reaches no engine: nothing sends it, and
+    `--stream-experts-cache` is a per-projection count that mlx-optiq 0.4.18 drops
+    before its shard reader. So on this deployment both arms are the same engine at
+    the same placement, and a byte comparison between them is guaranteed green —
+    a vacuous pass on the one gate whose failure invalidates every other claim.
+    It therefore reports **not measured** until that function says the value lands,
+    which is the single place the fact is recorded (T34).
     """
+    from tandem.backends.mlx_tier1 import expert_cache_provenance
+
+    if not expert_cache_provenance(cache_bytes_high)["reached_engine"]:
+        return GateResult(
+            name="g2_placement_invariance",
+            passed=False,
+            detail={
+                "measured": False,
+                "cache_bytes_low": cache_bytes_low,
+                "cache_bytes_high": cache_bytes_high,
+            },
+            reason=(
+                "not measured: expert_cache_bytes reaches no engine, so both arms "
+                "run at the same placement and a comparison between them would pass "
+                "without testing anything. Vary placement on the engine's own command "
+                "line and compare recorded output across two runs (sec 9.3, T34)."
+            ),
+        )
+
     cold = factory(cache_bytes_low)
-    warm = factory(cache_bytes_high)
     mismatches: list[dict[str, str]] = []
-    for prompt in prompts:
-        req = GenRequest(
+    requests = {
+        prompt: GenRequest(
             messages=[Message(role=Role.USER, content=prompt)],
             sampling=Sampling(temperature=0.0, top_p=1.0, seed=0, max_tokens=128),
         )
-        a, b = await asyncio.gather(cold.generate(req), warm.generate(req))
-        if a.text != b.text:
-            mismatches.append(
-                {
-                    "prompt": prompt[:60],
-                    "cache_0": a.text[:120],
-                    "cache_max": b.text[:120],
-                }
-            )
+        for prompt in prompts
+    }
+    try:
+        recorded = {p: (await cold.generate(req)).text for p, req in requests.items()}
+    finally:
+        await _release(cold)
+
+    warm = factory(cache_bytes_high)
+    try:
+        for prompt in prompts:
+            b = await warm.generate(requests[prompt])
+            if recorded[prompt] != b.text:
+                mismatches.append(
+                    {
+                        "prompt": prompt[:60],
+                        "cache_0": recorded[prompt][:120],
+                        "cache_max": b.text[:120],
+                    }
+                )
+    finally:
+        await _release(warm)
+
     passed = not mismatches
     return GateResult(
         name="g2_placement_invariance",
         passed=passed,
         detail={
+            "measured": True,
             "cache_bytes_low": cache_bytes_low,
             "cache_bytes_high": cache_bytes_high,
             "mismatches": mismatches,

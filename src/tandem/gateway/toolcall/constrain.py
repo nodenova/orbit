@@ -175,6 +175,19 @@ class Constrainer:
         return allowed
 
 
+def logit_width_bound(tokenizer: Any) -> int:
+    """One past the largest id a `TokenFilter` over this tokenizer can return.
+
+    A backend needs this to decide *once* whether its logit row covers every id LMFE
+    might name, instead of bounds-checking each id on every token (sec 8.5.1, F1).
+    `len(tokenizer)` alone is not that bound: `vocabulary()` enumerates
+    `range(len(inner))` but passes the stop ids in separately, so a stop id outside the
+    enumerated range is possible and would not be covered by the length.
+    """
+    inner = getattr(tokenizer, "_tokenizer", tokenizer)
+    return max([len(inner), *(i + 1 for i in _stop_token_ids(tokenizer))])
+
+
 def _stop_token_ids(tokenizer: Any) -> list[int]:
     ids = getattr(tokenizer, "eos_token_ids", None)
     if ids:

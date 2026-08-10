@@ -330,12 +330,11 @@ def test_an_allowed_set_entirely_past_the_width_passes_through():
 
 
 def test_each_step_masks_from_its_own_allowed_set():
-    """No caching between steps — a stale mask would permit last token's choices.
+    """A stale mask would permit the last token's choices, which is a wrong constraint.
 
-    `build_logits_processor` carried an identity-keyed mask cache briefly; it
-    measured 27.1 tok/s against 27.6 without and was removed. This pins the
-    behaviour that matters either way: what the mask permits tracks the parser,
-    step by step.
+    There *is* a mask cache now (F2), keyed on the content of the allowed list. This
+    pins the property that survives it and that the earlier identity-keyed attempt was
+    reaching for: what the mask permits tracks the parser, step by step.
     """
     from tandem.backends import mlx_tier0
 
@@ -346,6 +345,94 @@ def test_each_step_masks_from_its_own_allowed_set():
     second = processor(_Tokens(), _logits(5))
 
     assert first.values[1] == 1.0 and first.values[3] == float("-inf")
+    assert second.values[3] == 3.0 and second.values[1] == float("-inf")
+
+
+# --- F1: the bounds filter is a per-backend fact, not a per-token loop -------
+
+
+def test_a_bound_the_row_does_not_reach_still_filters():
+    """`id_bound` licenses the skip only when the row is provably wide enough.
+
+    The bound is one past the largest id the filter can name (`logit_width_bound`).
+    A row narrower than that says nothing about which ids are safe, so the guard has
+    to keep running — this is the case the F1 fast path must not swallow.
+    """
+    from tandem.backends import mlx_tier0
+
+    processor = mlx_tier0.build_logits_processor(lambda _t: [2, 99], _MX(), 200)
+    out = processor(_Tokens(), _logits(5))
+
+    assert out.values[2] == 2.0
+    assert out.values[0] == float("-inf")
+
+
+def test_skipping_the_filter_produces_the_mask_the_filter_would_have():
+    """F1 is an optimisation, so the two paths have to agree on every in-range set."""
+    from tandem.backends import mlx_tier0
+
+    guarded = mlx_tier0.build_logits_processor(lambda _t: [1, 3], _MX())
+    skipped = mlx_tier0.build_logits_processor(lambda _t: [1, 3], _MX(), 5)
+
+    assert (
+        guarded(_Tokens(), _logits(5)).values == skipped(_Tokens(), _logits(5)).values
+    )
+
+
+# --- F2: the mask cache, and the key that makes it sound --------------------
+
+
+class _CountingMX:
+    """`_MX`'s surface, plus a count of how many masks were built from scratch."""
+
+    int32 = "int32"
+
+    def __init__(self) -> None:
+        self.builds = 0
+
+    def full(
+        self, shape: tuple[int, ...], value: float, dtype: str = "float32"
+    ) -> _Array:
+        self.builds += 1
+        return _MX.full(shape, value, dtype)
+
+    array = staticmethod(_MX.array)
+
+
+def test_an_unchanged_allowed_set_reuses_the_mask():
+    """The 40% of consecutive positions F2 exists for — ~85% inside a string run."""
+    from tandem.backends import mlx_tier0
+
+    mx = _CountingMX()
+    processor = mlx_tier0.build_logits_processor(lambda _t: [1, 3], mx)
+
+    first = processor(_Tokens(), _logits(5))
+    second = processor(_Tokens(), _logits(5))
+
+    assert mx.builds == 1
+    assert first.values == second.values
+
+
+def test_the_cache_does_not_hit_on_a_list_mutated_in_place():
+    """The identity half of the key, and the reason it is not redundant.
+
+    lm-format-enforcer >= 0.11 returns a fresh list per call, which is why the old
+    `id()`-keyed cache could never hit (0 of 42). If a future version returned the
+    same list mutated instead, a content key alone would compare the new contents
+    against themselves, report a hit, and reuse a mask built from the old ones —
+    a silently wrong constraint. Rebuilding is the correct way to lose that bet.
+    """
+    from tandem.backends import mlx_tier0
+
+    shared = [1]
+    mx = _CountingMX()
+    processor = mlx_tier0.build_logits_processor(lambda _t: shared, mx)
+
+    processor(_Tokens(), _logits(5))
+    shared[0] = 3
+    second = processor(_Tokens(), _logits(5))
+
+    assert mx.builds == 2
     assert second.values[3] == 3.0 and second.values[1] == float("-inf")
 
 

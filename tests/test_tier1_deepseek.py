@@ -130,13 +130,17 @@ def test_there_is_no_way_to_ask_for_reasoning():
 # --- the request half -------------------------------------------------------
 
 
-def test_a_deepseek_payload_turns_thinking_off_in_both_dialects():
-    """DeepSeek's API docs and the vLLM recipe document different keys, and the
-    engines disagree about which they read. Sending one is a coin flip."""
+def test_a_deepseek_payload_turns_thinking_off_in_every_known_dialect():
+    """Three authorities spell this differently and the engines disagree about
+    which they read, so sending a subset is a coin flip. `enable_thinking` is
+    asserted because it is the only one mlx-optiq 0.4.18 was measured to honour."""
     payload = build_payload(_rerank_req(), model=DEEPSEEK)
 
     assert payload["thinking"] == {"type": "disabled"}
-    assert payload["chat_template_kwargs"] == {"thinking": False}
+    assert payload["chat_template_kwargs"] == {
+        "thinking": False,
+        "enable_thinking": False,
+    }
 
 
 def test_a_non_reasoning_model_gets_no_extra_keys():
@@ -191,7 +195,10 @@ async def test_the_dialect_reaches_the_actual_request_body():
         await original.aclose()
 
     assert seen[0]["thinking"] == {"type": "disabled"}
-    assert seen[0]["chat_template_kwargs"] == {"thinking": False}
+    assert seen[0]["chat_template_kwargs"] == {
+        "thinking": False,
+        "enable_thinking": False,
+    }
 
 
 # --- the response half, which is the one that holds -------------------------

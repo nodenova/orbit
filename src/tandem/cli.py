@@ -520,23 +520,31 @@ def cmd_gate(args: argparse.Namespace) -> int:
 
 
 def cmd_bench(args: argparse.Namespace) -> int:
-    from tandem.backends import build_tier0, build_tier1
+    from tandem.backends import STREAMED_RUNG, build_tier0, build_tier1
     from tandem.eval.latency import Environment, LatencyReport, m0_gate_a, measure
 
     cfg = Config.load(args.config)
 
     if args.which == "tier1":
-        tier1 = build_tier1(cfg, build_tier0(cfg))
-        if tier1 is None:
+        if not cfg.tier1.enabled:
             _print({"error": "tier 1 is disabled; enable it in config to run Gate B"})
             return 1
+
+        # Rung 1 reaches the engine over a socket and never reads tier 0, so Gate B is
+        # a one-model measurement — but `build_tier0` calls `mlx_lm.load()` eagerly,
+        # and building one here cost 23.0 GiB on a host measured with 25.9 GB of
+        # headroom. That is the difference between Gate B running and Gate B being
+        # the second model on a 36 GB box. The rungs that *do* serve from tier 0
+        # (3 and 2) carry no prefill instrument, so for them this command can only
+        # print the error below — which it now does without loading anything.
+        tier1 = build_tier1(cfg) if cfg.tier1.rung == STREAMED_RUNG else None
 
         # Gate B instruments *streamed* prefill, which only rung 1 has. Rung 3 serves
         # the verifier from tier 0's own weights and rung 1 on the mock backend is a
         # MockBackend; neither carries the instrument. Say which rung is configured
         # rather than dying with an AttributeError on the host whose tandem.toml
         # deliberately runs rung 3.
-        if not hasattr(tier1, "gate_b_report"):
+        if tier1 is None or not hasattr(tier1, "gate_b_report"):
             _print(
                 {
                     "error": "Gate B measures streamed prefill and needs tier1.rung "
@@ -716,7 +724,12 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--adapter", default=None)
     e.add_argument(
         "--baseline",
-        default="var/regression-baseline.json",
+        # Committed, and deliberately not under `var/`: everything there is
+        # reproducible output, while this is the *reference* the output is read
+        # against, and re-recording it after a change compares the change with
+        # itself (T29). A baseline from another container is detected and ignored
+        # rather than believed — `check_comparable`, and the caller above.
+        default="baselines/regression-baseline.json",
         help="recorded reference; written on first run",
     )
     e.add_argument(

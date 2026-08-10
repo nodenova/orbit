@@ -215,6 +215,14 @@ class GenResult:
     # Attestation metadata (sec 9.1). Serialised into the wire response.
     receipt: dict[str, Any] | None = None
 
+    # The live KV cache this turn built, backend-opaque and read only by the
+    # backend's own `export_state` (sec 8.4). It rides on the result, not on the
+    # backend, for the reason the active adapter and the restored state do: a
+    # backend-global handle races under concurrency, and best-of-N runs N
+    # generations at once. `export_state` clears it, so a cache the size of the
+    # prompt is not held for the life of the response.
+    kv_handle: Any = None
+
     # Diagnostics that never leave the process except via the audit log.
     ttft_s: float = 0.0
     total_s: float = 0.0

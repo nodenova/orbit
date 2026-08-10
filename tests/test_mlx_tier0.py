@@ -622,12 +622,225 @@ def test_the_fake_refuses_a_processor_that_is_not_callable(mlx, container):
 
 
 # --- KV state (sec 8.4) -----------------------------------------------------
+#
+# The container this ships against builds a *hybrid* cache: 30 of its 40 layers
+# are linear attention, whose recurrent state cannot be rewound. `fake_mlx`
+# reproduces that proportion, so unless a test says otherwise it is exercising
+# the arrangement the hardware has — the one where `can_trim_prompt_cache` is
+# False and a snapshot has to carry the whole turn instead of a trimmed prefix.
 
 
-def test_state_is_not_supported_and_says_so(mlx, container):
+def _conversation(*texts: str, **kw) -> GenRequest:
+    kw.setdefault(
+        "sampling", Sampling(temperature=0.0, top_p=1.0, seed=0, max_tokens=32)
+    )
+    return GenRequest(
+        messages=[Message(role=Role.USER, content=t) for t in texts], **kw
+    )
+
+
+def _continued(req: GenRequest, reply: str, follow_up: str) -> GenRequest:
+    """The next turn of the same conversation: the reply, then a new message.
+
+    The shape the disk cache exists for. A follow-up built as two *user* messages
+    instead diverges from the stored prefix at the first one's end, which is a
+    cache miss for a good reason and proves nothing about restoring.
+    """
+    return req.with_(
+        messages=[
+            *req.messages,
+            Message(role=Role.ASSISTANT, content=reply.strip()),
+            Message(role=Role.USER, content=follow_up),
+        ]
+    )
+
+
+def _all_attention(backend):
+    """Drop the recurrent layers, leaving a cache that can be rewound."""
+    backend.model.cache_kinds = ("kv",)
+    return backend
+
+
+def _shared_prefix(a: str, b: str) -> str:
+    """The bytes two rendered prompts have in common."""
+    n = 0
+    for left, right in zip(a, b):
+        if left != right:
+            break
+        n += 1
+    return a[:n]
+
+
+def _exported(backend, req, prefix=None):
+    """Run a turn and snapshot it, the way `Pipeline._remember` does."""
+    result = asyncio.run(backend.generate(req))
+    return result, backend.export_state(req, prefix or backend.render(req), result)
+
+
+def test_a_turn_can_be_snapshotted_and_the_snapshot_names_its_model(mlx, container):
     backend = _backend(mlx, container)
-    assert backend.supports_state() is False
+    assert backend.supports_state() is True
+
+    req = _req()
+    result, state = _exported(backend, req)
+    assert state is not None
+    assert state.key == backend.state_key(None)
+    assert state.blob
+
+    prompt = backend._encode(backend.render(req))
+    # Nothing rewound this cache, so the state names the reply as well as the
+    # prompt — and names every token of it, or it could not be restored at all.
+    assert state.token_ids[: len(prompt)] == tuple(prompt)
+    assert state.n_tokens == len(prompt) + result.usage.output_tokens
+
+
+def test_export_state_without_a_turn_behind_it_returns_nothing(mlx, container):
+    """`export_state` is called on every turn, including ones no backend ran."""
+    backend = _backend(mlx, container)
     assert backend.export_state(_req(), "prefix", None) is None
+
+
+def test_a_warm_start_reproduces_the_cold_answer(mlx, container):
+    """The property the whole path is worth having only if it holds.
+
+    A restored prefix must put the model in the state a full prefill would have.
+    If the two answers differ, the cache is not an optimisation — it is a second,
+    quieter model.
+    """
+    backend = _backend(mlx, container)
+    first = _req()
+    reply, state = _exported(backend, first)
+    follow_up = _continued(first, reply.text, "Now add a test.")
+
+    cold = asyncio.run(backend.generate(follow_up))
+    assert cold.usage.cached_input_tokens == 0
+
+    warm = asyncio.run(backend.generate(follow_up.with_(warm_state=state)))
+    assert warm.usage.cached_input_tokens == state.n_tokens
+    assert warm.usage.input_tokens == cold.usage.input_tokens
+    assert warm.text == cold.text
+
+
+def test_a_warm_start_reproduces_the_cold_answer_when_the_cache_can_be_trimmed(
+    mlx, container
+):
+    """The same guarantee on the other arrangement, which trims instead."""
+    backend = _all_attention(_backend(mlx, container))
+    first = _req()
+    follow_up = _conversation("Fix the pagination helper.", "Now add a test.")
+    prefix = _shared_prefix(backend.render(first), backend.render(follow_up))
+
+    cold = asyncio.run(backend.generate(follow_up))
+    _reply, state = _exported(backend, first, prefix=prefix)
+    warm = asyncio.run(backend.generate(follow_up.with_(warm_state=state)))
+
+    assert warm.usage.cached_input_tokens == state.n_tokens
+    assert warm.text == cold.text
+
+
+def test_a_state_from_another_adapter_is_refused(mlx, container, adapters):
+    """Same container, different adapter: fluent output from the wrong model."""
+    backend = _backend(mlx, container, adapter_dir=str(adapters))
+    first = _req(adapter="a0-harness")
+    reply, state = _exported(backend, first)
+    assert state is not None
+
+    follow_up = _continued(first, reply.text, "Now add a test.")
+    wrong = follow_up.with_(adapter="a1-myrepo", warm_state=state)
+    assert asyncio.run(backend.generate(wrong)).usage.cached_input_tokens == 0
+
+
+def test_a_state_whose_tokens_diverged_is_refused(mlx, container):
+    """The identity key says "same model". It says nothing about the bytes."""
+    backend = _backend(mlx, container)
+    _reply, state = _exported(backend, _req("Fix the pagination helper."))
+
+    other = _req("Rewrite the retry policy instead.").with_(warm_state=state)
+    assert asyncio.run(backend.generate(other)).usage.cached_input_tokens == 0
+
+
+def test_a_corrupt_blob_is_a_miss_and_not_an_error(mlx, container):
+    """States come back off disk, where a truncated entry is ordinary (sec 8.4)."""
+    from dataclasses import replace
+
+    backend = _backend(mlx, container)
+    first = _req()
+    reply, state = _exported(backend, first)
+    follow_up = _continued(first, reply.text, "Now add a test.")
+
+    # The control: intact, this state restores. Without it every assertion below
+    # would hold for a state that was never going to be used.
+    warmed = follow_up.with_(warm_state=state)
+    assert asyncio.run(backend.generate(warmed)).usage.cached_input_tokens > 0
+
+    for blob in (state.blob[:-8], state.blob + b"tail", b"", b"not a snapshot"):
+        warmed = follow_up.with_(warm_state=replace(state, blob=blob))
+        assert asyncio.run(backend.generate(warmed)).usage.cached_input_tokens == 0
+
+
+def test_a_repeat_of_a_fully_cached_turn_still_has_a_token_to_feed(mlx, container):
+    """`generate_step` rejects an empty prompt, so the last token is always fed."""
+    backend = _all_attention(_backend(mlx, container))
+    req = _req()
+    rendered = backend.render(req)
+    _reply, state = _exported(backend, req, prefix=rendered)
+
+    repeat = asyncio.run(backend.generate(req.with_(warm_state=state)))
+    assert repeat.usage.cached_input_tokens == len(backend._encode(rendered)) - 1
+
+
+def test_a_state_over_the_byte_budget_is_not_stored(mlx, container):
+    """Refusing costs one cold prefill; allocating it costs the machine (T9)."""
+    from tandem.backends.mlx_tier0 import MLXTier0Backend
+
+    backend = MLXTier0Backend(str(container), max_state_bytes=8)
+    _result, state = _exported(backend, _req())
+    assert state is None
+
+
+def test_export_state_lets_go_of_the_cache_it_snapshotted(mlx, container):
+    """A KV cache the size of the prompt must not outlive the turn."""
+    backend = _backend(mlx, container)
+    req = _req()
+    result = asyncio.run(backend.generate(req))
+    assert result.kv_handle is not None
+
+    backend.export_state(req, backend.render(req), result)
+    assert result.kv_handle is None
+    assert backend.export_state(req, backend.render(req), result) is None
+
+
+def test_a_trimmable_cache_is_rewound_to_the_prefix_it_is_keyed_by(mlx, container):
+    """Where it can rewind it should: the state then serves any conversation
+    sharing that prefix, not only this one's continuation."""
+    backend = _all_attention(_backend(mlx, container))
+    req = _req()
+    rendered = backend.render(req)
+    prefix = rendered[: len(rendered) // 2]
+
+    _result, state = _exported(backend, req, prefix=prefix)
+    assert state is not None
+    full = backend._encode(rendered)
+    assert 0 < state.n_tokens < len(full)
+    assert state.token_ids == tuple(full[: state.n_tokens])
+
+
+def test_a_recurrent_cache_is_not_silently_dropped(mlx, container):
+    """The failure this arrangement exists to catch.
+
+    A snapshot that refused whenever the cache could not be rewound would be a
+    no-op on the container that ships — every layer of it — while the suite that
+    only ever built trimmable caches stayed green.
+    """
+    from mlx_lm.models import cache as kv
+
+    backend = _backend(mlx, container)
+    req = _req()
+    result = asyncio.run(backend.generate(req))
+    assert kv.can_trim_prompt_cache(result.kv_handle.cache) is False
+
+    state = backend.export_state(req, backend.render(req), result)
+    assert state is not None and state.n_tokens > 0
 
 
 def test_the_state_key_separates_containers_and_adapters(mlx, container, adapters):
@@ -637,3 +850,35 @@ def test_the_state_key_separates_containers_and_adapters(mlx, container, adapter
     base = backend.state_key(None)
     assert base != backend.state_key("a1-myrepo")
     assert backend.container_hash() in base
+
+
+@pytest.mark.asyncio
+async def test_the_disk_cache_makes_a_restart_warm(mlx, container, tmp_path):
+    """Tier 0 through the whole sec 8.4 loop, not just its two halves.
+
+    A second `Pipeline` over the same directory is a fresh process in every way
+    that matters. Until `supports_state` returned True this path was dead on the
+    mlx backend: `_probe_cache` and `_remember` both check it first, so every turn
+    re-prefilled from scratch and the disk cache held nothing to hit.
+    """
+    from tandem.config import Config
+    from tandem.gateway.pipeline import Pipeline
+
+    cfg = Config()
+    cfg.attest.audit_log = str(tmp_path / "audit.jsonl")
+    cfg.cache.disk_kv_dir = str(tmp_path / "kv")
+    cfg.compaction.enabled = False
+    body = "def handler(request):\n    return process(request)\n\n" * 60
+
+    first = Pipeline(cfg, _backend(mlx, container))
+    opening = _conversation(body)
+    reply, _trace = await first.run(opening)
+    assert first._disk_kv_stats()["entries"] > 0
+
+    second = Pipeline(cfg, _backend(mlx, container))
+    result, trace = await second.run(_continued(opening, reply.text, "and the tests?"))
+
+    assert trace.cache["source"] == "disk"
+    assert trace.cache["restored_tokens"] > 0
+    assert result.usage.cached_input_tokens > 0
+    assert second.disk_kv_hits == 1

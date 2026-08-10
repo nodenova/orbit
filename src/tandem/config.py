@@ -34,6 +34,17 @@ class Tier0Config:
     # Multi-token-prediction head: ~1.4x decode at ~70% acceptance at depth 2 [V].
     mtp: bool = True
     max_kv_tokens: int = 32_768
+    # Largest KV snapshot worth serialising for the disk cache (sec 8.4). Measured
+    # on this container over 539/2024/8063-token states: **20.00 KiB per token plus
+    # a fixed 64.4 MB**. The marginal term is exactly the 10 full-attention layers
+    # `tandem.toml` derives; the constant is the 30 recurrent layers, whose state
+    # does not grow with context — so a short prompt pays 64 MB whatever it holds,
+    # and 1 GiB is ~49k tokens rather than the ~52k the per-token figure alone
+    # implies. A ceiling rather than a target because `dumps` peaks at twice the
+    # blob (the array copies and the joined result are alive together), and tier 0
+    # already holds 20.6 GiB against a 28.08 GiB Metal ceiling. Over it, the turn
+    # stores nothing and the next one prefills — slow, never wrong.
+    max_state_bytes: int = 1 << 30
 
 
 @dataclass

@@ -79,11 +79,32 @@ REASONING_CONTROLS = ("auto", "deepseek_v4", "none")
 # `DeepSeek-V4-Flash-0731-OptiQ-2bit-mixed`, ds4 serves it as `ds4f-q2`. Bare
 # "ds4" is not a marker — it is the engine's name as well as the model's, and a
 # marker that matches an engine would claim every model it serves.
+#
+# Qwen3 is deliberately NOT here, and it is not an oversight — it thinks too.
+# Measured 2026-08-10 on mlx-optiq 0.4.18: the 122B served with no disable keys
+# returns a reasoning block and no `content`, so `auto` leaves the *configured*
+# tier-1 model producing empty verdicts. Adding it was tried and reverted,
+# because `test_a_non_reasoning_model_gets_no_extra_keys` records the reason it
+# must not go in here: an unknown key is a 400 on a strict engine, and widening
+# a name guess takes tier 1 down for every deployment that never asked for it.
+# A measured failure on one host does not license that trade for all of them.
+#
+# The fix is per-deployment and is in this host's `tandem.toml`:
+# `tier1.reasoning_control = "deepseek_v4"` names the dialect explicitly. What
+# makes the un-named case safe is `refuse_reasoned_answer`, which now reads the
+# spelling this engine actually emits — so a model `auto` does not recognise
+# fails loudly on the first call, which is what this guess was always resting on.
 _DEEPSEEK_V4_MARKERS: tuple[tuple[str, ...], ...] = (("deepseek", "v4"), ("ds4f",))
 
 
 def resolve_reasoning_control(control: str, model: str) -> str:
-    """Which reasoning-control dialect to speak for `model`. Never "on"."""
+    """Which reasoning-control dialect to speak for `model`. Never "on".
+
+    `"deepseek_v4"` names the *spelling set* `_disable_thinking` sends rather than
+    the vendor — it sends all three spellings, so a thinking model of any family is
+    configured with this value. The string stays as it is because operators write
+    it in `tandem.toml`, and renaming it would break their configs to fix a name.
+    """
     if control not in REASONING_CONTROLS:
         raise ValueError(
             f"tier1.reasoning_control={control!r} is not one of "
@@ -97,21 +118,27 @@ def resolve_reasoning_control(control: str, model: str) -> str:
 
 
 def _disable_thinking(payload: dict[str, Any]) -> None:
-    """Turn reasoning off in both documented spellings.
+    """Turn reasoning off in every spelling an engine is known to read.
 
-    Two authorities document different keys and the engines disagree about which
-    they read: DeepSeek's own API docs disable thinking with a top-level `thinking`
-    object, while the vLLM recipe for this model does it through
-    `chat_template_kwargs`. Sending both costs one ignored key on an engine that
-    reads the other; sending one costs a reasoning block on an engine that reads
-    the other, which is the failure this exists to prevent.
+    Three authorities spell this differently and the engines disagree about which
+    they read: DeepSeek's own API docs use a top-level `thinking` object, the vLLM
+    recipe uses `chat_template_kwargs.thinking`, and the Qwen chat templates
+    mlx-optiq generates read `chat_template_kwargs.enable_thinking`. Sending all
+    three costs ignored keys on an engine that reads one; sending a subset costs a
+    reasoning block on an engine that reads none, which is what this prevents.
+
+    None of the three is redundant. Measured against mlx-optiq 0.4.18 serving
+    Qwen3.5-122B-A10B-OptiQ-2bit: a request carrying the first two together still
+    returned a `reasoning` block and no `content`, identical to sending nothing;
+    adding the third returned `content` and no reasoning. On that engine
+    `enable_thinking` is the only one that works.
 
     An engine strict enough to reject the key it does not know fails the call
     outright, which is the acceptable direction — loud, on the first call, and
     fixable with `reasoning_control = "none"` plus the engine's own configuration.
     """
     payload["thinking"] = {"type": "disabled"}
-    payload["chat_template_kwargs"] = {"thinking": False}
+    payload["chat_template_kwargs"] = {"thinking": False, "enable_thinking": False}
 
 
 def call_type_of(req: GenRequest) -> str:
@@ -211,9 +238,23 @@ def refuse_reasoned_answer(choice: dict[str, Any], body: dict[str, Any]) -> None
     rerank; accepting it puts an unreproducible judgement behind an attestation
     that claims otherwise.
     """
-    message = choice.get("message")
-    reasoning = (
-        (message or {}).get("reasoning_content") if isinstance(message, dict) else None
+    raw = choice.get("message")
+    message: dict[str, Any] = raw if isinstance(raw, dict) else {}
+    # Two spellings, because the engines disagree about the key and this guard is
+    # only as unconditional as the narrowest one it reads. `reasoning_content` is
+    # the DeepSeek/vLLM shape; **mlx-optiq 0.4.18 emits `reasoning`** and no
+    # `completion_tokens_details`, so reading only the first let a thinking 122B
+    # through with a full reasoning block, no `content`, and an empty string for a
+    # verdict — measured against the live engine on 2026-08-10, which is also what
+    # made the "fails loudly on the first call" claim above false for the one
+    # engine this repo actually runs.
+    reasoning = next(
+        (
+            message[key]
+            for key in ("reasoning_content", "reasoning")
+            if message.get(key)
+        ),
+        None,
     )
     details = (body.get("usage") or {}).get("completion_tokens_details") or {}
     try:

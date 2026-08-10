@@ -378,10 +378,15 @@ class OptiqTier1Backend(Backend):
         """M0 Gate B, judged against `threshold_tok_per_s` and against sec 11's 200.
 
         The threshold is a parameter rather than a constant because a host may be
-        arithmetically unable to reach the spec figure — this one is, by ~40x, and a
-        rung that can never report anything but red teaches nothing. Relaxing it lets
-        the streamed path run and the *next* failure become visible; `meets_spec` in
-        the returned row is what stops that from reading as a passed Gate B.
+        unable to reach the spec figure, and a rung that can never report anything but
+        red teaches nothing. Relaxing it lets the streamed path run and the *next*
+        failure become visible; `meets_spec` in the returned row is what stops that
+        from reading as a passed Gate B.
+
+        The floor bounds *prefill*. The baseline host measures 164.7 tok/s of streamed
+        prefill against sec 11's 200, and 4.05 tok/s of decode — quoting the latter
+        against this threshold reports a ~40x shortfall that does not exist.
+        `docs/BASELINE.md` §4.
         """
         if not self.prefill_samples:
             return {"pass": False, "reason": "no samples taken"}

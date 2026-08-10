@@ -1,350 +1,205 @@
-# DeepSeek-V4-Flash-0731 as tier 1
+# DeepSeek-V4-Flash on this host — it runs, and it is slower than what we already have
 
-**Question asked:** can the streaming mechanism tier 1 already uses run
-DeepSeek-V4-Flash-0731 locally, MacBook first — and does this repository have what
-that architecture needs?
+`mlx-community/DeepSeek-V4-Flash-0731-OptiQ-2bit`, 92.49 GB on disk, experts streamed from
+SSD. **It generated its first token on 2026-08-10** (`tools/ds4_probe.py`), after a year of
+this repository recording it as loading-but-never-generating (`HANDOFF.md` T7,
+`BASELINE.md` §4.7, `PROCESSES.md` §6).
 
-**Answer:** yes, in the role of tier 1, on the engine tier 1 already talks to, with
-no new backend. The architecture itself never crosses our line — sec 5.4 put the
-engine behind a process boundary, so mlx-optiq implements CSA, HCA, mHC and the MoE
-router and we implement none of it. What this repository had to grow was smaller and
-in a different place than "support the architecture" suggests: **the model reasons by
-default, and a reasoning verifier breaks two invariants at once, silently.** That, a
-Gate B instrument that would have flattered this model class, and a set of numbers
-that need re-deriving for 64 GB, were the real gaps. All three are closed here.
+Two results, and the second is the one that decides anything:
 
-Nothing below has met the hardware. Every number is labelled measured (by someone,
-somewhere, cited), derived (arithmetic from those, stated inputs), or unverified.
+1. **The crash is the server's, not the model's.** `optiq serve` still aborts the process on
+   the first request. The identical call chain driven on the **main thread** runs to
+   completion, so what blocked this was thread-scoped MLX streams inside mlx-lm's server —
+   §2.
+2. **As a verifier it is worse than the 122B on both axes**: prefill **48 tok/s** against
+   165, decode **2.6** against 4.05, at 2× the disk. Every reason T7 was deferred on cost
+   holds, and now it is measured rather than derived — §3.
 
----
-
-## 1. The architecture
-
-`deepseek-ai/DeepSeek-V4-Flash-0731`, released 31 July 2026, MIT, ungated.
-
-| | |
-|---|---|
-| Parameters | 284B total, 13B active |
-| Layers | 43 |
-| MoE | 1 shared + 256 routed experts per layer, intermediate 2048, **top-6** routed |
-| Routing | first three MoE layers use **hash routing**; the rest learned |
-| Attention | hybrid: 5 layers sliding-window local, 20 KV-compressed (HCA), 21 KV-compressed + top-k selection (CSA) |
-| Residuals | mHC (Manifold-Constrained Hyper-Connections), expansion 4, 20 Sinkhorn-Knopp iterations — replaces the plain residual stream |
-| Context | 1M, max output 384K |
-| Speculative | DSpark / MTP head shipped in-checkpoint |
-| Reasoning | three modes — non-think, think-high, think-max |
-
-Two notes on the numbers. The HF card totals **304B** where the architecture writeups
-say 284B; the ~20B gap is consistent with the in-checkpoint DSpark module being
-counted in one and not the other, but this is inference, not something the card says
-— it does not change anything below, because the DSpark head is not loaded for a
-verifier. And `first_k_dense_replace` — how many of the 43 layers are dense before
-the MoE stack begins — is **unverified**; §5 carries it as a ±3-layer uncertainty.
-
-### What of it reaches this repository
-
-Almost none, and that is the design working rather than a gap.
-
-`Backend` asks for three things: `render`, `generate`/`stream`, `container_hash`.
-`OptiqTier1Backend` is an httpx client. CSA's FP4 lightning indexer, HCA's 128×
-compression, the Sinkhorn-Knopp iterations in mHC, hash routing on the first three
-MoE layers — all of it lives on the far side of a socket, in mlx-optiq's vendored
-`deepseek_v4` decoder. We do not implement it, cannot get it wrong, and do not need a
-stand-in for it.
-
-What *does* reach us is everything the architecture exposes at the API: the reasoning
-mode, the DSML tool-call dialect, the token accounting, and the cost model that
-decides which tier this model can serve. That is the actual surface, and §3 audits it.
+This document owns the model's own numbers and the crash mechanism. `HANDOFF.md` T7 owns the
+decision; `PROCESSES.md` §6 owns how to bring it up.
 
 ---
 
-## 2. Role and engine
+## 1. What it is
 
-Both were open. Both are decided here, on numbers.
+From its `config.json` — 43 layers, hidden 4096, vocab 129,280, 256 routed experts with 6
+active plus 1 shared, `expert_dtype fp4`. The parts that matter here are not the MoE:
 
-### Role: tier 1, and only tier 1
-
-| Role | Verdict |
-|---|---|
-| **Tier 1 verifier** | **Chosen.** Input-dominated by construction — rerank emits an integer, review a verdict, both over 5–30k tokens. That is the one shape SSD streaming serves. |
-| Tier 0 generator | **Rejected.** Gate A needs ≥30 tok/s warm decode and carries a kill condition. Measured decode for this model streaming on a 48 GB Mac is 4.5–5 tok/s — 6× short, and the gap is SSD bandwidth, not tuning. |
-| Both tiers, one model | **Rejected.** Inherits tier 0's decode wall, and drops the repo-derived adapters, which are the product thesis. |
-| Rung 2 resident-swap occupant | **Rejected.** Rung 2 needs a model that fits resident after evicting tier 0. 92.5 GB does not fit in 64 GB at any eviction. |
-
-The role question answers itself once the asymmetry is stated: this model reads two
-orders of magnitude faster than it writes on this hardware, and tier 1 is the role
-this codebase already built for a model shaped that way.
-
-### Engine: mlx-optiq, with ds4 as the measured alternative
-
-| | mlx-optiq | ds4 (DwarfStar) |
+| Field | Value | Why it matters |
 |---|---|---|
-| DeepSeek-V4 support | `deepseek_v4` decoder since v0.4.12, vendored from mlx-lm PR #1192 | purpose-built for this model |
-| Quant for 64 GB | `DeepSeek-V4-Flash-0731-OptiQ-2bit-mixed`, 92.5 GB disk / 6.5 GB resident | `ds4f-q2` GGUF, ~87–98 GB, `--ssd-streaming-cache-experts 32GB` documented for 64 GB MacBooks |
-| **Schema-constrained output** | **`response_format` + `guided_json` since v0.2.7** | **not documented** |
-| Chat template | auto-generated, pinned against DeepSeek's own encoder | own DSML handling |
-| Integration cost | **none — it is already rung 1** | new backend |
+| `max_position_embeddings` | **1,048,576** | with `rope_scaling` YARN factor 16 over an original 65,536 |
+| `compress_ratios` | per layer, `4` or `128` | compressed attention: most layers keep a pooled state, not a full KV |
+| `sliding_window` | 128 | the local half of each layer's attention |
+| `index_topk` / `index_n_heads` | 512 / 64 | a sparse-attention indexer, its own cache |
+| `num_nextn_predict_layers` | 1 | an MTP head ships with the model (see T27 — `tier0.mtp` is parsed and never read) |
 
-mlx-optiq wins on the one criterion that is an invariant rather than a preference.
-Sec 5.2 exists because 2-bit's documented failure mode is broken JSON and invented
-schema fields; `response_format` is what makes that failure not bite, and
-`validate_or_raise` is the second line, not the first. An engine with no constrained
-decoding makes the second line the only line.
+`optiq/mlx_lm_patches/deepseek_v4.py` implements it, `make_cache()` returns
+`RotatingKVCache` and `CacheList(RotatingKVCache, PoolingCache…)` per layer, and
+`PoolingCache` is why the context ceiling is not where you would expect it (§3).
 
-It also wins on cost of being wrong: it is already the rung-1 transport, so choosing
-it is a config change, and choosing against it later is one too.
+## 2. Why `optiq serve` aborts, and why driving it directly does not
 
-**ds4 is not dismissed.** It is the engine with published fast-prefill numbers, it
-speaks all three of our wire protocols, and it independently implements exact DSML
-replay maps for KV reuse — the same idea as sec 8.5.5, arrived at separately, which
-is worth reading before Phase 2. If Gate B fails on mlx-optiq, ds4 is the first thing
-to measure, and §6 puts that in the bring-up order rather than leaving it as a
-sentiment. What ds4 would then have to answer for is the schema gap.
+The failure, unchanged since 2026-08-09 and reproduced twice on 2026-08-10:
 
----
-
-## 3. Conformance audit
-
-Every surface in this repository that could care about the model, and whether it does.
-
-| Surface | Verdict |
-|---|---|
-| `Backend` interface | **Fits.** Three methods, all satisfied by the existing httpx client. |
-| `render` / `renders_canonically` | **Not reached.** Tier 1 posts an OpenAI messages array; the engine templates it. DeepSeek ships no Jinja template (a Python `encoding_dsv4.py` reference encoder instead) and mlx-optiq generates one pinned against it. Only matters if this model ever renders locally — it does not, as tier 1. |
-| DSML tool calls | **Not reached, by design.** `build_payload` sends `{role, content}` only; a verifier is given no tools and emits none. The dialect matters for a tier-0 DeepSeek, which §2 rejected. |
-| `rerank_schema(n)` / `REVIEW` / `PLAN_CRITIQUE` | **Fit unchanged.** `additionalProperties: false` and the `maximum` bound are exactly the sec 5.2 mitigations this model needs at 2-bit. |
-| `CALL_BUDGETS` output clamp | **Broken by reasoning.** Fixed — §4.1. |
-| Greedy sampling / sec 9.3 determinism | **Broken by reasoning.** Fixed — §4.1. |
-| `measure_prefill` / Gate B | **Instrument flattered this model class.** Fixed — §4.2. |
-| `expert_cache_bytes` = 18 GB | **Holds, with headroom, and was worth re-deriving** — §5. |
-| `request_timeout_s` = 180 s | **Too tight at the Gate B floor** — §4.3. |
-| `container_hash` over 92.5 GB | **Works, cost unmeasured** — §4.4. |
-| `count_tokens` byte estimate | **Adequate.** Only a fallback for when the engine reports no `usage`; both candidate engines report it. |
-| `context_scale.real_window` | **Untouched.** It describes tier 0's window. The 1M context is not reported to the harness and must not be. |
-| `MASS_RANKED_ARCHITECTURES` | **Already correct.** `"deepseek"` is in the tuple; profiles rank DeepSeek-style by mass, not count. Only reached if this model were tier 0. |
-| Offline posture (sec 8.6) | **Holds.** `_require_loopback_endpoint` already refuses a non-loopback rung-1 endpoint; a local `optiq serve` is exactly what it is for. Weights are MIT and ungated, so the download is one-off and auditable. |
-| `SourceKind`, `RegressionReport` | **Untouched.** No new source of training data, no new score. |
-
----
-
-## 4. What was fixed
-
-### 4.1 Tier 1 must not think — and must be caught when it does
-
-The headline gap, and the one worth the most.
-
-DeepSeek-V4-Flash reasons by default. Two invariants break if it does, and **neither
-one reports anything**:
-
-1. **The sec 5.1 clamp stops bounding what it exists to bound.** `CALL_BUDGETS` caps
-   the completion at 128 tokens for a rerank, and a `<think>` block is part of the
-   completion. The model spends the budget reasoning and is cut off before the JSON
-   verdict exists. `validate_or_raise` then correctly refuses it — and every rerank
-   degrades to a failed `Verdict`. Best-of-N silently stops reranking on every turn:
-   the router's documented rung-5.5 degradation, reached by accident, reported as
-   nothing.
-2. **`temperature` stops being honoured.** DeepSeek's API documentation states that
-   thinking mode does not support `temperature`, `top_p`, `presence_penalty` or
-   `frequency_penalty`, and that setting them is *not an error*. `build_payload` asks
-   for greedy so two runs of the same rerank agree. Under thinking mode that request
-   is accepted and discarded — and the receipt goes on attesting to a greedy
-   judgement that was a sample.
-
-Failure 2 is the worse one. Failure 1 is loud enough to notice eventually, because
-verification stops working. Failure 2 produces a working system whose attestation is
-false, which is the exact shape of thing HANDOFF §5 exists to prevent.
-
-The fix has two halves, and the second is the one that holds:
-
-* **Request:** `tier1.reasoning_control` (`auto` | `deepseek_v4` | `none`) sends
-  thinking off in both documented spellings — DeepSeek's top-level `thinking` object
-  and the vLLM recipe's `chat_template_kwargs`. Two authorities document different
-  keys and the engines disagree about which they read; sending one is a coin flip.
-  `auto` recognises the family from the model name, including ds4's `ds4f-*` aliases.
-  **There is deliberately no value that turns reasoning on** — that would be a knob
-  for disabling the clamp.
-* **Response:** `refuse_reasoned_answer` rejects any verdict that arrives with
-  `reasoning_content` or non-zero `reasoning_tokens`, on **every transport and every
-  model**, ungated by the config. The request-side flag is a guess about what the
-  engine reads; this is an observation of what it did. An engine that ignored the
-  flag, a model the name match missed, an operator who configured thinking on at the
-  engine — all three land here, loudly, on the first call.
-
-That split is the point. A name-matching guess that silently did nothing for an
-unrecognised model would reintroduce failure 2 for exactly the models nobody thought
-about.
-
-### 4.2 Gate B's filler would have flattered a streamed MoE
-
-`measure_prefill` built its filler by repeating one 23-character line to the target
-length, on the reasoning that "content is irrelevant, length is the variable". For a
-dense model that is true. For this one it is not, and the direction it is wrong in is
-the dangerous one.
-
-Streamed prefill costs the **union** of experts a chunk routes to, read off SSD once
-each. Identical tokens route to identical experts — and on the first three MoE layers,
-which use hash routing, they route identically by construction. One line repeated to
-16k tokens collapses the union to a handful of experts, the engine's cache serves the
-whole sweep out of RAM, and Gate B reports a throughput no real prompt will reach.
-
-Gate B is a floor test deciding whether the in-house streaming loader is a three-week
-option or M-blocking. A floor test must not fail in the flattering direction.
-
-`prefill_filler` now emits deterministic, identifier-diverse, code-shaped text across
-four block shapes with per-block literals — the token diversity real source has. It
-is still fixed-seed, and still sized in characters so a sample labelled 16k carries
-16k. It does not claim to reproduce a real repository's expert distribution; nothing
-synthetic can. It claims only to stop understating the union, which is what the old
-filler did.
-
-`gate_b_report` now also carries the model and `expert_cache_bytes`, because streamed
-throughput is a function of how much of the expert set is already resident and a rate
-quoted without it is not reproducible (sec 10.5).
-
-### 4.3 The request timeout and the Gate B floor are in conflict
-
-Not changed — flagged, because the right value depends on a measurement not yet taken.
-
-`request_timeout_s` defaults to 180 s. Tier 1's design point is ~1,100 tok/s prefill,
-at which a 12k review is the ~25 s the verifier docstring quotes. Gate B's floor is
-200 tok/s — 5.5× slower. At the floor, a 30k-token review costs **150 s of prefill
-alone**, plus ~46 s to emit 512 tokens at ~11 tok/s: **~196 s, past the timeout.**
-
-So a `review` at the top of its documented input range times out at exactly the
-throughput Gate B calls a pass. It degrades to a failed `Verdict` rather than
-breaking anything, which is why this is a flag and not a defect — but it means a
-passing Gate B does not by itself imply reviews complete. The DeepSeek block in
-`tandem.toml.example` carries the arithmetic and a raised value.
-
-### 4.4 Hashing a 92.5 GB container
-
-`hash_artefact` BLAKE3s the whole tree on first use, memoised on a stat signature.
-Its docstring justifies this with "hashing a 20 GB container at startup is not a
-startup cost worth caching around". This container is **4.6× that**, and the read
-competes with the expert stream for the same SSD.
-
-Derived, unverified: ~60 s at ~1.5 GB/s single-threaded. Measure it on day one
-(`time tandem doctor` with the container configured). If it hurts, `blake3`'s
-`max_threads` is the lever; **not** mmap, which sec 8.4 forbids for the KV cache and
-which would be a bad habit to start here.
-
----
-
-## 5. Budget on the M4 Max, 64 GB, 1 TB
-
-Derived from the mlx-optiq quant's published 92.5 GB / 6.5 GB split.
-
-**Memory**
-
-| | GB |
-|---|---|
-| macOS floor | ~8 |
-| Tier 0, Qwen3.6-35B-A3B 4-bit | ~20 |
-| Tier 0 KV at 32k + prompt cache | ~4 |
-| DeepSeek-V4 non-routed, resident | 6.5 |
-| DeepSeek-V4 activations at ~16k context | ~4 |
-| **Available for the expert cache** | **~21** |
-
-The existing 18 GB default fits, with ~3 GB of headroom. That is a coincidence worth
-naming: 18 GB was sec 2.1's budget for the 122B, and it survives re-derivation for a
-model 2.3× its size only because this one keeps so little resident. Do not read it as
-tuned — §6 tunes it against a measurement.
-
-18 GB of an ~86 GB routed-expert set is **~21% resident**.
-
-**Disk:** 92.5 + ~20 + 20 (disk KV budget) + adapters ≈ 135 GB of 1 TB. Comfortable —
-and per HANDOFF §3, capacity here is a *performance* spec, not just a capacity one.
-
-**Bandwidth — the number Gate B actually turns on**
-
-Inputs: 86 GB streamed set; 256 experts; top-6; ~40 MoE layers (43 minus an
-unverified dense prefix, ±3); ~8 MB per expert per layer; M4 Max SSD read taken at
-5–6 GB/s, itself unverified.
-
-* **Decode:** 6 × 40 × 8 MB ≈ **2.0 GB per token**. At 5.5 GB/s and a 21% cache hit,
-  ~0.29 s/token ≈ **3.5 tok/s**. Sanity check: the independent 48 GB MLX
-  implementation with a ~31 GB cache measures 4.5–5 tok/s, and this model predicts
-  ~4.2 for it. Calibrated to within ~15%.
-* **Prefill, if the engine sweeps by chunk:** a chunk of C tokens reaches full expert
-  coverage at C ≈ 260 (coupon-collector on 256 experts drawn 6 at a time), so beyond
-  that the sweep reads the uncached ~68 GB **once**, not once per position. At
-  5.5 GB/s that is ~12.4 s per chunk:
-
-  | Prefill chunk | Derived tok/s | Gate B (≥200) |
-  |---|---|---|
-  | 2,048 | ~165 | fail |
-  | 4,096 | ~330 | pass |
-  | 8,192 | ~660 | pass |
-
-* **Prefill, if it does not:** every position pays its own experts and prefill equals
-  decode — ~3.5 tok/s, **60× under the floor**.
-
-That gap is the whole risk, and it is not a hardware question. Both failure modes are
-already on the record: the 48 GB MLX engine measures prefill and decode at parity
-(~200 ms/token) and says so plainly — "every prompt position also pays for its
-experts" — and HANDOFF §3 already notes ds4 measuring GLM-5.2 streaming prefill at
-3–5 t/s, ~100× below the bandwidth bound.
-
-**So Gate B is one question with a named knob: does the engine amortise the expert
-sweep across a prefill chunk, and is that chunk ≥ ~4k tokens?** Everything else about
-this deployment follows from the answer.
-
----
-
-## 6. Bring-up order
-
-Hardware is in hand, so this is a measurement plan. Each step can invalidate the ones
-after it.
-
-```bash
-# 0. Engine and weights. MIT, ungated, ~92.5 GB.
-pip install 'mlx-optiq>=0.4.12'
-optiq serve --model mlx-community/DeepSeek-V4-Flash-0731-OptiQ-2bit-mixed \
-            --stream-experts --port 8081
-
-# 1. Point tier 1 at it — see the DeepSeek block in tandem.toml.example.
-tandem doctor          # rung, container hash, offline posture. Time this: §4.4.
-
-# 2. Gate B. The decision. Everything else waits on it.
-tandem bench tier1
+```
+INFO:root:Prompt processing progress: 0/11
+libc++abi: terminating due to uncaught exception of type std::runtime_error:
+    There is no Stream(gpu, 1) in current thread.
 ```
 
-**If Gate B passes** (≥200 tok/s at 4k/8k/16k) — sweep the expert cache at 12/18/24 GB
-to find where the curve flattens, then re-derive §5 from the measurement rather than
-the arithmetic. Then G2 (expert cache at 0 vs max, byte-identical). G2 matters more
-here than anywhere: an LRU expert cache that changes the output makes every
-determinism claim in the receipt false, and this is the first deployment where
-placement is dynamic.
+`PYTHONFAULTHANDLER=1` turns that abort into a Python traceback, which is the whole
+diagnosis:
 
-**If Gate B fails** — measure `--prefill-chunk` first, because §5 says a 2k chunk
-fails and a 4k chunk passes on the same hardware. If the engine has no such knob, or
-the number does not move, it is not doing a batch-union sweep at all: bring up ds4
-with `--ssd-streaming-cache-experts 18GB` and run the same gate against it. If both
-fail, the in-house streaming loader is M-blocking rather than optional, which is
-exactly the schedule fact Gate B exists to surface on day three.
+```
+mlx_lm/server.py:814  _generate                 ← the SEQUENTIAL path
+mlx_lm/server.py:976  _serve_single
+mlx_lm/generate.py:716 stream_generate
+mlx_lm/generate.py:433 generate_step            ← inside `with mx.stream(generation_stream)`
+optiq/mlx_lm_patches/deepseek_v4.py:999→974→929→456
+mlx_lm/models/switch_layers.py:188
+optiq/runtime/moe_stream.py:263  __call__       ← np.array(indices) forces the first eval
+```
 
-**Regardless of Gate B:** DSpark/MTP stays **off** for tier 1. It is opt-in and
-experimental in ds4, it disables native batching there, and it buys nothing for a
-verifier writing ≤128 tokens — while threatening the byte-identity G1 and G2 assert.
-Worth noting for the record that it is the one mechanism that could rescue *decode*
-if this model were ever asked to generate: verifying K speculated tokens in one
-forward pass amortises the expert sweep across all K, which is the prefill trick
-applied to decode. That is a Phase 2 question, not this one.
+**MLX 0.32's stream scoping, measured directly rather than assumed:**
 
----
+| stream | created on | used on another thread |
+|---|---|---|
+| `mx.default_stream(device)` → `Stream(gpu, 0)` | main | **RuntimeError: there is no Stream(gpu, 0) in current thread** |
+| `mx.new_thread_local_stream(device)` | main | **works** |
+| `mx.default_stream(device)` resolved inside the thread | worker | works, and is a *different* index |
+| no stream context at all | worker | works |
 
-## 7. Open questions
+So a plain `Stream` is bound to the thread that resolved it and a `ThreadLocalStream` is
+not. That **disproves** the mechanism this repo had recorded as likely — "a thread-local
+`generation_stream` against optiq's 24-thread reader pool" — because the thread-local kind
+is precisely the portable one. `mlx_lm.generate`'s module-level
+`generation_stream = mx.new_thread_local_stream(...)` is correct and is not the fault.
 
-- **`first_k_dense_replace`.** Unverified; ±3 layers on every per-token figure in §5.
-  Read it off the served `config.json` on day one.
-- **M4 Max SSD read bandwidth under the engine's access pattern.** Taken at 5–6 GB/s.
-  8 MB random reads at queue depth are not sequential reads, and every number in §5
-  scales linearly with the real figure.
-- **Whether `tier1.model` should change default.** Left as the Qwen. Flipping it is a
-  one-line change once Gate B has an answer; flipping it before would put an
-  unmeasured model in front of every new deployment.
-- **The 284B/304B discrepancy.** Does not affect a verifier, but should be resolved
-  before anyone quotes a parameter count in a receipt or a slide.
-- **ds4's DSML replay maps.** An independent implementation of sec 8.5.5's idea,
-  including surviving restarts via an appended KTM section. Worth reading before
-  Phase 2 whether or not ds4 is ever the engine.
+A patch replacing it with `mx.default_stream()` was tried and **made it worse in the
+diagnostic direction**: the abort became `There is no Stream(gpu, 0)`, confirming the table
+above. `tools/ds4_serve.py` keeps that experiment and its result; it is not a fix.
+
+**What is still unknown:** which frame resolves the plain `Stream(gpu, 1)` that the
+original abort names. `mlx_lm/server.py:692` resolves a default stream inside `_generate`
+and hands it to the `BatchGenerator`, which is the only plain-stream capture in either
+package, and nothing in optiq calls `mx.new_stream`. The 122B avoids the whole area by
+being *batchable* — `is_batchable = all(hasattr(c, "merge") for c in
+make_prompt_cache(model))` — which routes it through `BatchGenerator` on the stream the
+server resolved for itself. DeepSeek-V4 takes the sequential path.
+
+**And none of it is needed to use the model.** `optiq.runtime.moe_stream.load_streaming` +
+`mlx_lm.generate.stream_generate` on the main thread has never failed: single-threaded, no
+server, no HTTP. That is how every number below was taken, and it is the configuration in
+which this model has ever worked at all.
+
+## 3. The numbers
+
+Streamed experts, default scales budget (so the meta streams too), `--grad-checkpoint` n/a,
+greedy, prompts built from this repository's own source. Host at 325/347 GB/s.
+
+| Input tokens | Prefill | Prefill tok/s | Decode tok/s | Peak | Pageouts |
+|---|---|---|---|---|---|
+| 102 | 12.0 s | 8.5 | 2.78 | 12.19 GB | +86 |
+| 1,607 | 33.0 s | 48.7 | 2.66 | 13.43 GB | +144 |
+| 6,267 | 126.9 s | 49.4 | 2.54 | 14.11 GB | +137 |
+| **12,776** | **266.9 s** | **47.9** | **2.57** | **14.15 GB** | +1,076 |
+
+Load is **1.1–2.2 s** with the page cache warm, resident **6.49 GB**, load peak 6.49 GB —
+all three matching `BASELINE.md` §4.7's earlier load-only measurement exactly.
+
+**Prefill is flat at ~48 tok/s from 1.6k to 12.8k**, and the 102-token row is not an
+outlier: at 8.5 tok/s it is one expert sweep amortised over almost nothing. This is the
+same batch-union shape §4.2 found on the 122B, except the per-chunk cost here rises with
+the chunk's expert union rather than staying constant — 12 s for 102 tokens against 33 s for
+1,607 in the same single chunk.
+
+**Memory is not the context constraint.** Peak moved 14.11 → 14.15 GB between 6.3k and
+12.8k tokens, i.e. **~0.04 GB per 6.5k tokens**, because `compress_ratios` keeps most layers
+on a pooled state rather than a growing KV. Against a 28.08 GiB ceiling there is room for
+far more context than time allows.
+
+**Time is the constraint, and it is severe:**
+
+| Context | Prefill at 47.9 tok/s |
+|---|---|
+| 8k | 2.8 min |
+| 16k | 4.5 min (**measured** at 12,776 tokens: 4.4 min) |
+| 32k | ~11 min |
+| 64k | ~22 min |
+| 128k | ~45 min |
+
+So the usable window is **whatever the caller will wait for**, not what the model or the
+machine supports. `tier1.request_timeout_s = 300` puts the practical ceiling at **~14k
+tokens**, and sec 11's Gate B floor of 200 tok/s is **4.2×** away — this host's own relaxed
+floor of 150 is 3.1× away. Both fail.
+
+## 4. What it does with a real task
+
+Given ~1,600 tokens of this repository's source and asked whether adding
+`prefill_step_size=512` to a `generate_step` call changes a greedy generation's *output* or
+only its speed, with `enable_thinking=false`, it answered in 55 tokens and stopped cleanly:
+
+> "The change only alters the speed of greedy generation, not its output. The
+> `prefill_step_size` parameter controls how many tokens are generated in a single forward
+> pass, which affects computational efficiency but does not change the deterministic
+> token-by-token selection logic of greedy decoding."
+
+Fluent, well-formed, correctly scoped — **and wrong on this platform**, which we know
+because it was measured the same day. `HANDOFF.md` §3.12: re-chunking one 8,190-token
+prompt moves logits by up to **2.031** and exceeds the greedy top1−top2 margin at **7 of 65
+steps**. The answer is the conventional one and would be right on most stacks; it is also
+exactly the failure mode a verifier exists to avoid, since it reasons from convention rather
+than from the code it was handed. (Its description of the parameter is also imprecise — it
+governs prompt processing, not generation.)
+
+**Thinking is on by default and the template is not where you would look for it.** This
+model ships no template in `tokenizer_config.json`; it ships `chat_template.jinja`, which
+sets `enable_thinking = true` when undefined and also honours `reasoning_effort`. With
+thinking on, 24-token samples were pure reasoning preamble — no answer at all. That is the
+request-side half `tier1.reasoning_control = "deepseek_v4"` sends, and it confirms the
+dialect choice for this model family. The response-side guard (`refuse_reasoned_answer`,
+§3.11) is what catches the case where the flag is not honoured.
+
+## 5. What this settles, and what it does not
+
+| Question | Answer |
+|---|---|
+| Does it load inside the working set? | **Yes** — 6.49 GB resident, 6.49 GB load peak, 14.15 GB peak under a 12.8k prompt |
+| Does it generate? | **Yes, single-threaded.** Never through `optiq serve` |
+| Is it a better verifier than the 122B? | **No.** 48 vs 165 tok/s prefill, 2.6 vs 4.05 decode |
+| Does it pass Gate B? | **No** — 48 tok/s against a 150 host floor and a 200 spec floor |
+| Do 2-bit routed experts produce usable verdicts? | **Partly answered, and cautionary** — §4: fluent, well-formed, and wrong on the one question we had ground truth for |
+| What does `container_hash` cost over 92.49 GB? | Still derived, ~60 s. Unmeasured |
+| Does `OPTIQ_STREAM_SCALES_BUDGET_GB=12` pay? | Still arithmetic only (~33% of decode). Now testable, since the model runs |
+| Why `Stream(gpu, 1)` specifically? | **Open** — §2 |
+
+**The rung-1 decision does not change.** Rung 3 still ships: it is tier 0 with the adapter
+stripped, costs no memory, and is 6–9× faster than any streamed verifier here. What changed
+is that "we cannot run this model" is no longer true, so the argument against it is a
+measured cost rather than an unexplained crash.
+
+## 6. Reproduction
+
+```bash
+# PROCESSES.md §3.1 first. Nothing else may hold the GPU; this holds 6.49 GB resident
+# and peaks at 14.15 GB under a 12.8k prompt.
+S=~/.cache/huggingface/hub/models--mlx-community--DeepSeek-V4-Flash-0731-OptiQ-2bit/snapshots/0edd7d3e70d562a0fc1d1574943ca4fe2b2c1e36
+
+# §3, laddered. The 16k frontier is ~4.5 min of prefill: background it.
+HF_HUB_OFFLINE=1 .venv-optiq/bin/python tools/ds4_probe.py \
+    --frontiers 0,2000,8000 --decode-tokens 24 --out var/ds4-8k.json
+
+# §4, a real verdict with thinking off
+HF_HUB_OFFLINE=1 .venv-optiq/bin/python tools/ds4_probe.py \
+    --frontiers 2000 --decode-tokens 160 --no-thinking --out var/ds4-task-nothink.json
+
+# §2, the crash. PYTHONFAULTHANDLER is what turns the abort into a traceback.
+HF_HUB_OFFLINE=1 PYTHONFAULTHANDLER=1 .venv-optiq/bin/optiq serve --stream-experts \
+    --model "$S" --host 127.0.0.1 --port 8081 --max-context 32768 --prefill-step-size 8192 &
+curl -s localhost:8081/v1/chat/completions -H 'Content-Type: application/json' \
+    -d '{"model":"ds4","messages":[{"role":"user","content":"Say ok"}],"max_tokens":4}'
+# → the engine aborts. It does not need killing; it is gone.
+
+# §2's stream table, no weights, seconds
+.venv-optiq/bin/python tools/ds4_serve.py --help    # the experiment and why it is not a fix
+```

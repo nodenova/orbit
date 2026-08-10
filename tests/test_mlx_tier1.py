@@ -318,9 +318,10 @@ def test_gate_b_reads_the_worst_sample_not_the_average():
 def test_gate_b_relaxed_threshold_passes_but_does_not_claim_the_spec():
     """A host judged against its own floor must not report a met sec-11 Gate B.
 
-    This host is ~40x short: the streamed 122B reads 1.39 GB of experts per decoded
-    token against a measured 6.93 GB/s SSD. Relaxing the floor is what lets the rung
-    run at all; `meets_spec` is what stops the result being quoted as a pass.
+    This host measures 164.7 tok/s of streamed prefill against sec 11's 200, so the
+    relaxed floor is what lets the rung run at all and `meets_spec` is what stops the
+    result being quoted as a pass. The sample below is deliberately far worse than the
+    host's real rate: what is under test is the two-verdict shape, not the hardware.
     """
     backend = OptiqTier1Backend("http://127.0.0.1:9999/v1", model="m")
     backend.prefill_samples = [PrefillSample(16_000, 1, prefill_s=615.4, total_s=615.4)]
@@ -456,3 +457,88 @@ async def test_a_remote_container_is_not_attested_to():
         assert backend.container_hash() is None
     finally:
         await backend.close()
+
+
+def test_gate_b_measures_rung_1_without_building_tier_0(tmp_path, monkeypatch, capsys):
+    """`tandem bench tier1` must not load the resident model.
+
+    Rung 1 reaches the engine over a socket, so tier 0 is not a dependency of the
+    measurement — and on the 36 GB baseline host, building one is 23.0 GiB against
+    25.9 GB of measured headroom, which is Gate B failing to run rather than Gate B
+    reporting red. The rungs that do serve from tier 0 carry no prefill instrument,
+    so this command can only decline for them; it declines without loading.
+    """
+    import argparse
+    import json
+
+    import tandem.backends
+    from tandem.cli import cmd_bench
+
+    config = tmp_path / "rung3.toml"
+    config.write_text(
+        'backend = "mlx"\n\n[tier1]\nenabled = true\nrung = "second_opinion"\n',
+        encoding="utf-8",
+    )
+
+    def refuse(_cfg):
+        raise AssertionError("Gate B built tier 0")
+
+    monkeypatch.setattr(tandem.backends, "build_tier0", refuse)
+
+    code = cmd_bench(argparse.Namespace(config=str(config), which="tier1"))
+
+    assert code == 1
+    assert json.loads(capsys.readouterr().out)["rung"] == "second_opinion"
+
+
+def test_the_reasoning_refusal_reads_the_spelling_mlx_optiq_emits():
+    """The guard is only as unconditional as the narrowest key it reads.
+
+    mlx-optiq 0.4.18 spells this `reasoning` and sends no
+    `completion_tokens_details`. Reading `reasoning_content` alone passed a
+    thinking model's empty `content` through as a verdict — measured against the
+    live 122B on 2026-08-10, and the reason `resolve_reasoning_control`'s "fails
+    loudly on the first call" claim was false for the engine this repo runs.
+    """
+    from tandem.backends.tier1_call import refuse_reasoned_answer
+
+    body = {
+        "choices": [
+            {"message": {"role": "assistant", "reasoning": "Thinking Process:"}}
+        ],
+        "usage": {"prompt_tokens": 17, "completion_tokens": 32},
+    }
+    with pytest.raises(Tier1Unavailable, match="reasoning trace"):
+        refuse_reasoned_answer(body["choices"][0], body)
+
+
+@pytest.mark.asyncio
+async def test_a_model_auto_does_not_recognise_fails_loudly_not_emptily():
+    """The whole safety argument for guessing from the model name.
+
+    `auto` does not claim Qwen3, so the 122B goes out with thinking on and comes
+    back reasoning — the live engine's actual behaviour on 2026-08-10. That must
+    reach the caller as a failure, not as `text=""` that then fails schema
+    validation somewhere with no cause attached.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": []})
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"role": "assistant", "reasoning": "Thinking Process:"}}
+                ],
+                "usage": {"prompt_tokens": 17, "completion_tokens": 32},
+            },
+        )
+
+    backend, original = _endpoint(handler)
+    try:
+        with pytest.raises(Tier1Unavailable, match="reasoning trace"):
+            await backend.generate(_rerank_req())
+    finally:
+        await backend.close()
+        await original.aclose()

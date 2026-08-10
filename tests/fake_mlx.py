@@ -34,6 +34,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import struct
 import sys
 import types
 from collections.abc import Iterator
@@ -48,11 +49,22 @@ class Array:
     Deliberately not numpy: the point is to model MLX's *interface*, and a
     dependency that broadcasts more eagerly than MLX does would hide shape bugs
     rather than surface them. Every operation here checks its shapes.
+
+    A second, flat *byte* mode models what `mx.array(buffer, dtype=mx.uint8)`
+    returns, which is the form sec 8.4's KV codec reads a serialised cache back
+    through. Only `mx.view` accepts one.
     """
 
-    __slots__ = ("dtype", "rows")
+    __slots__ = ("dtype", "raw", "rows")
 
-    def __init__(self, rows: list[list[float]], dtype: str = "float32"):
+    def __init__(self, rows: Any, dtype: str = "float32"):
+        if isinstance(rows, (bytes, bytearray, memoryview)):
+            if dtype != "uint8":
+                raise TypeError("a buffer only builds a uint8 array")
+            self.raw = bytes(rows)
+            self.rows = []
+            self.dtype = "uint8"
+            return
         if not rows or not all(isinstance(r, (list, tuple)) for r in rows):
             raise ValueError("Array takes a non-empty list of rows")
         width = len(rows[0])
@@ -60,10 +72,30 @@ class Array:
             raise ValueError("ragged rows")
         self.rows = [[float(v) for v in r] for r in rows]
         self.dtype = dtype
+        self.raw = b""
 
     @property
-    def shape(self) -> tuple[int, int]:
+    def shape(self) -> tuple[int, ...]:
+        if self.dtype == "uint8":
+            return (len(self.raw),)
         return len(self.rows), len(self.rows[0])
+
+    @property
+    def nbytes(self) -> int:
+        if self.dtype == "uint8":
+            return len(self.raw)
+        return len(self.rows) * len(self.rows[0]) * 4
+
+    def reshape(self, shape: Any) -> Array:
+        dims = tuple(int(v) for v in shape)
+        if len(dims) != 2:
+            raise ValueError(f"fake arrays are 2-D; cannot reshape to {dims}")
+        flat = [v for row in self.rows for v in row]
+        if dims[0] * dims[1] != len(flat):
+            raise ValueError(f"cannot reshape {len(flat)} values into {dims}")
+        return Array(
+            [flat[i * dims[1] : (i + 1) * dims[1]] for i in range(dims[0])], self.dtype
+        )
 
     def astype(self, dtype: str) -> Array:
         return Array(self.rows, dtype)
@@ -312,11 +344,184 @@ class FakeTokenizer:
             parts.append("<|im_start|>assistant\n")
         return "".join(parts)
 
-    def encode(self, text: str) -> list[int]:
+    def __len__(self) -> int:
+        """One past the largest id `encode` can produce, as a real tokenizer reports.
+
+        Honest rather than convenient: `_token_id` hashes an unknown piece into a
+        24-bit space, so this is ~16.8 M and every logit row in the suite is narrower.
+        That means `logit_width_bound` never licenses the F1 fast path here, which is
+        the correct outcome — a fake reporting a small length would let the backend
+        skip its bounds guard while still emitting ids far outside the row.
+        """
+        return _ID_LIMIT
+
+    def encode(self, text: str, add_special_tokens: bool = True) -> list[int]:
         """Whitespace-ish tokens. Never zero — a zero input count would report an
-        infinite prefill rate, and tier 0's usage feeds the latency suite."""
-        pieces = text.split()
-        return [len(p) for p in pieces] or [1]
+        infinite prefill rate, and tier 0's usage feeds the latency suite.
+
+        One id per whitespace-separated piece, but the id is a digest of the piece
+        rather than its length: sec 8.4 restores a KV cache by comparing token ids,
+        so a tokenizer that mapped "cat" and "dog" to the same id would let a state
+        built for one prompt be accepted for another and the test could not tell.
+
+        `add_special_tokens` is accepted and adds nothing, because this tokenizer
+        has no BOS to add — which is also why it reports none.
+        """
+        return [_token_id(p) for p in text.split()] or [1]
+
+
+# --- prompt cache (sec 8.4) -------------------------------------------------
+
+
+def _f32(value: float) -> float:
+    """`value` as it survives a float32 round trip.
+
+    The KV codec stores raw bytes, so a cache restored from disk holds exactly
+    float32. Rows are folded to float32 as they are appended, which is what lets a
+    warm start and a cold start reach byte-identical cache contents — the property
+    the restore path is worth having only if it holds.
+    """
+    return float(struct.unpack("<f", struct.pack("<f", value))[0])
+
+
+class KVCache:
+    """Modelled on `mlx_lm.models.cache.KVCache` in the parts sec 8.4 touches.
+
+    One row per token rather than the real one's `[batch, heads, seq, dim]`, and
+    the sequence axis is 0 instead of 2. What is reproduced exactly is the
+    contract the codec depends on: `state` slices to `offset` so a trimmed cache
+    serialises to its trimmed length, `from_state` rebuilds the offset from the
+    array it is handed, and `trim` moves the offset without touching storage.
+    """
+
+    def __init__(self) -> None:
+        self.keys: list[list[float]] = []
+        self.values: list[list[float]] = []
+        self.offset = 0
+
+    def append(self, token: int, dim: int) -> None:
+        # Rows past the offset are what a trim left behind. The real cache
+        # overwrites them in place; dropping them here is the same thing, and
+        # keeping the append O(1) is what makes a 2000-token prompt testable.
+        del self.keys[self.offset :]
+        del self.values[self.offset :]
+        row = [_f32(v) for v in _digest_floats(f"kv:{token}", dim)]
+        self.keys.append(row)
+        self.values.append(row[::-1])
+        self.offset += 1
+
+    def size(self) -> int:
+        return self.offset
+
+    def is_trimmable(self) -> bool:
+        return True
+
+    def trim(self, n: int) -> int:
+        n = min(self.offset, n)
+        self.offset -= n
+        return n
+
+    @property
+    def state(self) -> tuple[Array, Array]:
+        # An unfed cache raises rather than returning something empty, which is
+        # what the real one does when it reaches `.shape` on a None it never
+        # allocated. The codec reads that as "nothing to store".
+        if not self.offset:
+            raise AttributeError("cache has no state: nothing has been fed to it")
+        return Array(self.keys[: self.offset]), Array(self.values[: self.offset])
+
+    @state.setter
+    def state(self, value: Any) -> None:
+        keys, values = value
+        self.keys = [list(r) for r in keys.rows]
+        self.values = [list(r) for r in values.rows]
+        self.offset = len(self.keys)
+
+    @property
+    def meta_state(self) -> str:
+        return ""
+
+    @meta_state.setter
+    def meta_state(self, value: Any) -> None:
+        if value:
+            raise ValueError("KVCache has no meta_state but one was set")
+
+    @classmethod
+    def from_state(cls, state: Any, meta_state: Any) -> KVCache:
+        obj = cls.__new__(cls)
+        obj.state = state
+        obj.meta_state = meta_state
+        return obj
+
+
+class RecurrentCache(KVCache):
+    """A linear-attention layer's state: fixed size, and **not rewindable**.
+
+    Modelled on `mlx_lm.models.cache.ArraysCache`, which is what the baseline
+    container builds for 30 of its 40 layers — `full_attention_interval = 4` in
+    its `text_config`. Two inherited properties are the ones that matter: `size()`
+    reports 0, because a recurrent state has no token count, and `is_trimmable()`
+    is False, because a state folded over N tokens cannot be unfolded back to K.
+
+    It is here because without it every cache this file could build was
+    trimmable, and sec 8.4's export would have refused on the only container it
+    ships against while the suite stayed green.
+    """
+
+    def size(self) -> int:
+        return 0
+
+    def is_trimmable(self) -> bool:
+        return False
+
+    def trim(self, n: int) -> int:
+        return 0
+
+
+def make_prompt_cache(model: FakeModel, max_kv_size: int | None = None) -> list[Any]:
+    """The cache the model asks for, one entry per layer.
+
+    Hybrid by default and in the container's own proportion, so the path that
+    runs on hardware is the path the tests take. A test that wants the
+    all-attention arrangement sets `cache_kinds` on the model.
+    """
+    kinds = getattr(model, "cache_kinds", None) or ("recurrent", "kv")
+    return [
+        KVCache() if kinds[i % len(kinds)] == "kv" else RecurrentCache()
+        for i in range(len(model.layers))
+    ]
+
+
+def can_trim_prompt_cache(cache: list[Any]) -> bool:
+    return all(c.is_trimmable() for c in cache)
+
+
+def trim_prompt_cache(cache: list[Any], num_tokens: int) -> int:
+    if not can_trim_prompt_cache(cache) or not cache:
+        return 0
+    # Copied from mlx_lm verbatim, and `next()` is not the same function: the list
+    # comprehension trims *every* cache and reports the first one's count, while a
+    # generator would trim only the first and leave the rest at their old offset.
+    return [c.trim(num_tokens) for c in cache][0]  # noqa: RUF015 - trims all, not the first
+
+
+def _feed(cache: list[KVCache], token: int, dim: int) -> None:
+    for entry in cache:
+        entry.append(token, dim)
+
+
+def _cache_seed(cache: list[KVCache]) -> str:
+    """The whole cached sequence, as a string to derive a hidden state from.
+
+    Generation is seeded from this rather than from the tokens fed on this call,
+    so a turn that restores a prefix and prefills the rest lands on the same
+    hidden state as one that prefilled all of it. A fake that seeded from the fed
+    tokens alone would make every warm start produce different text from its cold
+    equivalent, and the test that matters here could never be written.
+    """
+    head = cache[0]
+    body = repr(head.keys[: head.offset])
+    return hashlib.blake2b(body.encode(), digest_size=16).hexdigest()
 
 
 # --- generation -------------------------------------------------------------
@@ -339,6 +544,32 @@ _VOCAB = (
 )
 
 _SEED = 0
+_VOCAB_IDS = {word: i for i, word in enumerate(_VOCAB)}
+_HASH_BYTES = 3
+# One past the largest id `_token_id` can return. Derived from the same two values
+# it is built from rather than written out, because `FakeTokenizer.__len__` returns
+# this and under-reporting it is the dangerous direction: a backend that trusts the
+# length skips its out-of-range guard (sec 8.5.1, F1) and scatters outside the row.
+_ID_LIMIT = len(_VOCAB) + 2 ** (8 * _HASH_BYTES)
+
+
+def _token_id(piece: str) -> int:
+    """The id this tokenizer gives a piece of text.
+
+    A generated word and the same word read back out of a rendered conversation
+    have to get the *same* id, because sec 8.4 restores a cache by comparing the
+    ids it holds against the ids of the next prompt — and turn N+1 carries turn
+    N's reply as text. A tokenizer whose `encode` disagreed with what generation
+    sampled would refuse every continuation, which is the one case the cache is
+    for. Real tokenizers round-trip; this one has to as well.
+    """
+    known = _VOCAB_IDS.get(piece)
+    if known is not None:
+        return known
+    # Past the vocabulary, so a word the model can emit is never collided with.
+    return len(_VOCAB) + int.from_bytes(
+        hashlib.blake2b(piece.encode(), digest_size=_HASH_BYTES).digest(), "big"
+    )
 
 
 class Step:
@@ -392,10 +623,11 @@ def stream_generate(
     model: FakeModel,
     tokenizer: FakeTokenizer,
     *,
-    prompt: str,
+    prompt: str | list[int],
     max_tokens: int = 256,
     sampler: Any = None,
     logits_processors: list[Any] | None = None,
+    prompt_cache: list[Any] | None = None,
     **unexpected: Any,
 ) -> Iterator[Step]:
     """Modelled on `mlx_lm.stream_generate`, including its processor contract.
@@ -410,11 +642,22 @@ def stream_generate(
     sampled so far and the logits for the next one, and returns the logits to
     sample from. The prompt's tokens are deliberately absent — the real one prefills
     all but the last token without invoking processors.
+
+    `prompt_cache` is likewise used rather than accepted, and used the way
+    `generate_step` uses it: whatever it already holds is *not* re-prefilled, the
+    tokens passed in are appended to it, and so are the tokens generated. It is the
+    caller's job to pass only the suffix the cache does not cover — the real one
+    does not check, and a fake that recovered from a bad offset would hide the sec
+    8.4 restore returning fluent text against the wrong prefix.
     """
     if unexpected:
         raise TypeError(f"stream_generate got unexpected kwargs: {sorted(unexpected)}")
-    if not isinstance(prompt, str):
-        raise TypeError("fake stream_generate takes a string prompt")
+    if isinstance(prompt, str):
+        ids = tokenizer.encode(prompt)
+    elif isinstance(prompt, (list, tuple)):
+        ids = [int(t) for t in prompt]
+    else:
+        raise TypeError("stream_generate takes a string or a list of token ids")
     if sampler is None:
         raise TypeError("stream_generate needs a sampler")
     if model is None or tokenizer is None:
@@ -422,8 +665,20 @@ def stream_generate(
     for processor in logits_processors or ():
         if not callable(processor):
             raise TypeError("each logits processor must be callable(tokens, logits)")
+    if not ids:
+        # `generate_step` raises on this rather than generating from the cache
+        # alone, which is why the backend always leaves itself a token to feed.
+        raise ValueError("Either input_embeddings or prompt (or both) must be provided")
+    if prompt_cache is None:
+        prompt_cache = make_prompt_cache(model)
+    if not isinstance(prompt_cache, list) or not all(
+        isinstance(c, KVCache) for c in prompt_cache
+    ):
+        raise TypeError("prompt_cache must be the list make_prompt_cache returns")
 
-    x = Array([_digest_floats(prompt, model.dim)])
+    for token_id in ids:
+        _feed(prompt_cache, token_id, model.dim)
+    x = Array([_digest_floats(_cache_seed(prompt_cache), model.dim)])
     sampled: list[int] = []
     for _ in range(max_tokens):
         logits = model(x)
@@ -436,6 +691,7 @@ def stream_generate(
         if word == "<eos>":
             return
         sampled.append(index)
+        _feed(prompt_cache, index, model.dim)
         yield Step(text=word + " ", token=index)
         x = _normalise(logits + Array([_digest_floats(word, model.dim)]))
 
@@ -457,6 +713,32 @@ def _mx_load(path: str) -> dict[str, Array]:
     with open(path, encoding="utf-8") as fh:
         raw = json.load(fh)
     return {key: Array(rows) for key, rows in raw.items()}
+
+
+def _mx_view(a: Array, dtype: str) -> Any:
+    """Reinterpret an array's bits, modelled on `mx.view`.
+
+    The byte side is a plain `bytes` rather than a uint8 `Array`, which is the one
+    place this file's representation departs from MLX's. It has to: what the KV
+    codec does with the result is `bytes(memoryview(...))`, and on Python 3.11 a
+    pure-Python object cannot offer a buffer at all (PEP 688 is 3.12). `bytes`
+    supports exactly the surface the codec uses of a real uint8 array and nothing
+    wider, so the direction of the departure is toward stricter, not looser.
+    """
+    if not isinstance(a, Array):
+        raise TypeError("view takes an array")
+    if dtype == "uint8":
+        if a.dtype == "uint8":
+            return a.raw
+        flat = [v for row in a.rows for v in row]
+        return struct.pack(f"<{len(flat)}f", *flat)
+    if a.dtype != "uint8":
+        raise TypeError(f"fake view only reinterprets uint8 bytes, not {a.dtype}")
+    if dtype != "float32":
+        raise TypeError(f"fake arrays are float32; cannot view bytes as {dtype}")
+    if len(a.raw) % 4:
+        raise ValueError("byte count is not a whole number of float32 values")
+    return Array([list(struct.unpack(f"<{len(a.raw) // 4}f", a.raw))], dtype)
 
 
 def _mx_eval(*args: Any) -> None:
@@ -481,6 +763,8 @@ def _build_modules() -> dict[str, types.ModuleType]:
     nn = types.ModuleType("mlx.nn")
     mlx_lm = types.ModuleType("mlx_lm")
     sample_utils = types.ModuleType("mlx_lm.sample_utils")
+    models = types.ModuleType("mlx_lm.models")
+    cache_mod = types.ModuleType("mlx_lm.models.cache")
 
     random = types.SimpleNamespace(seed=_seed)
     core.load = _mx_load
@@ -488,6 +772,9 @@ def _build_modules() -> dict[str, types.ModuleType]:
     core.clear_cache = _mx_clear_cache
     core.random = random
     core.array = Array
+    core.view = _mx_view
+    core.uint8 = "uint8"
+    core.float32 = "float32"
 
     nn.Module = Module
     nn.Linear = Linear
@@ -498,7 +785,14 @@ def _build_modules() -> dict[str, types.ModuleType]:
     mlx_lm.load = load
     mlx_lm.stream_generate = stream_generate
     mlx_lm.sample_utils = sample_utils
+    mlx_lm.models = models
+    models.cache = cache_mod
     sample_utils.make_sampler = make_sampler
+    cache_mod.KVCache = KVCache
+    cache_mod.RecurrentCache = RecurrentCache
+    cache_mod.make_prompt_cache = make_prompt_cache
+    cache_mod.can_trim_prompt_cache = can_trim_prompt_cache
+    cache_mod.trim_prompt_cache = trim_prompt_cache
 
     return {
         "mlx": mlx,
@@ -506,6 +800,8 @@ def _build_modules() -> dict[str, types.ModuleType]:
         "mlx.nn": nn,
         "mlx_lm": mlx_lm,
         "mlx_lm.sample_utils": sample_utils,
+        "mlx_lm.models": models,
+        "mlx_lm.models.cache": cache_mod,
     }
 
 

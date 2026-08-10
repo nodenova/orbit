@@ -35,8 +35,9 @@ from pathlib import Path
 from typing import Any, cast
 
 from tandem.attest.hashing import hash_artefact
+from tandem.backends import mlx_kv
 from tandem.backends.base import Backend, BackendUnavailable, Delta, ToolCallRenderer
-from tandem.types import GenRequest, GenResult, StopReason, Usage
+from tandem.types import GenRequest, GenResult, KVState, StopReason, Usage
 
 # The active adapter for the current request. Default None = base model.
 ACTIVE_ADAPTER: contextvars.ContextVar[str | None] = contextvars.ContextVar(
@@ -107,7 +108,9 @@ def build_multi_adapter_linear(base_cls: Any, mx: Any, nn: Any) -> Any:
     return MultiAdapterLinear
 
 
-def build_logits_processor(token_filter: Any, mx: Any) -> Any:
+def build_logits_processor(
+    token_filter: Any, mx: Any, id_bound: int | None = None
+) -> Any:
     """Adapt a `TokenFilter` to `mlx_lm`'s `logits_processors` protocol (sec 8.5.1).
 
     `mlx_lm` calls `processor(tokens, logits)` with every token sampled so far and
@@ -128,40 +131,72 @@ def build_logits_processor(token_filter: Any, mx: Any) -> Any:
       makes the whole row `-inf`, and the log-softmax downstream turns that into
       NaN, which samples a garbage token instead of raising. Unconstrained output
       that repair then handles (sec 8.5.3) is a far better failure.
-    * **Ids at or past the logit width are dropped.** `len(tokenizer)` counts the
-      vocabulary; the model's output dimension is often padded to a different one.
-      Scattering an out-of-range id writes outside the row.
+    * **Ids at or past the logit width are dropped.** The tokenizer counts the
+      vocabulary; the model's output dimension is often padded to a different one,
+      and scattering an out-of-range id writes outside the row. `id_bound` is
+      `constrain.logit_width_bound` — one past the largest id the filter can name —
+      and when the row is at least that wide **no id can be out of range, so the
+      filter is provably dead and is skipped**. The guard did not go away; it stopped
+      running once per token to re-decide a fixed property of (tokenizer, model).
+      That is F1, and it was **7.39 ms/token** — `int()` on values LMFE already
+      returns as `int`. Passing no bound keeps the old per-token behaviour, because
+      a wrong `safe_width` scatters outside the row and that must be derived from the
+      model's own logits rather than assumed.
 
-    **There is deliberately no mask cache here, and it was tried.** Profiled over a
-    real tool call against the 248k vocabulary the per-token split is: LMFE 3.30 ms,
-    building the id list 1.77 ms, `mx.array` 0.34 ms, scatter 0.59 ms. The middle
-    terms look cacheable — three consecutive steps inside a JSON string share one
-    parser state, so LMFE hands back the same list object and each rebuild costs
-    ~11 ms. Caching on `id()` (pinning the list so the address cannot be recycled)
-    measured **27.1 tok/s against 27.6 without**, i.e. nothing: on a 20-33 token
-    call those steps are ~3% of the work. It bought an identity-keyed cache and a
-    lifetime hazard for noise, so it is not here. Re-measure before adding it back;
-    a call with a long string argument is where it would finally pay.
+    **The mask cache is keyed on content, and the identity-keyed one it replaces
+    could not have hit.** Caching on `id()` — pinning the list so the address cannot
+    be recycled — measured **27.1 tok/s against 27.6 without**, i.e. nothing. The
+    reason was never that the saving is small: lm-format-enforcer >= 0.11 builds a
+    fresh list on every call, so an identity key matched **0 of 42** consecutive
+    positions. It was incapable of hitting. Content is identical 40% of the time,
+    ~85% within a string run, and compares in 0.12 ms against 1.48 ms to rebuild the
+    array — F2. One slot, because the access pattern is a run rather than a working
+    set, and because the processor is per-request so the slot dies with the turn.
 
-    The cost that does matter is not in this function. Constrained turns run at
-    ~27 tok/s against ~65 unconstrained, and only ~6 ms of that 21 ms/token gap is
-    above — the rest is the sync `tokens.tolist()` forces, which serialises the
-    decode loop MLX otherwise pipelines. That sync is not removable: the mask
-    depends on the token just sampled, so any Python-side constrained decode pays
-    it. 2.4x on tool-bearing turns only, against turns that previously emitted
-    prose 62% of the time, is the trade this makes.
+    **`prev is not ids` is not redundant with `prev == ids`.** It is what makes the
+    key sound if LMFE ever returns the *same* list mutated in place: identity
+    equality would compare the new contents against themselves, report a hit, and
+    reuse a mask built from the old ones — a silently wrong constraint, which is the
+    one failure mode sec 8.5.1 cannot tolerate. Today it costs nothing (0 of 42
+    shared an identity) and it fails toward a rebuild.
+
+    **The 21 ms/token gap is not where this docstring used to put it.** It blamed
+    the sync `tokens.tolist()` forces. The sync is unavoidable — the mask depends on
+    the token just sampled — but it is *free*: a synthetic decode loop that syncs
+    and does no other work runs at 13.24 ms/token against 13.12 unconstrained. What
+    costs is host work serialised against an idle GPU, and the per-token cost is
+    bimodal: ~1-4 ms in the JSON skeleton, ~10-13 ms inside a string, ~26-29 ms on
+    the transition into one. F1 and F2 remove the two largest host-side terms;
+    `docs/CONSTRAINED_DECODE.md` §5 has the measurements, and F4 — restructuring the
+    decode loop so what remains overlaps the forward pass — is deliberately not done
+    here, because it means owning the loop `mlx_lm.stream_generate` currently owns.
     """
+    cached: tuple[Any, int, Any, Any] | None = None
 
     def processor(tokens: Any, logits: Any) -> Any:
+        nonlocal cached
         allowed = token_filter(tokens.tolist())
         if not allowed:
             return logits
         vocab = logits.shape[-1]
-        ids = [int(t) for t in allowed if 0 <= int(t) < vocab]
-        if not ids:
-            return logits
+        if id_bound is not None and vocab >= id_bound:
+            ids = allowed
+        else:
+            ids = [int(t) for t in allowed if 0 <= int(t) < vocab]
+            if not ids:
+                return logits
+        if cached is not None:
+            prev_ids, prev_vocab, prev_dtype, prev_mask = cached
+            if (
+                prev_vocab == vocab
+                and prev_dtype == logits.dtype
+                and prev_ids is not ids
+                and prev_ids == ids
+            ):
+                return logits + prev_mask
         mask = mx.full((vocab,), -float("inf"), dtype=logits.dtype)
         mask[mx.array(ids, dtype=mx.int32)] = 0.0
+        cached = (ids, vocab, logits.dtype, mask)
         return logits + mask
 
     return processor
@@ -180,6 +215,7 @@ class MLXTier0Backend(Backend):
         adapter_dir: str | None = None,
         mtp: bool = True,
         max_kv_tokens: int = 32_768,
+        max_state_bytes: int = 1 << 30,
     ):
         self.mx, self.nn = _require_mlx()
         try:
@@ -190,6 +226,7 @@ class MLXTier0Backend(Backend):
         self.model_path = model_path
         self.mtp = mtp
         self.max_kv_tokens = max_kv_tokens
+        self.max_state_bytes = max_state_bytes
         self.model, self.tokenizer = load(model_path)
         self._container_hash = hash_artefact(model_path)
         self._adapters: dict[str, AdapterSpec] = {}
@@ -317,19 +354,111 @@ class MLXTier0Backend(Backend):
     # --- KV state (sec 8.4) -------------------------------------------------
 
     def supports_state(self) -> bool:
-        """Not yet. Deliberately stated rather than inherited.
+        return True
 
-        The disk KV cache is wired end to end and tested against the mock; what is
-        missing is serialising an `mlx_lm` prompt cache to bytes and back. Until
-        that lands, this backend prefills cold after a restart — slow, but correct.
+    def export_state(
+        self, req: GenRequest, rendered_prefix: str, result: GenResult | None
+    ) -> KVState | None:
+        """Snapshot this turn's KV cache, or None.
 
-        Whoever implements it: `export_state` must return a state whose `blob`
-        deserialises to a cache covering *exactly* `rendered_prefix`, and
-        `state_key` must keep including the container and adapter. A state restored
-        under a different adapter produces fluent output from the wrong model and a
-        receipt attesting to the adapter that did not produce it.
+        The cache arrives on the result (`GenResult.kv_handle`) and is consumed
+        here, because this is the only place that knows how far back the gateway
+        wants: it keys the entry on a chunk-aligned *byte* prefix, and the cache at
+        this point also holds everything the turn generated.
+
+        **Coverage is counted in tokens, never in the bytes it is keyed by.** The
+        chunk boundary lands mid-token, so `rendered_prefix` re-encodes to
+        something that agrees with the turn's own ids only up to that boundary. It
+        is used to confirm the cache is a superset of what the key names; what the
+        state *carries* is its own token ids, and `_warm_start` re-checks those
+        against the next prompt before restoring anything.
+
+        Two shapes of cache, because the baseline container is the second one:
+
+        * **Trimmable** (`KVCache`, `RotatingKVCache`, `QuantizedKVCache`) — rewind
+          to the keyed prefix. Best case: the state then serves any conversation
+          sharing that prefix, not only this one's continuation.
+        * **Not trimmable.** 30 of this container's 40 layers are linear attention
+          carrying a recurrent state, and a recurrent state cannot be rewound —
+          `ArraysCache.is_trimmable()` is False, so `can_trim_prompt_cache` is
+          False for the whole hybrid. Refusing here would have made this feature a
+          no-op on the only model it ships against, invisibly, because every cache
+          the off-target fake could build was trimmable. So the state instead
+          covers everything the cache holds, prompt *and* reply, which is a prefix
+          of the next turn's prompt whenever the reply re-renders to the bytes it
+          was sampled as — the same assumption sec 8.5.5's replay map already
+          makes, and `_warm_start` refuses when it does not hold.
+
+        Every refusal below costs one cold prefill, which is the failure this path
+        exists to make rarer, never a wrong answer.
         """
-        return False
+        handle = getattr(result, "kv_handle", None) if result is not None else None
+        if result is not None:
+            result.kv_handle = None
+        if not isinstance(handle, _TurnCache):
+            return None
+
+        from mlx_lm.models import cache as kv
+
+        held = [*handle.tokens, *handle.generated]
+        keyed = _common_prefix(self._encode(rendered_prefix), held)
+        if keyed == 0:
+            return None
+        length = mlx_kv.cache_length(handle.cache)
+        if length < keyed:
+            return None
+
+        covered = length
+        if length > keyed and kv.can_trim_prompt_cache(handle.cache):
+            if kv.trim_prompt_cache(handle.cache, length - keyed) != length - keyed:
+                return None
+            covered = keyed
+        elif length != len(held):
+            # Nothing was rewound, so the state has to name every token in the
+            # cache — and here it cannot. A `stream_generate` that fed a token it
+            # never yielded (or yielded one twice) leaves the tail unaccountable,
+            # and a state claiming a length it does not hold restores the model
+            # one token out of step with its own prompt.
+            return None
+
+        blob = mlx_kv.dumps(handle.cache, self.mx, max_bytes=self.max_state_bytes)
+        if blob is None:
+            return None
+        return KVState(
+            key=self.state_key(req.adapter),
+            prefix_bytes=len(rendered_prefix.encode("utf-8")),
+            token_ids=tuple(held[:covered]),
+            blob=blob,
+        )
+
+    def _warm_start(
+        self, req: GenRequest, tokens: list[int], kv: Any
+    ) -> tuple[Any, int]:
+        """The cache to decode against, and how many prompt tokens it already holds.
+
+        A restored state is used only when its ids are a genuine prefix of *this*
+        prompt's ids. The identity key is checked first and answers "same model,
+        same adapter"; it says nothing about the bytes, and a state whose tokens
+        have diverged would be prefilled as if it were this prompt.
+
+        One token is always left to feed: `generate_step` rejects an empty prompt,
+        so a repeat of a turn already cached in full restores all but its last
+        token and prefills that.
+        """
+        state = req.warm_state
+        if state is not None and state.blob and self.accepts_state(state, req.adapter):
+            ids = list(state.token_ids)
+            keep = min(len(ids), len(tokens) - 1)
+            if keep > 0 and ids[:keep] == tokens[:keep]:
+                cache = mlx_kv.loads(state.blob, self.mx, kv)
+                if cache is not None:
+                    length = mlx_kv.cache_length(cache)
+                    if length == keep:
+                        return cache, keep
+                    if length > keep and kv.can_trim_prompt_cache(cache):
+                        kv.trim_prompt_cache(cache, length - keep)
+                        return cache, keep
+        return kv.make_prompt_cache(self.model), 0
 
     def _wire_base(self) -> None:
         with contextlib.suppress(Exception):  # pragma: no cover - best effort
@@ -411,7 +540,19 @@ class MLXTier0Backend(Backend):
         return cast(str, rendered)
 
     def count_tokens(self, text: str) -> int:
-        return len(self.tokenizer.encode(text))
+        return len(self._encode(text))
+
+    def _encode(self, text: str) -> list[int]:
+        """Token ids for `text`, exactly as `stream_generate` would produce them.
+
+        The special-token decision is copied from `mlx_lm.stream_generate`'s string
+        branch rather than left to it, because tier 0 now hands it *ids*: a KV state
+        covers a count of tokens, and one extra BOS on either side would shift every
+        id in the prompt against the state stored for it (sec 8.4).
+        """
+        bos = getattr(self.tokenizer, "bos_token", None)
+        add_special = bos is None or not text.startswith(bos)
+        return list(self.tokenizer.encode(text, add_special_tokens=add_special))
 
     async def generate(self, req: GenRequest) -> GenResult:
         chunks: list[str] = []
@@ -443,7 +584,7 @@ class MLXTier0Backend(Backend):
         """
         if req.json_schema is None or self._constrain_vocab_failed:
             return []
-        from tandem.gateway.toolcall.constrain import Constrainer
+        from tandem.gateway.toolcall.constrain import Constrainer, logit_width_bound
 
         constrainer = Constrainer()
         if self._constrain_vocab is None:
@@ -457,16 +598,22 @@ class MLXTier0Backend(Backend):
         token_filter = constrainer.token_filter(req.json_schema, self._constrain_vocab)
         if token_filter is None:
             return []
-        return [build_logits_processor(token_filter, self.mx)]
+        return [
+            build_logits_processor(
+                token_filter, self.mx, logit_width_bound(self.tokenizer)
+            )
+        ]
 
     async def stream(self, req: GenRequest) -> AsyncIterator[Delta]:
         from mlx_lm import stream_generate
+        from mlx_lm.models import cache as kv
         from mlx_lm.sample_utils import make_sampler
 
         token = ACTIVE_ADAPTER.set(req.adapter)
         try:
             prompt = self.render(req)
-            in_tokens = self.count_tokens(prompt)
+            tokens = self._encode(prompt)
+            prompt_cache, cached = self._warm_start(req, tokens, kv)
             sampler = make_sampler(
                 temp=req.sampling.temperature,
                 top_p=req.sampling.top_p,
@@ -475,17 +622,20 @@ class MLXTier0Backend(Backend):
 
             out_tokens = 0
             text_parts: list[str] = []
+            generated: list[int] = []
             stop_reason = StopReason.END_TURN
             for step in stream_generate(
                 self.model,
                 self.tokenizer,
-                prompt=prompt,
+                prompt=tokens[cached:],
                 max_tokens=req.sampling.max_tokens,
                 sampler=sampler,
                 logits_processors=self._logits_processors(req),
+                prompt_cache=prompt_cache,
             ):
                 out_tokens += 1
                 text_parts.append(step.text)
+                generated.append(int(step.token))
                 yield Delta(text=step.text)
                 joined = "".join(text_parts)
                 if any(s and joined.endswith(s) for s in req.sampling.stop):
@@ -500,7 +650,14 @@ class MLXTier0Backend(Backend):
                 result=GenResult(
                     text="".join(text_parts),
                     stop_reason=stop_reason,
-                    usage=Usage(input_tokens=in_tokens, output_tokens=out_tokens),
+                    usage=Usage(
+                        input_tokens=len(tokens),
+                        output_tokens=out_tokens,
+                        cached_input_tokens=cached,
+                    ),
+                    kv_handle=_TurnCache(
+                        cache=prompt_cache, tokens=tokens, generated=generated
+                    ),
                 ),
             )
         finally:
@@ -508,6 +665,27 @@ class MLXTier0Backend(Backend):
 
 
 # --- helpers ----------------------------------------------------------------
+
+
+@dataclass
+class _TurnCache:
+    """The KV cache a turn decoded against, and the prompt ids it was fed."""
+
+    cache: list[Any]
+    tokens: list[int]
+    # Every token id `stream_generate` yielded, which for a cache that cannot be
+    # rewound is the only record of what it holds past the prompt.
+    generated: list[int] = field(default_factory=list)
+
+
+def _common_prefix(a: list[int], b: list[int]) -> int:
+    n = 0
+    for left, right in zip(a, b):
+        if left != right:
+            break
+        n += 1
+    return n
+
 
 _ALWAYS_TARGETS = (
     "q_proj",

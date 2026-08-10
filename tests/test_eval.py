@@ -441,6 +441,48 @@ async def test_isolation_gate_is_vacuously_true_with_no_adapters():
     assert result.passed
 
 
+class _Counted(MockBackend):
+    """Tracks how many arms of a gate hold weights at the same moment."""
+
+    live = 0
+    peak = 0
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        type(self).live += 1
+        type(self).peak = max(type(self).peak, type(self).live)
+
+    async def unload(self) -> None:
+        type(self).live -= 1
+
+
+@pytest.mark.asyncio
+async def test_isolation_gate_holds_one_arm_at_a_time():
+    """Two live arms is 2 x 23.0 GiB against a 28.08 GiB ceiling — a wedged machine.
+
+    The gate used to gather the N-mounted arm against each solo arm, so it could not
+    be run on the baseline platform at all (`PROCESSES.md` §4). Recording the first
+    arm and releasing it before building the next is what makes it runnable, and this
+    is the assertion that keeps it that way.
+    """
+    _Counted.live = _Counted.peak = 0
+    result = await adapter_isolation_gate(
+        lambda names: _Counted(adapters=tuple(names)), ["a0", "a1-repo"]
+    )
+    assert result.passed
+    assert _Counted.peak == 1, f"{_Counted.peak} arms were live at once"
+
+
+@pytest.mark.asyncio
+async def test_g2_holds_one_arm_at_a_time(placement_reaches_engine):
+    _Counted.live = _Counted.peak = 0
+    result = await g2_placement_invariance(
+        lambda _bytes: _Counted(tier=1, use_tools=False)
+    )
+    assert result.passed
+    assert _Counted.peak == 1, f"{_Counted.peak} arms were live at once"
+
+
 # --- determinism gates (sec 9.3) --------------------------------------------
 
 
@@ -462,17 +504,58 @@ async def test_g1_catches_a_divergent_kernel():
     assert "reduction order" in result.reason
 
 
+@pytest.fixture
+def placement_reaches_engine(monkeypatch):
+    """An engine that does implement the expert LRU, which 0.4.18 does not.
+
+    Every G2 comparison below is unreachable without this: the gate refuses to
+    compare two arms whose only difference never leaves this process.
+    """
+    monkeypatch.setattr(
+        "tandem.backends.mlx_tier1.expert_cache_provenance",
+        lambda configured_bytes, engine_version="": {
+            "configured_bytes": configured_bytes,
+            "reached_engine": True,
+        },
+    )
+
+
 @pytest.mark.asyncio
-async def test_g2_passes_when_placement_does_not_change_the_model():
+async def test_g2_reports_not_measured_while_the_cache_size_reaches_no_engine():
+    """A vacuous pass on this gate is worse than not running it.
+
+    `expert_cache_bytes` is never sent and `--stream-experts-cache` is dropped by
+    mlx-optiq 0.4.18 before its shard reader, so both arms are one engine at one
+    placement. Comparing them is guaranteed green and tests nothing — on the gate
+    whose failure would invalidate every other claim.
+    """
+    calls = []
+
+    def factory(cache_bytes: int):
+        calls.append(cache_bytes)
+        return MockBackend(tier=1, use_tools=False)
+
+    result = await g2_placement_invariance(factory)
+    assert not result.passed
+    assert result.detail["measured"] is False
+    assert result.reason.startswith("not measured:")
+    assert calls == [], "no arm should be built for a comparison that cannot be made"
+
+
+@pytest.mark.asyncio
+async def test_g2_passes_when_placement_does_not_change_the_model(
+    placement_reaches_engine,
+):
     """The most important gate: cache occupancy must not change the answer."""
     result = await g2_placement_invariance(
         lambda _bytes: MockBackend(tier=1, use_tools=False)
     )
     assert result.passed
+    assert result.detail["measured"] is True
 
 
 @pytest.mark.asyncio
-async def test_g2_catches_placement_dependent_output():
+async def test_g2_catches_placement_dependent_output(placement_reaches_engine):
     def factory(cache_bytes: int):
         # A backend whose weights differ by cache size — exactly the failure that
         # would invalidate every determinism claim in the receipt.

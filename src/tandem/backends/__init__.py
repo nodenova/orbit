@@ -74,6 +74,7 @@ def build_tier0(cfg: Config) -> Backend:
             adapter_dir=cfg.tier0.adapter_dir,
             mtp=cfg.tier0.mtp,
             max_kv_tokens=cfg.tier0.max_kv_tokens,
+            max_state_bytes=cfg.tier0.max_state_bytes,
         )
     raise ValueError(f"unknown backend: {cfg.backend!r} (expected 'mock' or 'mlx')")
 
