@@ -461,7 +461,7 @@ async def test_isolation_gate_holds_one_arm_at_a_time():
     """Two live arms is 2 x 23.0 GiB against a 28.08 GiB ceiling — a wedged machine.
 
     The gate used to gather the N-mounted arm against each solo arm, so it could not
-    be run on the baseline platform at all (`PROCESSES.md` §4). Recording the first
+    be run on the baseline platform at all (`operations.md` §4). Recording the first
     arm and releasing it before building the next is what makes it runnable, and this
     is the assertion that keeps it that way.
     """

@@ -1,6 +1,6 @@
 """What DeepSeek-V4-Flash can actually do on this host, driven without the server.
 
-`optiq serve` aborts the process on the first request to this model (`PROCESSES.md` §6),
+`optiq serve` aborts the process on the first request to this model (`operations.md` §6),
 and the reason is the server's threading rather than the model: the identical call chain
 — `stream_generate` -> `deepseek_v4` -> `moe_stream` — runs to completion on the main
 thread. So every number here is taken by driving `load_streaming` + `stream_generate`

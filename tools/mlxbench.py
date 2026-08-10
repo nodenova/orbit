@@ -1,15 +1,15 @@
 """Host health gate — fp16 bandwidth, GEMM and quantised matvec. Loads no weights.
 
 Run this before trusting any throughput number measured on this machine, and again
-after any large model load. `HANDOFF.md` T18 is why: this host has been observed at
+after any large model load. `operations.md` §3.1 is why: this host has been observed at
 ~9% of its recorded bandwidth with compute at ~50%, after a tier-0 load and with
-nothing resident. Healthy figures for the baseline M4 Max are in `BASELINE.md` §2.1;
-the pass/stop thresholds are `PROCESSES.md` §3.1.
+nothing resident. Healthy figures for the baseline M4 Max are in `platform.md` §2.1;
+the pass/stop thresholds are `operations.md` §3.1.
 
 This was the first of the benchmarks to be committed rather than left in the
 gitignored `specs/bench/`, because a gate deciding whether a measurement may be
 believed has to survive a fresh clone. The rest followed for the same reason and
-that directory is now gone; `BASELINE.md` §8 lists them.
+that directory is now gone; `platform.md` §8 lists them.
 """
 
 from __future__ import annotations

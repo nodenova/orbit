@@ -30,13 +30,17 @@ venv/
 
 # The technical specification (v1) itself — the thing `sec 8.2` and friends point
 # at. It is not ours to publish and this repository is public, so /specs/ is the
-# place to drop a local copy and it never leaves the machine.
+# place to drop a local copy and it never leaves the machine. It also holds the
+# running state of the work: the tracker, the ordered plan, the session diaries and
+# the full model write-ups, none of which a stranger reading the code needs.
 #
-# What must NOT live here is the handoff. It was `specs/NEXT_STEPS.md` for a while,
-# under this same ignore rule, and that defeated its entire purpose: it exists so a
-# session can restart from a cold clone, and an untracked file dies with the
-# container it was written in. It is `docs/HANDOFF.md` now — committed, public, and
-# written so that it stays safe to publish.
+# The rule that keeps this safe is one-directional. A file in /specs/ may cite
+# anything; **a committed file may never cite /specs/**, because a citation that
+# does not survive a clone is not a citation. That has been got wrong three times
+# — `specs/NEXT_STEPS.md`, then a design cited from a committed doc, then three
+# benchmark scripts named as the way to reproduce a published measurement — and it
+# is trap 11 in `docs/architecture.md` §5. Anything a committed file needs is in
+# `docs/`, written so that publishing it is fine.
 /specs/
 *.safetensors
 *.gguf

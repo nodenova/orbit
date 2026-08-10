@@ -13,7 +13,7 @@ first segment, not the ``.ffn.experts.`` one whose comment names DeepSeek.
 
 Requires network. Takes the repo id as its one argument, because the two quants this
 project has costed are both recorded and neither is the obvious default: no argument
-reproduces `docs/BASELINE.md` §4.6 (the OptiQ build, the one an engine would serve),
+reproduces `docs/platform.md` §4.6 (the OptiQ build, the one an engine would serve),
 and passing `mlx-community/DeepSeek-V4-Flash-0731-2.4bit-mixed` reproduces §4.4.
 """
 

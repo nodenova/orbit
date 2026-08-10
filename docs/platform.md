@@ -4,7 +4,7 @@
 |---|---|
 | **Purpose** | The reference machine every budget in this repository derives from, and what it measurably does. |
 | **Answers** | "Will this model run here?" · "Why is tier-1 rung 1 off?" · "Why does `orbit.toml` relax a gate?" |
-| **Does not answer** | What should be running right now (`PROCESSES.md`) · what to do next (`HANDOFF.md`). |
+| **Does not answer** | What should be running right now (`operations.md`) · how the system is put together (`architecture.md`). |
 | **Hardware** | `Mac16,6`, Apple M4 Max (14 CPU / 32 GPU cores), 36 GiB unified, 1 TB SSD (926 GiB usable), macOS 26.5.2 (25F84), Metal 4 |
 | **Stack** | MLX 0.32.0, mlx-lm 0.31.3, mlx-optiq 0.4.18, Python 3.13.5 |
 | **Provenance** | Every figure was produced on this machine unless marked *published*. Reproduction commands: §8. |
@@ -48,7 +48,7 @@ safetensors shard by shard is why it never bit on *load*. It binds **prefill**:
 `Qwen3-Coder-Next-4bit` at 52,008 input tokens aborted the engine with
 `[metal::malloc] Attempting to allocate 23622320128 bytes which is greater than the
 maximum allowed buffer size of 22613000192 bytes`, while resident sat at 1.36 GB and
-headroom never moved (`QWEN3_CODER_NEXT.md` §5).
+headroom never moved (`platform.md` §4.8).
 
 Two consequences worth carrying to any model:
 
@@ -101,7 +101,7 @@ elementwise work and what decode actually sees.
 > 352 GB/s and 11.9 TFLOP/s**, which is *above* this table. Neither the degradation nor
 > the 1.3× headroom over the recorded figures is explained.
 > **Run `tools/mlxbench.py` and require ≥ ~250 GB/s before trusting any new measurement
-> on this machine** — `PROCESSES.md` §3.1 is the gate, `HANDOFF.md` T18 the finding.
+> on this machine** — `operations.md` §3.1 is the gate, `operations.md` §3.1 the finding.
 
 Three SSD facts govern any streaming path:
 
@@ -112,7 +112,7 @@ Three SSD facts govern any streaming path:
   of its time on them (§4.4). Block size matters more than total bytes. **The 32 KiB row
   is the same fact one stride further down and is the worst measured here**: 1.27 GB/s at
   qd 24, 23% of the 512 KiB rate beside it, which is why `Qwen3-Coder-Next`'s 4.84 GB of
-  meta is worth making resident (`QWEN3_CODER_NEXT.md` §4.2, §4.3). A quant with smaller
+  meta is worth making resident (`platform.md` §4.8). A quant with smaller
   experts is not automatically cheaper to stream: that model moves 2.15× fewer bytes per
   token than DeepSeek-V4 and reads every one of them at a quarter of the block size.
 - **Burst and sustained differ by ~30%, and the burst figure is what §2.1 used to
@@ -150,7 +150,7 @@ arithmetic.** TTFT ≈ context ÷ prefill rate, so 32k at ~960 tok/s *is* ~32 s.
 
 The only mechanisms that can close it are compaction and the prompt cache, both upstream
 of what this suite measures. `mlx_tier0.supports_state()` returns True, but on this
-container a restore covers **0 tokens** (`HANDOFF.md` §3.9, T15), so today every turn
+container a restore covers **0 tokens** (`platform.md` §2.2), so today every turn
 still re-prefills. Read a red TTFT as "the mitigations are not being measured", not as a
 model problem.
 
@@ -173,7 +173,7 @@ projections in §5 can be trusted.
 > host-bound. Treat the 65.6/27.1 pair as one host-day rather than as a property of the
 > model, and never quote a ratio across two days.
 > Full six-variant attribution, including what the sync and the plumbing actually cost:
-> `CONSTRAINED_DECODE.md` §8.
+> `constrained-decoding.md` §8.
 
 **The sec 10.2 gate has been re-run against F1+F2 and passes: 100/100 well-formed, rate
 1.00, 115.9 s** (`orbit gate toolcall --runs 100`, 2026-08-09). Load peak 23.61 GB, steady
@@ -186,7 +186,7 @@ pipelines, and it is inherent to any Python-side constrained decode — the mask
 on the token just sampled. One-time cost: 1.1 s and ~0.6 GB per tokenizer.
 
 **The 2.4× is real; that split and that attribution are withdrawn (2026-08-09 —
-`CONSTRAINED_DECODE.md`, `HANDOFF.md` T20).** The sync alone costs nothing — a synthetic decode loop that syncs and does no other
+`constrained-decoding.md`, `constrained-decoding.md` §5).** The sync alone costs nothing — a synthetic decode loop that syncs and does no other
 work runs at 13.24 ms/token against 13.12 unconstrained. What costs is host work
 *serialised against an idle GPU*, and the profile above is the median of a bimodal
 distribution: the 20 of 43 tokens whose parser state allows 246,908 ids cost ~10–13 ms
@@ -202,7 +202,7 @@ right that the sync is free (a null processor doing only `tokens.tolist()` costs
 ms/token against real weights) and wrong about what that leaves: **22.15 ms/token sits
 inside the filter-and-mask path, where the no-weights bench prices the same work at 4.0.**
 That 5× is now explained, and the explanation is not about having a model resident —
-`CONSTRAINED_DECODE.md` §8.4. **~97% of the cost is one parser state: the gap between a
+`constrained-decoding.md` §8.4. **~97% of the cost is one parser state: the gap between a
 backslash and its escape character, ~425 ms every time it is occupied.** Two occurrences
 in the measured call were 849 of its ~1,000 ms of LMFE time.
 
@@ -217,7 +217,7 @@ express it.**
 `tools/constrained_decode_bench.py escape` reproduces the hardware figure to within 2%
 with no weights, and is the cheaper way to ask anything further about where the time goes.
 
-**Rung 0 now reproduces this without weights — `CONSTRAINED_DECODE.md` §3.2, §4.** Run
+**Rung 0 now reproduces this without weights — `constrained-decoding.md` §3.2, §4.** Run
 against the escaped fixture, the no-weights bench reads **21.02 ms/token against the
 22.15 measured here** (LMFE alone within 0.5%), where the same harness on the unescaped
 fixture reads 2.97. So the 5× that stood in this section was the fixture and never the
@@ -226,7 +226,7 @@ rather than 20.6 GiB. The measured shape is **~2.9 ms × tokens + ~419 ms × spl
 which also corrects F4: overlapping host work with the forward pass is worth **~1.11×** on
 a call with escapes, not the ~1.5× read off the average (§8.3).
 
-**It stays paid: the state is cacheable and not by us — `CONSTRAINED_DECODE.md` §8.5.**
+**It stays paid: the state is cacheable and not by us — `constrained-decoding.md` §8.5.**
 Occurrences inside one property are the same set, so a cache would collapse 75% of the
 cost (1,228 of 1,638 ms over four escapes), but the set is fixed by the enclosing object
 stack rather than by the backslash — a key on the escape alone permits a comma where the
@@ -266,7 +266,7 @@ Three things follow, and only the first is comfortable:
 2. **Re-chunking one prompt changes the logits by up to 2.031**, and at 7 of 65 greedy steps
    that exceeds the gap between the top two tokens. No argmax flipped in that window, so this
    is exposure rather than an observed failure — 21 of 65 steps carry less margin than the
-   run's own worst Δ. This is the mechanism `HANDOFF.md` T16 hypothesised for a restored KV
+   run's own worst Δ. This is the mechanism `platform.md` §2.4 hypothesised for a restored KV
    state changing an answer at 8k, and the knob that produces it (`--prefill-step-size`) is
    recorded in no receipt (T13).
 3. **CPU-vs-Metal flips the first generated token.** 30 of this model's 40 layers are linear
@@ -317,7 +317,7 @@ Headroom is 5.08 GiB, so even the native maximum fits with the shipped quantisat
 `optiq serve --stream-experts`.
 
 **Gate B measures prefill, not decode.** The two differ by 41× on this hardware, and
-that difference is the premise tier 1 is built on (`HANDOFF.md` §1, fact 1). A decode
+that difference is the premise tier 1 is built on (`architecture.md` §1, fact 1). A decode
 rate compared against `gate_b_prefill_tok_per_s` divides the premise away.
 
 ### 4.1 Measured
@@ -369,13 +369,13 @@ union is not the same as the `curl` prompts'. Compare the two tables by shape, n
 against row.
 
 This spread is what sets `gate_b_prefill_tok_per_s = 150.0` — 3σ below the mean, under every
-run observed (`HANDOFF.md` T14). One session on one healthy host is the narrowest part of
+run observed (`platform.md` §7). One session on one healthy host is the narrowest part of
 the estimate; re-measure before reading a single red as a regression.
 
 `meets_spec` is **false** in every run: ~153 against sec 11's 200 is 1.3× under, and that is
 what a Gate B result is quoted by.
 
-> **Read that red against §4.2 before concluding anything from it — `HANDOFF.md` T32.**
+> **Read that red against §4.2 before concluding anything from it — `platform.md` §4.8.**
 > The 200 is a proxy for "is the engine amortising the expert sweep across the chunk?", and
 > §4.2 answers that directly and affirmatively: the 8.0 s sweep is constant per chunk and
 > independent of how full the chunk is. What sinks the number is the `tokens/218` compute
@@ -383,11 +383,10 @@ what a Gate B result is quoted by.
 > it, and at `--prefill-step-size 8192` the ceiling for a single full chunk is **179.7
 > tok/s**, below 200 at any engine quality. The gate is failing on this machine's compute,
 > not on the architecture it was written to detect. `gate_b_prefill_tok_per_s` moved 20.0 → **150.0** on
-the strength of these runs (`HANDOFF.md` T14).
+the strength of these runs (`platform.md` §7).
 
 Two defects had to be fixed before this could run at all — an eager 23.0 GiB tier-0 build in
-`cmd_bench`, and a reasoning guard reading a key this engine does not send. `HANDOFF.md`
-§3.3 and §3.11.
+`cmd_bench`, and a reasoning guard reading a key this engine does not send. §4.1a and §4.7.
 
 Decode is unusable for generation, which is what the design requires — it is why tier 1
 has no `generate`.
@@ -438,7 +437,7 @@ At the measured rates, and against rung 3 (§2.2: 963–1,185 tok/s prefill, 65�
 slow, not dead** — inside the timeout at both ends of the documented input range.
 
 **Rung 3 ships because it is 6–9× faster and costs no memory**, not because rung 1
-cannot serve. What rung 1 would buy is verdict *independence*, which `HANDOFF.md` T5
+cannot serve. What rung 1 would buy is verdict *independence*, which `platform.md` §4.5
 names and nobody has measured.
 
 ### 4.4 DeepSeek-V4-Flash, measured without downloading it
@@ -549,7 +548,7 @@ against §4.5, which was free and strictly cheaper than fetching 92.83 GB.
 *2026-08-09. `tools/rung3_agreement.py`, 12 fixed tasks × 5 candidates at temperature
 0.6, `Qwen3.6-35B-A3B-OptiQ-4bit`, no adapter mounted. `var/rung3-agreement.json`.*
 
-`HANDOFF.md` T5 asked one question before spending 92.83 GB on an independent verifier:
+`platform.md` §4.5 asked one question before spending 92.83 GB on an independent verifier:
 **how often does rung 3 disagree with tier 0's own top candidate?**
 `Cascade._code_change_turn` falls back to candidate 0 when a rerank fails, because that
 is what a no-tier-1 install would have returned — so that fallback rate bounds what the
@@ -571,7 +570,7 @@ them is rotating the candidate list and asking whether the verifier follows the
 **p ≈ 4.5 × 10⁻⁶**. Two tasks answered slot 0 in both orders and are the only positional
 cases.
 
-This is `HANDOFF.md` §7 trap 6 in a new costume — an arithmetic comparison whose inputs
+This is `architecture.md` §5, trap 6 in a new costume — an arithmetic comparison whose inputs
 were all correct and which compared the wrong pair. The lesson generalises: **a
 disagreement rate needs its null stated beside it**, and for an N-way choice the null is
 1 − 1/N, which is high.
@@ -580,7 +579,7 @@ Three things this does *not* say, and the third is the next question:
 
 - Not that rung 3 picks the **better** candidate — only that it makes a reproducible,
   content-determined choice. Measuring better needs a quality signal, which is the merge
-  eval (`HANDOFF.md` 4.7), not another verifier.
+  eval (`orbit eval merge`), not another verifier.
 - Not that an adapted model would behave this way. `adapters/` does not exist, so
   `SecondOpinionBackend._strip` is a no-op and this is tier 0 judging its own samples
   with identical weights — **the degenerate case, and therefore a floor**. The rung's
@@ -595,7 +594,7 @@ Three things this does *not* say, and the third is the next question:
 
 *2026-08-09, requested by the owner. `mlx-community/DeepSeek-V4-Flash-0731-OptiQ-2bit`,
 **92.48 GB**, 42 shards, 2765 tensors, ungated. **Downloaded and verified — 42/42 shards,
-92.49 GB referenced by the snapshot; `HANDOFF.md` §4.9 has the resolved path. Never
+92.49 GB referenced by the snapshot; `platform.md` §4.6 has the resolved path. Never
 loaded.***
 
 **§4.4's parenthetical is out of date and this supersedes its choice of quant.** The
@@ -639,7 +638,7 @@ since been *loaded*, twice, and it has never *generated*: §4.7.
 
 > **Superseded in part, 2026-08-10 — the model generates; `optiq serve` is what cannot run
 > it.** Driven single-threaded it measures **47.9–49.4 tok/s of prefill, 2.54–2.87 decode,
-> peak 14.15 GB at 12,776 tokens**, and `DEEPSEEK_V4.md` owns those figures and the crash
+> peak 14.15 GB at 12,776 tokens**, and `platform.md` §4.7 owns those figures and the crash
 > mechanism. What stays true and lives here is the *load* accounting below, which the
 > single-threaded runs reproduced exactly (6.49 GB resident, 6.49 GB load peak).
 
@@ -694,13 +693,13 @@ the cause until something has distinguished the two decoders.
 **Consequence for T7.** The question was never throughput — it was whether ~8× rung 3's
 latency is worth verdict independence. That is now moot at a lower level: **there is no
 rung-1 deployment of this model to decide about.** Fixing it is upstream work in an engine
-Orbit deliberately does not spawn (sec 5.4), and the fallback ds4 (`PROCESSES.md` §6.4)
+Orbit deliberately does not spawn (sec 5.4), and the fallback ds4 (`operations.md` §6.4)
 has never been brought up here.
 
 ### 4.8 A streamed rung 1 that serves, and passes at spec
 
 *2026-08-10. `mlx-community/Qwen3-Coder-Next-4bit`, 44.84 GB, 3 B active of 80 B.*
-**`QWEN3_CODER_NEXT.md` owns this model's numbers**; what belongs here is what it changes
+**`platform.md` §4.8 owns this model's numbers**; what belongs here is what it changes
 about the tier-1 picture above.
 
 | | 122B-A10B (§4.1a) | DeepSeek-V4 (§4.7) | Qwen3-Coder-Next |
@@ -759,7 +758,7 @@ term by expert bytes and treat the compute term as measured-or-unknown.**
 | `Qwen3.5-122B-A10B-OptiQ-2bit` | 46.9 GB | 10 B | **4.05 meas.** | streams; **prefill 165 meas.** — the one row where decode is the wrong column |
 | `DeepSeek-V4-Flash-0731-2.4bit-mixed` | 92.8 GB | 13 B | **2.7 meas.** | streams, 6.49 GB resident; **prefill ≤168 derived** — §4.4. Fits; Gate B fails on compute |
 | `DeepSeek-V4-Flash-0731-OptiQ-2bit` | 92.5 GB | 13 B | **never generated a token** | **Loads, then dies on the first request** — §4.7. Resident 6.49 GB streamed / 15.21 GB with scales resident, load peak **23.80 GB**, all measured. Throughput figures remain inherited from the row above and are now unreachable on this engine |
-| `Qwen3-Coder-Next-4bit` | 44.8 GB | 3 B | **8.96 meas.** | streams, **1.36 GB resident**; **Gate B 258.0 meas., `meets_spec: true`** — the only row here that clears sec 11's 200. Serves through `optiq serve`. `QWEN3_CODER_NEXT.md` |
+| `Qwen3-Coder-Next-4bit` | 44.8 GB | 3 B | **8.96 meas.** | streams, **1.36 GB resident**; **Gate B 258.0 meas., `meets_spec: true`** — the only row here that clears sec 11's 200. Serves through `optiq serve`. `platform.md` §4.8 |
 
 **Active parameters, not total, are the constraint.** The rows marked *fits, unusable*
 are the finding: on a bandwidth-limited host "does it fit in memory" is the wrong
@@ -830,7 +829,7 @@ machine.
 .venv-optiq/bin/python -c "import mlx.core as mx; print(mx.device_info())"
 
 # §2.1 bandwidth and GEMM · SSD random read with the page cache bypassed
-.venv-optiq/bin/python tools/mlxbench.py    # it is also PROCESSES.md 3.1's gate
+.venv-optiq/bin/python tools/mlxbench.py    # it is also operations.md 3.1's gate
 python3 tools/ssdbench_verified.py
 
 # §4.6 / §4.4 DeepSeek-V4 without loading it: shape off the safetensors headers by HTTP
@@ -884,29 +883,8 @@ print(f'{(t-a)/2**30:.1f} GB free of {t/2**30:.0f}')"
 
 **All four are committed as of 2026-08-09.** Three of them lived in gitignored
 `specs/bench/` while the sections above cited them for reproduction — the same trap as
-`specs/NEXT_STEPS.md` and `specs/CONSTRAINED_DECODE_SYNC.md` (`HANDOFF.md` trap 11): a
+`specs/NEXT_STEPS.md` and `specs/CONSTRAINED_DECODE_SYNC.md` (`architecture.md` §5, trap 11): a
 number is only reproducible if the script that produced it survives a clone. Their
 measurement discipline is described in §2.1.
 
 ---
-
-## 9. Open on this host
-
-**The open list is `HANDOFF.md` §5.** This section was one of two trackers holding the
-same facts under different numbers, which is how a host finding and a code finding ended
-up disagreeing about the same 22×. Its items map onto the `T*` ids there:
-
-| was | now | | was | now | | was | now |
-|---|---|---|---|---|---|---|---|
-| 1 | T15 | | 6 | T21 | | 11 | T7 |
-| 2 | T4 | | 7 | T23 | | 12 | T7 |
-| 3 | T19 | | 8 | T5 | | 13 | T5 |
-| 4 | T1 | | 9 | T2 | | 14 | T18 |
-| 5 | T1 | | 10 | T13 | | 15 | T20 |
-
-**The post-reboot gate that lived at §9.1 is `PROCESSES.md` §3.1.** It is a procedure for
-deciding whether starting something is worth the wall-clock, which is that file's subject,
-and it now carries the reading that closed it: a fresh boot restored 323 GB/s against the
-23 that had frozen every measurement on this machine.
-
-What stays here is what this file owns — the numbers, in §1–§8.

@@ -5,7 +5,7 @@ That one read the 23 GiB tier-0 blobs on a 36 GiB machine with `F_NOCACHE` set, 
 stops *that fd* from populating the unified buffer cache but does not stop a read being
 served from pages something else already cached, and does not stop the NVMe controller's
 readahead. It reported 50.6 GB/s at 8 MB blocks -- which no consumer NVMe does, and which
-is how `BASELINE.md` §2.1 came to say that blocks above 2 MB "get worse", a claim that was
+is how `platform.md` §2.1 came to say that blocks above 2 MB "get worse", a claim that was
 an artifact of the same effect at the other end. It has since been deleted; this is the
 only SSD benchmark in the tree.
 
@@ -24,7 +24,7 @@ i.e. hundreds of GB per minute of generation.
 
 Measured here (M4 Max, 36 GiB, 1 TB, macOS 26.5.2), 2 MiB blocks at qd 24:
     0-4 GB    3.53 GB/s  (cold)
-    4-28 GB   6.7-6.9    <- the burst figure BASELINE.md quotes as 6.93
+    4-28 GB   6.7-6.9    <- the burst figure platform.md quotes as 6.93
     28-44 GB  3.6-4.8    <- decay
     ~375 GB read continuously: 2.81 GB/s, device/requested 1.34
 

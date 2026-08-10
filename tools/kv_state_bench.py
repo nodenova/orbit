@@ -1,4 +1,4 @@
-"""Does restoring a tier-0 KV state actually save anything? (HANDOFF 3.8, HANDOFF step 1.)
+"""Does restoring a tier-0 KV state actually save anything? (platform.md §2.2.)
 
 `supports_state()` is True and the whole loop is green off-target. That proves the
 wiring. It says nothing about the two numbers that decide whether the feature is worth
@@ -24,7 +24,7 @@ Reports prefill separately from decode: a single tok/s over a short generation i
 prefill and would hide the entire effect.
 
 Lives in `tools/` rather than the package: it is a measurement, not a shipped feature.
-It loads tier 0 (23.0 GiB on the mlx backend) -- read `docs/PROCESSES.md` first, and
+It loads tier 0 (23.0 GiB on the mlx backend) -- read `docs/operations.md` first, and
 climb the rungs. `--rung 1` loads and reports footprint and stops.
 
     python tools/kv_state_bench.py --rung 1
@@ -265,7 +265,7 @@ def _legacy_probe(backend: Any) -> dict[str, Any]:
     """Decode rate through the call shape tier 0 used *before* KV state landed.
 
     A string prompt and no `prompt_cache`, which is what `stream_generate` was handed
-    when BASELINE recorded ~65 tok/s. If this and `decode_probe` agree, a slow decode
+    when platform.md recorded ~65 tok/s. If this and `decode_probe` agree, a slow decode
     is the model on this host; if they disagree, the KV state work is a regression and
     that is the finding.
     """
@@ -341,7 +341,7 @@ async def amain(args: argparse.Namespace) -> int:
         return 0
 
     # A decode number over 8 tokens is mostly the detokenizer's first flush, not the
-    # model. BASELINE quotes ~65 tok/s unconstrained; anything far off that is a
+    # model. platform.md quotes ~65 tok/s unconstrained; anything far off that is a
     # measurement bug before it is a hardware finding, so it gets its own window.
     probe = await run_once(
         backend,

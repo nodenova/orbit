@@ -1,6 +1,6 @@
 # Orbit on the baseline platform: MacBook Pro M4 Max, 36 GB unified, 1 TB SSD.
 #
-# Every number below is derived from `docs/BASELINE.md` — measured on this class of
+# Every number below is derived from `docs/platform.md` — measured on this class of
 # machine, not scaled from a larger one. The one structural consequence: tier 0
 # (24.7 GB on disk, 23.0 GiB resident) and a streamed tier 1 (~12 GiB resident) do not
 # co-reside inside Metal's 28.08 GiB working set, so a serving deployment is rung 3.
@@ -62,7 +62,7 @@ max_kv_tokens = 65536
 # generator's weights shares its blind spots - and `Tier1Attestation.rung` records which
 # rung served every verdict so a receipt never implies otherwise. Whether that weakness
 # is worth rung 1's 6-9x turns on one unmeasured number: how often rung 3 disagrees with
-# tier 0's own top candidate. See docs/BASELINE.md section 4 and docs/HANDOFF.md T5.
+# tier 0's own top candidate. See docs/platform.md section 4 and docs/platform.md §4.5.
 enabled = true
 rung = "second_opinion"
 # Unused while `rung = "second_opinion"`, which serves from tier 0's own weights.
@@ -81,7 +81,7 @@ container_path = "/Users/vmehera/.cache/huggingface/hub/models--mlx-community--Q
 # mlx-community/DeepSeek-V4-Flash-0731-OptiQ-2bit is now ungated at 92.48 GB with the same
 # 6.49 GB resident footprint, and it - not the 2.4bit-mixed fallback the 401 forced - is
 # what this engine would serve. It is now fully downloaded and verified (92.49 GB, 42/42
-# shards - BASELINE.md 4.6, HANDOFF.md 4.9 for the resolved snapshot). It is still not the
+# shards - platform.md 4.6, platform.md 4.6 for the resolved snapshot). It is still not the
 # default because it has never been loaded and because Gate B derives to ~168 tok/s against
 # it - slower than this one, not faster. Bytes were never what blocked it.
 model = "mlx-community/Qwen3.5-122B-A10B-OptiQ-2bit"
@@ -148,7 +148,7 @@ keep_original = true
 # FLOP/s than this GPU has at 100% efficiency — unreachable on any M4 Max at any
 # memory size. The mitigations that can close it (compaction, the prompt cache) are
 # upstream of what this suite measures. `mlx_tier0.supports_state()` is True now, but
-# a restore covers 0 tokens on this container (HANDOFF.md 3.9, T15), so today every
+# a restore covers 0 tokens on this container (platform.md 2.2), so today every
 # turn still re-prefills. Lower this back toward 5.0 once a restore actually fires;
 # do not read the 35.0 as a target anyone is aiming at.
 gate_a_ttft_s = 35.0
@@ -174,7 +174,7 @@ gate_a_decode_tok_per_s = 25.0
 # The old 20.0 came from a published ~26 tok/s for this class, was wrong by ~6x
 # in the pessimistic direction, and passed anything (T14).
 #
-# All six runs are one session at ~11 h uptime on a host passing PROCESSES.md
+# All six runs are one session at ~11 h uptime on a host passing operations.md
 # 3.1. That is the narrowest part of this estimate — widen the floor, or re-measure,
 # before reading a single red as a real regression.
 #

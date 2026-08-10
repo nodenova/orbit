@@ -227,7 +227,7 @@ async def adapter_isolation_gate(
     The N-mounted arm is run to completion and *recorded*, then released, before any
     solo arm is built. It used to hold both live across one `asyncio.gather`, which
     on this platform is 2 × 23.0 GiB against a 28.08 GiB ceiling — the gate could
-    not run here at all, and `PROCESSES.md` §4 called it the likeliest way to wedge
+    not run here at all, and `operations.md` §4 called it the likeliest way to wedge
     the machine. Recording costs one dict of ≤128-token strings per comparison.
     """
     if not adapters:
@@ -309,7 +309,7 @@ async def g1_backend_equivalence(
     """G1: greedy output byte-identical between the CPU reference and Metal paths.
 
     Measured against real weights 2026-08-10, and both halves of this signature are
-    wrong for MLX — `HANDOFF.md` §3.12 has the numbers:
+    wrong for MLX — `platform.md` §2.4 has the numbers:
 
     * The arms cannot be concurrent, and on one process they cannot coexist at all.
       `mlx_lm.generate` binds a module-level `generation_stream` to the default

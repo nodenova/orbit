@@ -6,9 +6,13 @@ model verifies them rather than generating.
 
 Background, deliberately **not** `@`-imported — each is long, only sometimes needed, and
 loading them every session is what makes the rules below get ignored. `docs/README.md`
-indexes them: **PROCESSES** what should be running · **BASELINE** the reference machine
-and its measurements · **HANDOFF** state, next steps, and §6's decisions that look
-simplifiable and are not · **STATUS** spec-section → code map.
+indexes them: **architecture** the shape, the invariants that look simplifiable and are
+not, and the traps · **platform** the reference machine and every number · **operations**
+what may hold the GPU · **spec-map** spec-section → code · **constrained-decoding** the
+cost model `mlx_tier0.py` cites.
+
+State, the ordered plan and the tracker are **`specs/PROGRESS.md`**, which is gitignored
+and local. A committed file may cite `docs/`; it may never cite `specs/`.
 
 ## Commands
 
@@ -79,10 +83,15 @@ binary lints a twentieth of what CI does and reports success. mypy sets **no
   is an error.
 - **Changed the gateway, tool-call layer, compaction or sampling? Also run
   `orbit gate toolcall --runs 100`** — CI does, and it is blocking.
-- Update `docs/HANDOFF.md` when the state it describes changes. It is committed so a cold
-  clone carries it — the repo is public, so keep anything private out.
-- **`/specs/` is gitignored**: a local copy of the v1 spec, not ours to publish. Nothing a
-  future session needs may live there.
+- Update `specs/PROGRESS.md` when the state it describes changes. It is gitignored, so it
+  does not survive a clone — that is the trade, and it is why nothing committed may point
+  at it.
+- **`/specs/` is gitignored**: the v1 spec, the tracker, the plan and the experiment
+  write-ups. **A committed file may never cite it** — if a doc, a docstring or a
+  reproduction command needs something in there, move the thing into `docs/` first. That
+  has been got wrong three times (`architecture.md` §5, trap 11).
+- Anything in `docs/` is public and must stay publishable: durable, dated only where the
+  date is part of the measurement, and free of state that goes stale in a week.
 
 ## Running against real weights
 
@@ -151,7 +160,7 @@ the model, the cache key or the audit record.
 ## YOU MUST NOT undo these
 
 Each has a comment in the code saying why; the full list with rationale is
-`docs/HANDOFF.md` §6. Every one fails as a silently wrong answer, not an error.
+`docs/architecture.md` §4. Every one fails as a silently wrong answer, not an error.
 
 - Adapters are never merged into the base (sec 4.2).
 - Adapter choice and restored KV state ride on `GenRequest`, never on the backend —
@@ -180,7 +189,7 @@ Each has a comment in the code saying why; the full list with rationale is
 
 ## Gotchas
 
-- `sec N.M` points at a specification **not in this repository**; `docs/STATUS.md` maps each
+- `sec N.M` points at a specification **not in this repository**; `docs/spec-map.md` maps each
   section to its code. Do not invent a meaning for one you cannot resolve.
 - `orbit extract` exits **2** on a thin corpus (< 500 pairs). That is an answer, not a
   failure to route around — CI depends on it.

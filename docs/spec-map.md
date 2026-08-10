@@ -1,16 +1,16 @@
-# Implementation status
+# Specification map
 
 | | |
 |---|---|
 | **Purpose** | Section-by-section map from the v1 technical specification to the code that implements it. |
 | **Answers** | "What implements `sec 8.2`?" · "Is this proven or just written?" · "Where does the implementation deviate from the spec, and why?" |
-| **Does not answer** | How to run any of it (`README.md`), what to do next (`HANDOFF.md`), what this host measures (`BASELINE.md`). |
-| **Verified against** | `main` at the commit that last touched this file — `git log -1 --format='%h %ad' docs/STATUS.md`. |
+| **Does not answer** | How to run any of it (`README.md`), how it is put together (`architecture.md`), what this host measures (`platform.md`). |
+| **Verified against** | `main` at the commit that last touched this file — `git log -1 --format='%h %ad' docs/spec-map.md`. |
 | **When the code and this file disagree** | The code is right. Fix this file in the same commit. |
 
 ## Status vocabulary
 
-Used in every table below and in `HANDOFF.md`. The distinction between the middle
+Used in every table below. The distinction between the middle
 two rows is the one that carries information.
 
 | Term | Means | What it does not mean |
@@ -36,7 +36,7 @@ Not code. The numbers appear where they bind:
 | Number | Where | State |
 |---|---|---|
 | Expert cache 18 GB | `Tier1Config.expert_cache_bytes` | built (config); re-derived for 36 GB in `orbit.toml` |
-| KV frontier 32k | `Tier0Config.max_kv_tokens` | built; this host runs 65536, see `BASELINE.md` §3 |
+| KV frontier 32k | `Tier0Config.max_kv_tokens` | built; this host runs 65536, see `platform.md` §3 |
 | Tier 1 unloaded to train | `train.preflight()` | built |
 | SSD capacity recorded with every measurement | `eval/latency.Environment` | built — capacity *is* a performance spec (sec 2.3) |
 
@@ -47,7 +47,7 @@ Not code. The numbers appear where they bind:
 | Gateway | `orbit/gateway/` | built |
 | Router | `orbit/router/` | built |
 | Tier 0 | `orbit/backends/mlx_tier0.py` | **measured** — `Qwen3.6-35B-A3B-OptiQ-4bit`, 23.0 GiB, on a 36 GB M4 Max |
-| Tier 1 | `orbit/backends/mlx_tier1.py`, `orbit/tier1/` | **measured 2026-08-10** — Orbit itself drove the streamed engine, for Gate B and for schema-constrained reranks (`BASELINE.md` §4.1a) |
+| Tier 1 | `orbit/backends/mlx_tier1.py`, `orbit/tier1/` | **measured 2026-08-10** — Orbit itself drove the streamed engine, for Gate B and for schema-constrained reranks (`platform.md` §4.1a) |
 | Attestation | `orbit/attest/` | built |
 | Adapter pipeline | `orbit/adapters/` | built |
 
@@ -80,9 +80,9 @@ unproven.
 | 5.1 output clamp per call type | `backends/tier1_call.CALL_BUDGETS` | built |
 | 5.2 2-bit caveat mitigations | schema `additionalProperties: false`; verdict validation | built |
 | 5.2 reasoning refusal (DeepSeek-V4 family) | `tier1_call.resolve_reasoning_control`, `refuse_reasoned_answer` | built |
-| 5.3 prefill measurement | `mlx_tier1.measure_prefill`, `gate_b_report` | **measured 2026-08-10** — the instrument itself, six runs, 153.7 tok/s mean, sd 1.07 (`BASELINE.md` §4.1a) |
+| 5.3 prefill measurement | `mlx_tier1.measure_prefill`, `gate_b_report` | **measured 2026-08-10** — the instrument itself, six runs, 153.7 tok/s mean, sd 1.07 (`platform.md` §4.1a) |
 | 5.4 mlx-optiq behind a process boundary | `mlx_tier1.OptiqTier1Backend` | built |
-| 5.5 rung 1 (streamed) | `build_tier1()`, `backends/mlx_tier1.py` | **measured** — Gate B ran six times, 153.7 tok/s mean; the engine also answered real reranks through this client, `BASELINE.md` §4.1a |
+| 5.5 rung 1 (streamed) | `build_tier1()`, `backends/mlx_tier1.py` | **measured** — Gate B ran six times, 153.7 tok/s mean; the engine also answered real reranks through this client, `platform.md` §4.1a |
 | 5.5 rung 2 (80B resident-swapped) | `backends/resident_swap.py` | built (policy) / open (MLX occupants) |
 | 5.5 rung 3 (second opinion) | `backends/second_opinion.py` | built — **the rung this host serves** |
 | 5.5 rung 4 (remote) | `backends/remote_tier1.py`, `tools/remote_tier1.py` | built |
@@ -110,7 +110,7 @@ match missed, and an operator who configured thinking on at the engine. Dropping
 because the flag "already handles it" restores the failure for exactly the models
 nobody thought about. **That second case was live until 2026-08-10** — the check read
 `reasoning_content` and mlx-optiq emits `reasoning`, so it caught nothing on the one
-engine this repo runs; `HANDOFF.md` §3.11. There is deliberately no config value that turns reasoning on —
+engine this repo runs; `platform.md` §4.7. There is deliberately no config value that turns reasoning on —
 that would be a knob for disabling the clamp.
 
 **The rung is selected, never descended.** Nothing falls from one rung to the next on
@@ -159,7 +159,7 @@ made.
 | 8.2 compaction, versioned templates, stripping, `--no-compact`, diff view | `gateway/compaction.py` | built |
 | 8.3 context scaling | `gateway/context_scale.py` | built |
 | 8.4 prompt cache + disk KV | `gateway/cache/` | built |
-| 8.4 tier-0 KV state serialisation | `backends/mlx_kv.py`, `mlx_tier0.{export_state,_warm_start}` | **built, measured inert** — the codec round-trips against real `mlx_lm` cache classes, and on this container a real follow-up restores 0 tokens (`HANDOFF.md` §3.9) |
+| 8.4 tier-0 KV state serialisation | `backends/mlx_kv.py`, `mlx_tier0.{export_state,_warm_start}` | **built, measured inert** — the codec round-trips against real `mlx_lm` cache classes, and on this container a real follow-up restores 0 tokens (`platform.md` §2.2) |
 | 8.5 prevent / train / repair / retry / replay | `gateway/toolcall/` | built |
 | 8.6 offline posture + verification script | `orbit/offline.py`, `orbit doctor` | built |
 
@@ -169,7 +169,7 @@ made.
 |---|---|---|
 | 9.1 response metadata | `attest/receipt.py` | built |
 | 9.2 append-only audit log | `attest/audit.py` | built |
-| 9.3 G1 / G2 determinism gates | `eval/gates.py`, `tools/determinism_probe.py` | built; **the gates have still not run, and the question they ask is measured** — G1 is **red on hardware** (CPU vs Metal flips the first token) and T16's chunk mechanism is quantified, both via the probe. G2 reports *not measured* rather than the vacuous pass it used to. `BASELINE.md` §2.4, `HANDOFF.md` §3.12, T33/T34 |
+| 9.3 G1 / G2 determinism gates | `eval/gates.py`, `tools/determinism_probe.py` | built; **the gates have still not run, and the question they ask is measured** — G1 is **red on hardware** (CPU vs Metal flips the first token) and T16's chunk mechanism is quantified, both via the probe. G2 reports *not measured* rather than the vacuous pass it used to. `platform.md` §2.4, `platform.md` §2.4, T33/T34 |
 | 9.4 provenance of training data | `attest/provenance.py` | built |
 
 ### sec 10 — Evaluation
@@ -205,7 +205,7 @@ but a cascade-arm win on that metric is partly the verifier agreeing with itself
 | Gate | Command | Threshold source | State |
 |---|---|---|---|
 | M0 Gate A | `orbit bench latency` | `gates.gate_a_*` | **measured** — decode passes, TTFT fails at 32k |
-| M0 Gate B | `orbit bench tier1` | `gates.gate_b_prefill_tok_per_s` | **measured** — 153.7 tok/s mean over 6 runs, passes the host floor, `meets_spec: false`. **The red is compute, not the architecture the 200 was written to detect — `HANDOFF.md` T32 before quoting it** |
+| M0 Gate B | `orbit bench tier1` | `gates.gate_b_prefill_tok_per_s` | **measured** — 153.7 tok/s mean over 6 runs, passes the host floor, `meets_spec: false`. **The red is compute, not the architecture the 200 was written to detect — `platform.md` §4.8 before quoting it** |
 | M2 tool-call | `orbit gate toolcall --runs 100` | `toolcall_gate` (0.99, not host-configurable) | **measured** — 1.00 |
 | M2 isolation | `orbit gate isolation` | byte-identity, no threshold | built; never run on hardware |
 | M3 merge eval | `orbit eval merge` | ≥3 of 5 metrics | open — needs a trained A1 |
@@ -216,7 +216,7 @@ but a cascade-arm win on that metric is partly the verifier agreeing with itself
 given host is judged against. Each report carries `budget` (effective), `spec_budget`,
 `pass` and `meets_spec`, plus `relaxed_criteria` naming every row that is green only
 because a floor was lowered. A pass against a relaxed floor means "this host cleared
-its own floor", never "Gate A passed". See `BASELINE.md` §7 for the four
+its own floor", never "Gate A passed". See `platform.md` §7 for the four
 values this machine sets and why.
 
 ---
@@ -274,31 +274,16 @@ so a corpus can be sliced by signal strength during ablation.
 
 ---
 
-## 3. Known gaps
+## 3. Deliberate non-coverage
 
-**The gap list is `HANDOFF.md` §5.** It was duplicated here and in `BASELINE.md` §9, three
-partial copies of one list that had already drifted apart — two of them still described
-rung 1 as "arithmetically dead" months after `BASELINE.md` §4.3 measured it at 165 tok/s
-and withdrew that. One tracker, one home.
+One thing this map shows as uncovered is uncovered on purpose, and it is a property of
+the design rather than of the project's state.
 
-What belongs here instead is the one gap that is a property of this *map* rather than of
-the project's state:
+| Gap | Blocks | Why it stays |
+|---|---|---|
+| **Streaming is not incremental for multi-candidate, `plan`, or tool-bearing turns** | Nothing — deliberate | Best-of-N cannot honestly stream: you cannot emit tokens from a candidate before the verifier has chosen it, and streaming candidate 0 then retracting it would be worse than a pause. A `plan` turn's text is rewritten when the critique is appended, and a tool-bearing turn needs the whole reply before repair can run. Those run to completion and emit one delta, with the reason in `/orbit/trace/last`. |
 
-| # | Gap | Blocks | Note |
-|---|---|---|---|
-| 1 | **Streaming is not incremental for multi-candidate, `plan`, or tool-bearing turns** | Nothing — deliberate | Best-of-N cannot honestly stream: you cannot emit tokens from a candidate before the verifier has chosen it, and streaming candidate 0 then retracting would be worse than a pause. A `plan` turn's text is rewritten when the critique is appended; a tool-bearing turn needs the whole reply before repair can run. Those run to completion and emit one delta, with the reason in `/orbit/trace/last`. |
-
-### What is no longer a gap
-
-Kept because the previous version of this file asserted them, and a doc that quietly
-drops a claim teaches nothing.
-
-- ~~"No MLX backend has met a real model."~~ Tier 0 has: `Qwen3.6-35B-A3B-OptiQ-4bit`,
-  23.0 GiB, on a 36 GB M4 Max. The claim before that was that both files were
-  *unexecutable* off Apple Silicon, which was half wrong, and the wrong half hid two
-  silent bugs for months: `mlx_tier1.py` imports no MLX at all, and `mlx_tier0.render`
-  was dropping every tool call and tool result out of the prompt.
-- ~~"No gate has been run against a real model."~~ Gate A and the sec 10.2 tool-call
-  gate both have. Their numbers are in `var/gate-a.json` and
-  `var/gate-toolcall-constrained.json`, and summarised in `BASELINE.md`.
-- ~~"There is no queue of hardware-independent work."~~ Item 1 above is exactly that.
+**The list of what is merely unfinished is not here.** It is the tracker in
+`specs/PROGRESS.md`, which is gitignored. This file used to hold a third partial copy of
+it beside two others, and they had drifted: two still described rung 1 as "arithmetically
+dead" long after it was measured at 165 tok/s. One tracker, one home.

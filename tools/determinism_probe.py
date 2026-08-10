@@ -125,7 +125,7 @@ def run_arm(
     # overridden from the inside: a CPU arm returns Metal's own logits in 0.1 s, which
     # reads as a clean G1 pass and measures nothing. The device has to be swapped
     # globally and the module's stream rebound with it - and that is why two backends
-    # on different devices cannot coexist in one process (sec 9.3, HANDOFF T22).
+    # on different devices cannot coexist in one process (sec 9.3, platform.md §2.4).
     # `import mlx_lm.generate` binds the *function* of that name from the package
     # namespace, not the module.
     gen = importlib.import_module("mlx_lm.generate")

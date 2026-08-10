@@ -23,7 +23,7 @@ a 4B model and scaled [V]. Fused cut-cross-entropy auto-engages above 4096 so th
 multi-GB and is what OOMs first.
 
 **Those two figures have not been re-measured against the baseline host** (36 GB M4
-Max, 28.08 GiB Metal working set — `docs/BASELINE.md`), and the headroom there is
+Max, 28.08 GiB Metal working set — `docs/platform.md`), and the headroom there is
 thin enough that the scaling is worth checking rather than trusting: tier 0 alone is
 23.0 GiB. **Training a 35B adapter requires tier 1 unloaded** regardless, which
 `preflight()` checks rather than discovering two hours in.

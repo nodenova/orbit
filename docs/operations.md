@@ -4,8 +4,8 @@
 |---|---|
 | **Purpose** | What may hold the GPU on this host, and the checks to run before anything loads weights. |
 | **Answers** | "Is it safe to start this?" · "What is already resident?" · "Which commands load 23.0 GiB?" |
-| **Does not answer** | Why the numbers are what they are (`BASELINE.md`). |
-| **Applies to** | The baseline platform (`BASELINE.md`). A machine with more unified memory changes the arithmetic in §1 and §3. |
+| **Does not answer** | Why the numbers are what they are (`platform.md`). |
+| **Applies to** | The baseline platform (`platform.md`). A machine with more unified memory changes the arithmetic in §1 and §3. |
 
 **The operating rule, and nothing enforces it:**
 
@@ -29,7 +29,7 @@ procedural and belongs to whoever starts the second process.
 
 Resident cost is a property of the model, not of streaming: the 122B measures 3.46 GB,
 DeepSeek-V4-Flash is 6.49 GB, and 15.15 GB if its expert scales are made resident
-(`BASELINE.md` §4.4). None of them co-resides with tier 0's 23.0 GiB.
+(`platform.md` §4.4). None of them co-resides with tier 0's 23.0 GiB.
 
 Ports 8080 and 8081 come from `orbit.toml` (`[server] port`, `tier1.endpoint`).
 
@@ -71,7 +71,7 @@ and shows up only as memory pressure.
 
 Rung 1 is off because rung 3 is 6–9× faster and costs no memory, not because it cannot
 serve: streamed prefill measures 165 tok/s by `curl` and 153–154 by Gate B itself, against
-sec 11's 200 floor. `BASELINE.md` §4 and §4.1a.
+sec 11's 200 floor. `platform.md` §4 and §4.1a.
 
 **The one time it should be running is Gate B**, which needs the engine on 8081 and — since
 2026-08-10 — loads no tier 0 beside it. Whole procedure, ~5 min:
@@ -90,7 +90,7 @@ pkill -f "optiq serve"          # it does not exit with Orbit; Orbit never spawn
 Only the engine is resident, so this runs in ~3.5 GB against a 28.08 GiB ceiling — it is
 **not** a two-model rung. Takes ~4.5 min: three frontiers, the largest ~145 s of prefill.
 `tier1.reasoning_control` must name a dialect the engine reads, or the gate's unschema'd
-probe comes back as a reasoning trace and is refused — `HANDOFF.md` §3.11.
+probe comes back as a reasoning trace and is refused — `platform.md` §4.7.
 
 ---
 
@@ -139,7 +139,7 @@ orbit --config /tmp/mock.toml doctor
 | **Anything whose output is a number** | §3.1 first, every time. A gate run on a degraded host answers nothing in either direction. |
 | **Gateway against real weights** | `curl -s http://127.0.0.1:11434/api/ps` → `{"models":[]}`; `lsof -nP -iTCP:8081 -sTCP:LISTEN` → nothing (rung 3 needs no mlx-optiq); then `HF_HUB_OFFLINE=1 orbit serve` |
 | **A gate or an eval** | The same two, plus no `orbit serve` already holding 8080. One gate at a time — they each want the whole GPU. |
-| **In doubt about headroom** | Read `total − active`, never `Pages free`. Tier 0 needs ~27 GB by that measure. Script in `BASELINE.md` §8. |
+| **In doubt about headroom** | Read `total − active`, never `Pages free`. Tier 0 needs ~27 GB by that measure. Script in `platform.md` §8. |
 
 Thrashing is `Pageouts`, not `vm.swapusage used` — loading tier 0 legitimately moves
 swap 0.46 → 3.27 GB with 223 pageouts, because the compressor holds pages that were
@@ -148,7 +148,7 @@ never on disk. A guard on swap aborts runs that were never in trouble.
 ### 3.1 The host-health gate — run it before believing any throughput number
 
 This host has been observed running at **~9% of its recorded bandwidth** with nothing
-resident and compute at ~50% — `HANDOFF.md` T18. A gate that is green on such a host is a
+resident and compute at ~50% — `operations.md` §3.1. A gate that is green on such a host is a
 meaningless pass and a red one is a meaningless fail, so this check comes before any
 measurement, and again after any large model load.
 
@@ -165,7 +165,7 @@ measurement, and again after any large model load.
 **Below ~200 GB/s, stop and reboot.** A reboot is the only remedy that has ever worked,
 and it did: 2026-08-09 17:29 read 23 GB/s at 15 h 47 m of uptime, and 19:59 on a fresh
 boot read **323 / 352 GB/s and 11.9 TFLOP/s** — three consecutive passes, two independent
-scripts agreeing to within 1%. That is *above* `BASELINE.md` §2.1's recorded figures, so
+scripts agreeing to within 1%. That is *above* `platform.md` §2.1's recorded figures, so
 treat those as a floor rather than a target.
 
 A reboot that *fails* to clear it is the more valuable result — it kills the boot-scoped
@@ -232,8 +232,8 @@ directory of OptiQ safetensors, ollama stores opaque Q4_K_M blobs with no
 `Qwen3.5-122B-A10B-OptiQ-2bit` is in the cache and is not loaded by Orbit: rung 3 serves
 the verifier instead, at 6–9× the speed and no memory. Rung 1 is **slow, not dead** —
 165 tok/s of streamed prefill, and a 30k review fits inside `request_timeout_s`
-(`BASELINE.md` §4.3). The snapshot is kept deliberately, because resolving one takes an
-hour. `BASELINE.md` §5 is the arithmetic for every candidate, and it is worth running
+(`platform.md` §4.3). The snapshot is kept deliberately, because resolving one takes an
+hour. `platform.md` §5 is the arithmetic for every candidate, and it is worth running
 *before* a download rather than after.
 
 ---
@@ -247,14 +247,14 @@ hour. `BASELINE.md` §5 is the arithmetic for every candidate, and it is worth r
 > call chain single-threaded works** — `load_streaming` + `stream_generate` on the main
 > thread has never failed, and that is where 2026-08-10's numbers come from. So the
 > procedure below still does not produce a verifier over HTTP; `tools/ds4_probe.py` produces
-> one in-process. **`DEEPSEEK_V4.md` is the record**: the crash mechanism, the measured
+> one in-process. **`platform.md` §4.7 is the record**: the crash mechanism, the measured
 > prefill/decode/context figures, and why rung 3 still ships.
 
-**Nothing here is scheduled** — `HANDOFF.md` T7 is the decision, and it was deferred on
+**Nothing here is scheduled** — `platform.md` §4.8 is the decision, and it was deferred on
 cost before it became blocked on this: the model buys verdict independence at ~8× rung 3's
 latency, and Gate B derives to ≤168 tok/s, failing on compute at every step size. The
 container is on disk: 42 shards, 92.49 GB referenced, resolved snapshot path in
-`HANDOFF.md` §4.9.
+`platform.md` §4.6.
 
 ### 6.1 `orbit doctor` will wedge the machine here, and it looks like the next step
 
@@ -267,7 +267,7 @@ rule and this is the case where it bites hardest.
 > rungs that serve from it (3 and 2), and those carry no prefill instrument, so the
 > command declines for them without loading anything — 0.06 s where it used to be 23.0 GiB.
 > That removed one of the two blockers named below and let Gate B run for the first time
-> (`HANDOFF.md` §3.3). The memory arithmetic in this section is unchanged; what changed is
+> (`platform.md` §4.1a). The memory arithmetic in this section is unchanged; what changed is
 > that Gate B no longer pays it.
 
 | Resident | GiB |
@@ -306,7 +306,7 @@ Neither flag is an optimisation:
 | `OPTIQ_STREAM_SCALES_BUDGET_GB=12` | The engine prints its default budget as **3.9 GB** (`max(2 GB, 10 % RAM)`) against **9.3 GB** of scales and biases — the header sum for routed experts alone is 8.66 GB, and optiq counts the shared expert's meta too. Under the default the meta streams: 11% of the bytes for 23% of decode time, because 128 KiB at qd 6 runs at 2.50 GB/s against 6.04 for 2 MiB. Above 9.3 GB they stay resident, for ~33% of decode. **Derived from per-block rates and still never tested against the model, because it has never generated a token.** |
 
 **Read the startup lines before letting it serve anything.** Both configurations are now
-measured (`BASELINE.md` §4.7):
+measured (`platform.md` §4.7):
 
 | Budget | `moe_stream` line | resident | load peak |
 |---|---|---|---|
@@ -335,9 +335,9 @@ minutes.
 
 | Question | Status |
 |---|---|
-| Does the load peak stay under the working set? | **measured** — 6.49 GB streamed, 23.80 GB with scales resident (`BASELINE.md` §4.7) |
-| Does it serve over HTTP? | **measured — no.** Aborts on the first request. `DEEPSEEK_V4.md` §2 |
-| Does it generate at all? | **measured — yes, single-threaded.** 48 tok/s prefill, 2.6 decode, peak 14.15 GB at 12.8k tokens. `DEEPSEEK_V4.md` §3 |
+| Does the load peak stay under the working set? | **measured** — 6.49 GB streamed, 23.80 GB with scales resident (`platform.md` §4.7) |
+| Does it serve over HTTP? | **measured — no.** Aborts on the first request. `platform.md` §4.7 |
+| Does it generate at all? | **measured — yes, single-threaded.** 48 tok/s prefill, 2.6 decode, peak 14.15 GB at 12.8k tokens. `platform.md` §4.7 §3 |
 | What does `container_hash` cost over 92.49 GB? | still derived ~60 s at ~1.5 GB/s. `blake3`'s `max_threads` is the lever, **not** mmap (sec 8.4). Unreachable via `orbit doctor` here anyway — §6.1 |
 | Does `OPTIQ_STREAM_SCALES_BUDGET_GB` pay? | arithmetic only, ~33% of decode, and untestable until it generates |
 | **Do 2-bit routed experts produce usable verdicts at all?** | the only question about the model rather than the machine, and the crash keeps it closed |
@@ -367,7 +367,7 @@ survives restarts via an appended KTM section.
 
 **This one works.** It is the only streamed model here that has served a request through
 `optiq serve`, and the only configuration that has reported `meets_spec: true`. Numbers:
-`QWEN3_CODER_NEXT.md`. Decision: `HANDOFF.md` T7 — and the decision is still rung 3.
+`platform.md` §4.8. Decision: `platform.md` §4.8 — and the decision is still rung 3.
 
 ### 7.1 It is cheap, and that is the point
 
@@ -412,7 +412,7 @@ is worth 1.08× for 4.86 GB — cheap here, where the same lever on DeepSeek nee
 
 **A prompt past `--max-context` takes the process with it** — `[metal::malloc]` against
 Metal's 21.06 GiB single-array limit, not an out-of-memory, not a refusal (T35,
-`BASELINE.md` §1). 21,008 input tokens is measured fine; 52,008 is measured fatal; nothing
+`platform.md` §1). 21,008 input tokens is measured fine; 52,008 is measured fatal; nothing
 between has been tried.
 
 Size prompts by **tokens**, never characters or words: this tokenizer runs ~11.8 tokens per
@@ -427,7 +427,7 @@ own filler overshoots its frontier by ~36–39% (T31), so its 16,000 frontier de
 ```
 
 That config is `orbit.toml` with `[tier1]` repointed and nothing else touched, so its
-result compares row-for-row with the 122B's in `BASELINE.md` §4.1a. It builds no tier 0.
+result compares row-for-row with the 122B's in `platform.md` §4.1a. It builds no tier 0.
 Expect worst-of-run ~253–263 and `meets_spec: true`; a reading near 190 is the engine
 falling back to 2048-token chunks, and **the configured 150.0 floor will not catch it** —
 read `worst_tok_per_s`, not `pass`.

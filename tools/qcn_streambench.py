@@ -10,7 +10,7 @@ What differs is the size of every read, and it differs in the direction that cos
   * routed experts are stacked one tensor per (layer, projection) -- 256 MiB holding all
     512 experts -- so a per-expert slice is exactly **512 KiB**, a quarter of DeepSeek's
     2 MiB row. Scales and biases are **32 KiB** each against 128 KiB.
-  * `BASELINE.md` §2.1: 128 KiB at qd 6 runs at 2.50 GB/s against 6.04 for 2 MiB, so
+  * `platform.md` §2.1: 128 KiB at qd 6 runs at 2.50 GB/s against 6.04 for 2 MiB, so
     smaller blocks cost more than their share. This model reads *nothing* at 2 MiB. That
     is the one derived number in the Gate B projection worth measuring before trusting.
   * meta is 4.84 GB by the header sum (`qcn_headers.py`), under a 6 GB

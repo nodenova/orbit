@@ -1,4 +1,4 @@
-"""Does rung 3 ever disagree with tier 0's own top candidate? (HANDOFF 4.2a, T5.)
+"""Does rung 3 ever disagree with tier 0's own top candidate? (platform.md §4.5.)
 
 `Cascade._code_change_turn` falls back to candidate 0 when the rerank fails, because
 that is "what a no-tier-1 install would have produced anyway". So the value of the whole
@@ -22,7 +22,7 @@ is already None -- so rung 3 is tier 0 judging its own samples with identical we
 That is the degenerate case, and its number is the floor for every other rung.
 
 Lives in `tools/` rather than the package: it is a measurement, not a shipped feature.
-It loads tier 0 (23.0 GiB on the mlx backend) -- read `docs/PROCESSES.md` first.
+It loads tier 0 (23.0 GiB on the mlx backend) -- read `docs/operations.md` first.
 
     python tools/rung3_agreement.py --config orbit.toml --prompts 12 --candidates 5
 """

@@ -7,7 +7,7 @@ The cheapest rung and the only one that needs no second model, no swap and no
 network. It runs on any machine that can run tier 0 at all, which makes it the
 rung that is actually available during M0–M3 — before the 122B container exists,
 and on any box that turns out not to fit both tiers at once. That includes the
-baseline host, where it is the rung `orbit.toml` ships (`docs/BASELINE.md`).
+baseline host, where it is the rung `orbit.toml` ships (`docs/platform.md`).
 
 **The adapter strip is the whole mechanism.** A1 is trained on the repository's own
 merged diffs, so it has learned that repository's habits — including the bad ones,

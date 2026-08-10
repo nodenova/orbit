@@ -105,7 +105,7 @@ likeliest way to wedge the machine.
   constrained decode. The 2.4× is the sync `tokens.tolist()` forces and is not removable
   from a Python-side constrained decode. A number far outside these is a measurement bug
   before it is a hardware finding.
-- `docs/BASELINE.md` holds the recorded figures. Compare against it rather than
+- `docs/platform.md` holds the recorded figures. Compare against it rather than
   re-deriving, and update it when a figure genuinely moves.
 
 ## 6. Models, caches and downloads
@@ -120,7 +120,7 @@ likeliest way to wedge the machine.
 - `HF_HUB_OFFLINE=1` for anything touching a local snapshot, so a cache miss fails loudly
   instead of silently re-downloading.
 - Corporate TLS interception means Python cannot reach Hugging Face at all until
-  `SSL_CERT_FILE` points at a Keychain export — `docs/BASELINE.md` §5 has the procedure.
+  `SSL_CERT_FILE` points at a Keychain export — `docs/platform.md` §5 has the procedure.
 
 ## 7. When it goes wrong
 

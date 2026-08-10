@@ -1,9 +1,9 @@
 """Where the constrained-decode 2.4x actually goes. No model weights.
 
-`BASELINE.md` §2.3 recorded ~21 ms/token of overhead and attributed most of it to the
+`platform.md` §2.3 recorded ~21 ms/token of overhead and attributed most of it to the
 synchronisation `tokens.tolist()` forces. These five measurements withdraw that
 attribution: the sync alone is free, and the cost is host work serialised against an
-idle GPU. See `docs/CONSTRAINED_DECODE.md` for the design that follows.
+idle GPU. See `docs/constrained-decoding.md` for the design that follows.
 
 Every subcommand runs without weights. `loop` builds a ~4 GB synthetic decoder; the
 rest need only the tokenizer, and `filter`/`identity`/`components` pay LMFE's ~1.2 s
@@ -14,7 +14,7 @@ vocabulary build.
     python tools/constrained_decode_bench.py identity
 
 **Check host health first.** `tools/mlxbench.py` must report ~247 GB/s; at the
-23 GB/s of `HANDOFF.md` T18 the GPU is so slow that host work vanishes into
+23 GB/s of `operations.md` §3.1 the GPU is so slow that host work vanishes into
 noise and `loop` reports every variant as equal.
 """
 
@@ -59,7 +59,7 @@ TARGET_CALL = {
 
 # The same call as the model actually emitted it under constraint, newlines and all.
 # Every string argument a coding agent writes has them; TARGET_CALL has none, and that
-# one difference is a 9x in host cost (`escape`, CONSTRAINED_DECODE.md §8.4).
+# one difference is a 9x in host cost (`escape`, constrained-decoding.md §8.4).
 ESCAPED_CALL = {
     "name": "edit_file",
     "arguments": {
@@ -426,7 +426,7 @@ def cmd_filter(args: argparse.Namespace) -> None:
     (n_t, _, land_t), (n_e, _, land_e) = totals.values()
     print(
         f"\n{land_e / land_t:.1f}x, and per token {(land_e / n_e) / (land_t / n_t):.1f}x. "
-        "The fixture is the whole difference — CONSTRAINED_DECODE.md §3.2, §4, T28."
+        "The fixture is the whole difference — constrained-decoding.md §3.2, §4, T28."
     )
 
 
@@ -470,7 +470,7 @@ def cmd_escape(args: argparse.Namespace) -> None:
         f"\n{b / a:.1f}x for two escaped newlines. {sum(h[2] for h in hot_b):.0f} of the "
         f"{b:.0f} ms is {len(hot_b)} calls.\n"
         "A coding agent's arguments are file contents, so this is the common case and "
-        "TARGET_CALL is the outlier — CONSTRAINED_DECODE.md §8.4."
+        "TARGET_CALL is the outlier — constrained-decoding.md §8.4."
     )
 
     # It is the *split* that costs, not the escape. `)\` + `n` leaves the parser
@@ -643,7 +643,7 @@ def cmd_statekey(args: argparse.Namespace) -> None:
         "a stack-wide key would collapse.\n"
         "  A key on 'after a backslash' alone is unsound by the tokens above — they "
         "close the string and emit a comma, which is legal only while a property is "
-        "still required. CONSTRAINED_DECODE.md §8.5."
+        "still required. constrained-decoding.md §8.5."
     )
 
 
@@ -713,7 +713,7 @@ def cmd_components(args: argparse.Namespace) -> None:
 
 
 def cmd_identity(args: argparse.Namespace) -> None:
-    """Can a mask cache key on id()? `BASELINE.md` §2.3's rejected cache assumed yes."""
+    """Can a mask cache key on id()? `platform.md` §2.3's rejected cache assumed yes."""
     token_filter, _inner, ids = load_filter(args.model)
 
     prev: Any = None

@@ -7,7 +7,7 @@ it alongside tier 0. Unified memory is the whole constraint: no Apple Silicon bo
 this class fits a 4-bit 35B and a 4-bit 80B at once, so admitting one *means* evicting
 the other. Every design decision below follows from that one sentence.
 
-On the baseline host (36 GB, 28.08 GiB working set — `docs/BASELINE.md`) the second
+On the baseline host (36 GB, 28.08 GiB working set — `docs/platform.md`) the second
 occupant does not exist and there is no room for it: tier 0 alone is 23.0 GiB. The
 policy below is built and tested against the mock, which is where the concurrency bugs
 are; what it lacks is a resident verifier to swap in.

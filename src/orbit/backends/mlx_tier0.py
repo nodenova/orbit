@@ -167,7 +167,7 @@ def build_logits_processor(
     costs is host work serialised against an idle GPU, and the per-token cost is
     bimodal: ~1-4 ms in the JSON skeleton, ~10-13 ms inside a string, ~26-29 ms on
     the transition into one. F1 and F2 remove the two largest host-side terms;
-    `docs/CONSTRAINED_DECODE.md` §5 has the measurements, and F4 — restructuring the
+    `docs/constrained-decoding.md` §5 has the measurements, and F4 — restructuring the
     decode loop so what remains overlaps the forward pass — is deliberately not done
     here, because it means owning the loop `mlx_lm.stream_generate` currently owns.
     """

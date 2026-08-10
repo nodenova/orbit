@@ -3,14 +3,14 @@
 # The only differences from `orbit.toml` are in [tier1]: rung "second_opinion" ->
 # "streamed", and the model and snapshot repointed. Everything else is left identical on
 # purpose, so a number produced here compares row-for-row with the 122B's in
-# `docs/BASELINE.md` §4.1a rather than differing by an unrecorded knob.
+# `docs/platform.md` §4.1a rather than differing by an unrecorded knob.
 #
 # Serving from this file would be wrong: rung 1 needs `optiq serve` already up on 8081
 # (Orbit never spawns it — sec 5.4), and tier 0 at 23.0 GiB plus that engine does not
 # fit inside Metal's 28.08 GiB working set. Gate B is a one-model measurement, which is
 # why it can use this at all — `cmd_bench` builds no tier 0 for rung 1.
 #
-# Full record: `docs/QWEN3_CODER_NEXT.md`. Bring-up: `docs/PROCESSES.md` §7.
+# Full record: `docs/platform.md` §4.8. Bring-up: `docs/operations.md` §7.
 
 backend = "mlx"
 
@@ -63,7 +63,7 @@ max_kv_tokens = 65536
 #
 # What this does NOT settle: rung 3 is still ~3.5x faster at a 30k review (~33 s
 # against ~116 s) and costs no memory, so it still ships. This model's case is verdict
-# *independence*, which is unmeasured - docs/HANDOFF.md T5, docs/QWEN3_CODER_NEXT.md §6.
+# *independence*, which is unmeasured - docs/platform.md §4.5, docs/platform.md §4.8.
 enabled = true
 rung = "streamed"
 # Resolved snapshot, for the same reason tier 0 needs one: hash_artefact() answers
@@ -83,7 +83,7 @@ stream_experts = true
 # plumbs this to the engine and `--stream-experts-cache` is a per-projection count that
 # mlx-optiq 0.4.18 discards (T34). The lever that DOES work on this model is the
 # environment variable `OPTIQ_STREAM_SCALES_BUDGET_GB=6`, worth 1.08x - see
-# docs/QWEN3_CODER_NEXT.md §4.2. Left at orbit.toml's value so the two configs differ
+# docs/platform.md §4.8. Left at orbit.toml's value so the two configs differ
 # only where this file says they differ.
 expert_cache_bytes = 12884901888
 # 300 s, not the 180 s default, and live here rather than inert. At the measured
@@ -142,7 +142,7 @@ keep_original = true
 # FLOP/s than this GPU has at 100% efficiency — unreachable on any M4 Max at any
 # memory size. The mitigations that can close it (compaction, the prompt cache) are
 # upstream of what this suite measures. `mlx_tier0.supports_state()` is True now, but
-# a restore covers 0 tokens on this container (HANDOFF.md 3.9, T15), so today every
+# a restore covers 0 tokens on this container (platform.md 2.2), so today every
 # turn still re-prefills. Lower this back toward 5.0 once a restore actually fires;
 # do not read the 35.0 as a target anyone is aiming at.
 gate_a_ttft_s = 35.0
@@ -162,7 +162,7 @@ gate_a_decode_tok_per_s = 25.0
 # sec 11's 200 is the number to read from this config, and it is true.
 #
 # Set this to ~245 (3 sigma below 258.0 at the observed 3.5% spread) only after a
-# six-run session on a host passing PROCESSES.md 3.1, the way T14 arrived at 150.0.
+# six-run session on a host passing operations.md 3.1, the way T14 arrived at 150.0.
 gate_b_prefill_tok_per_s = 150.0
 # 35.0 s (spec 2.0) — the sec 7.3 chat contract reported beside Gate A by
 # `orbit bench latency`, relaxed for the same reason as `gate_a_ttft_s` and to the

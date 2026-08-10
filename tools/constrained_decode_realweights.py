@@ -1,7 +1,7 @@
 """Rung 1 for the constrained-decode fixes: do they hold against real weights?
 
 `tools/constrained_decode_bench.py` decomposes the cost without weights and concludes
-that most of it is removable in Python (`docs/CONSTRAINED_DECODE.md`). This
+that most of it is removable in Python (`docs/constrained-decoding.md`). This
 script is the confirmation that decomposition owes: six processor variants sharing
 one loaded model, so the comparison is apples-to-apples.
 
@@ -18,12 +18,12 @@ step that got slower *because* a processor is attached. A→E→F splits that re
 into plumbing, sync, and mask work, and F is the one the F4 decision turns on:
 what F costs over A is what restructuring the loop could hide.
 
-Loads tier 0 (~20.6 GiB) -- read `docs/PROCESSES.md` §1 and the `real-weights` skill
+Loads tier 0 (~20.6 GiB) -- read `docs/operations.md` §1 and the `real-weights` skill
 first, and start at `--runs 1`. It reports pageins per variant and voids its own
 timings if the weights are being re-read from disk.
 
 **`tools/mlxbench.py` must report ~247 GB/s before this means anything.** At the
-23 GB/s of `HANDOFF.md` T18 every variant reads the same, because a 15x-slow
+23 GB/s of `operations.md` §3.1 every variant reads the same, because a 15x-slow
 GPU swamps the host-side differences this measures.
 
     python tools/constrained_decode_realweights.py --runs 1 --max-tokens 64
@@ -83,7 +83,7 @@ def _vm_stat(field: str) -> int:
 
 
 def headroom_gb() -> float:
-    """`total - active`, never `Pages free` -- BASELINE.md §1.1."""
+    """`total - active`, never `Pages free` -- platform.md §1.1."""
     active = _vm_stat("Pages active") * 16384
     total = int(
         subprocess.run(
@@ -125,7 +125,7 @@ def build_null() -> Any:
 def build_null_sync() -> Any:
     """F. E plus the `tokens.tolist()` every real processor must do.
 
-    `CONSTRAINED_DECODE.md` §3.1 withdrew the sync as a cost on the strength of a
+    `constrained-decoding.md` §3.1 withdrew the sync as a cost on the strength of a
     synthetic loop (13.24 vs 13.12 ms/token). That loop was ~4 GB and its own
     generation was not pipelined the way `stream_generate` pipelines a real one,
     so it cannot price a sync whose cost is the pipelining it prevents.

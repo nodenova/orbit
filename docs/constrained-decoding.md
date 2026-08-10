@@ -4,15 +4,16 @@
 |---|---|
 | **Purpose** | Scope the cost of constrained decoding (65.6 → 27.1 tok/s) and decide what, if anything, needs to be written in a language other than Python. |
 | **Answers** | "Where does the 21 ms/token actually go?" · "Is the sync removable?" · "Do we need a native grammar engine?" |
-| **Does not answer** | Whether constrained decoding is worth its cost — it is, and `BASELINE.md` §2.3 is why (100/100 first-attempt tool calls against 0/100). What the host is doing to every throughput number — `HANDOFF.md` §5, T18. |
+| **Does not answer** | Whether constrained decoding is worth its cost — it is, and `platform.md` §2.3 is why (100/100 first-attempt tool calls against 0/100). What the host is doing to every throughput number — `operations.md` §3.1. |
 | **Status** | **F1 and F2 have landed and are now measured** — 2.55× → 2.38×, worth 11–15% (§8.1). **F3 is rejected on measurement** (§6); F4 is not attempted and is worth ~1.11×, not ~1.5× (§8.3). The ladder is complete through rung 3, which passes at 1.00. **T26 is decided** — the 425 ms state is cacheable in principle and not by us (§8.5). **T28 is closed** — §3.2 and §4 are rebuilt on both fixtures and rung 0 now predicts rung 1 to within 5%. |
 | **The finding** | **~97% of what constrained decoding costs is one parser state: the gap between a backslash and its escape character, at ~425 ms per occurrence** (§8.4). It is reproducible with no weights, and the rung-0 fixture never entered it, which is why every projection in §3–§4 is 5× low. **It is not one state but one per enclosing object stack** (§8.5), which is what decides whether a cache may collapse it. |
-| **Provenance** | Measured 2026-08-09 on the baseline M4 Max, `tools/constrained_decode_bench.py` (no weights) and `tools/constrained_decode_realweights.py` (rung 1–2, six variants). The host passed `PROCESSES.md` §3.1 before *and* after the run. Reproduction: §10. |
+| **Provenance** | Measured 2026-08-09 on the baseline M4 Max, `tools/constrained_decode_bench.py` (no weights) and `tools/constrained_decode_realweights.py` (rung 1–2, six variants). The host passed `operations.md` §3.1 before *and* after the run. Reproduction: §10. |
 
 This file is committed on purpose. It lived in `/specs/`, which is gitignored, while
-`BASELINE.md` pointed at it for "full scope, measurements and design" — the same mistake
-`specs/NEXT_STEPS.md` made before it became `docs/HANDOFF.md`. A design a future session
-needs cannot live in a directory that does not survive a clone.
+`platform.md` pointed at it for "full scope, measurements and design" — a citation that
+does not survive a clone (`architecture.md` §5, trap 11). `src/orbit/backends/mlx_tier0.py`
+cites §5 of this file directly, so a design a future session needs cannot live in a
+directory that does not survive a clone.
 
 ---
 
@@ -245,7 +246,7 @@ therefore not a per-token property at all:
 Both coefficients are measured — 128.1 ms over the 44 non-escape tokens, 838.8 over the
 two — the second dominates anything a coding agent emits, and `escape` shows it is dead
 linear. A twenty-line edit whose lines end in `)` is ~19 splits and ~200 tokens: **~8.0 s
-of ~8.6 s is the second term**, which is where `BASELINE.md` §2.3's ~8.5 s comes from.
+of ~8.6 s is the second term**, which is where `platform.md` §2.3's ~8.5 s comes from.
 
 **Where each removal now stands.** F1 and F2 are landed and their value is confirmed on
 both fixtures. F3 is rejected (§6.1), re-tested against `ESCAPED_CALL` at 9.5× the stake.
@@ -437,7 +438,7 @@ Any implementation must hold these. Each failure mode is silent.
 5. **`MockBackend` must not become easier to satisfy than the real backend.** It has failed
    that twice.
 6. **Re-run `orbit gate toolcall --runs 100` after any change here** — blocking, and
-   `CLAUDE.md` names this layer explicitly. It needs a healthy host (`HANDOFF.md` T18).
+   `CLAUDE.md` names this layer explicitly. It needs a healthy host (`operations.md` §3.1).
 
 ---
 
@@ -450,9 +451,9 @@ Any implementation must hold these. Each failure mode is silent.
 | 2 | Eight runs | **Complete** — reproduces rung 1 to within ~1% |
 | 3 | `orbit gate toolcall --runs 100` | **Complete — passes 1.00, 100/100** |
 
-The two earlier rung-1 attempts were void because the host was degraded (`HANDOFF.md` T18).
+The two earlier rung-1 attempts were void because the host was degraded (`operations.md` §3.1).
 It is not degraded now: `mlxbench.py` read **321/347 GB/s and 11.92 TFLOP/s** before the
-run and **320/343 GB/s and 11.97** after it, so `PROCESSES.md` §3.1 is satisfied at both
+run and **320/343 GB/s and 11.97** after it, so `operations.md` §3.1 is satisfied at both
 ends and these numbers may be believed.
 
 ### 8.1 What F1 and F2 are actually worth
@@ -662,26 +663,10 @@ cost stands, and it is a latency characteristic of the workload rather than a bu
 does not help it either**, since hiding 11 ms/token behind the forward pass leaves a
 410 ms stall at 410 ms.
 
-## 9. Open
-
-| # | Item | Blocks |
-|---|---|---|
-| ~~1~~ | ~~**Rung 1 has never produced a valid number**~~ | **Closed 2026-08-09** — §8.1, on a host passing §3.1 at both ends. F1+F2 are worth 11–15%, and rung 3 passes at 1.00 |
-| ~~3~~ | ~~The filter-and-mask path costs 22.15 ms/token where rung 0 prices it at 4.0~~ | **Closed by measurement — §8.4.** One parser state at ~425 ms per occurrence, reproducible without weights. Three plausible candidates were tested and killed first (§8.2) |
-| ~~6~~ | ~~**Can the post-backslash allowed set be cached?**~~ | **Decided 2026-08-09 — §8.5, not locally.** The 5,798-vs-5,795 caveat was the answer: the set is fixed by the enclosing object stack, so a key on the backslash alone permits a comma where the object must close. A sound key is stack-wide, must also model `num_consecutive_whitespaces` and a `last_parsed_string` reached through a context reassigned mid-walk, and does not exist upstream to pick up. Proposed as an upstream contribution; nothing local goes in front of the mask |
-| ~~7~~ | ~~Re-measure §3, §4 and §6.1 against a fixture that contains split escapes~~ | **Closed 2026-08-10.** `filter` now runs both fixtures and reports per state, pre-F1 and landed; §3.2 and §4 are rebuilt on it and §6.1 was already re-run. **Rung 0 now predicts rung 1: 21.02 ms/token against hardware's 22.15**, where the same harness on `TARGET_CALL` reads 2.97. It also corrected §8.3 — F4's ceiling was a `max()` over an average and is ~1.11×, not ~1.5× |
-| ~~8~~ | ~~Does the cheap fix exist upstream — `JsonSchemaParser.cache_key()`~~ | **No — closed 2026-08-09.** 0.11.3 is the current release (24 Aug 2025) and `main` still defines only `shortcut_key()`, so the route is to contribute it, not to upgrade. The number that was missing is measured: the set is state-determined but the state is the whole stack — string content before the escape changes nothing, an unwritten property changes 3 tokens (§8.5) |
-| 2 | Does F4's restructured loop reproduce variant G against real weights? | Whether F4 is worth owning the decode loop, and the answer got smaller twice. Ceiling re-derived against the measured *distribution* rather than its average: **~1.11× on a call with escapes, ~1.25× without** (§8.3), not the ~44 tok/s this row used to carry. Items 3, 6 and 8 are now closed and none of them left F4 anything — so this is the last open lever here, and it is worth ~10% for the cost of owning `stream_generate`'s loop |
-| ~~3a~~ | ~~Splitting `JsonSchemaParser` reuse from `TokenEnforcer`'s token-keyed state~~ | **Closed by measurement, negative** — §6.1. The split is real and buys 0.035 ms |
-| 4 | Is the 35% content-hit rate representative? Measured on one call shape. | F2's measured saving, which is the smaller half of a small win |
-| ~~5~~ | ~~`build_logits_processor`'s docstring is wrong in two places~~ | **Closed.** Rewritten to describe what landed, both times keeping the rejected experiment and its explanation |
-
----
-
-## 10. Reproduction
+## 9. Reproduction
 
 ```bash
-# host health — REQUIRED FIRST. Expect ~247 GB/s; 23 GB/s means stop (PROCESSES.md §3.1).
+# host health — REQUIRED FIRST. Expect ~247 GB/s; 23 GB/s means stop (operations.md §3.1).
 .venv-optiq/bin/python tools/mlxbench.py
 
 # rung 0 — no weights
@@ -698,7 +683,7 @@ HF_HUB_OFFLINE=1 .venv/bin/python tools/constrained_decode_bench.py statekey    
 # Prefer it to a 20.6 GiB load for anything about where the time goes. `statekey`
 # compares the allowed sets themselves and is the acceptance test any cache key owes.
 
-# rung 1 — real weights, ~20.6 GiB. Headroom >= 27 GB first; PROCESSES.md §3.
+# rung 1 — real weights, ~20.6 GiB. Headroom >= 27 GB first; operations.md §3.
 HF_HUB_OFFLINE=1 .venv/bin/python tools/constrained_decode_realweights.py \
     --runs 1 --max-tokens 64 --out var/constrained-decode.json
 

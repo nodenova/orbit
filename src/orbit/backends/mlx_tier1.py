@@ -210,7 +210,8 @@ def expert_cache_provenance(
     the engine's own setting is unknown to this process. Printing a bare
     `expert_cache_bytes: 12884901888` beside a throughput would attest a 12 GB cache
     that does not exist — confidently wrong rather than merely silent, which is the
-    failure shape HANDOFF §5 exists to prevent, and worse than reporting nothing.
+    failure shape the whole attestation path exists to prevent, and worse than
+    reporting nothing.
 
     `claim_verified_for` is pinned deliberately: if the operator runs a newer engine
     that does implement the LRU, the receipt shows the version skew instead of
@@ -386,7 +387,7 @@ class OptiqTier1Backend(Backend):
         The floor bounds *prefill*. The baseline host measures 164.7 tok/s of streamed
         prefill against sec 11's 200, and 4.05 tok/s of decode — quoting the latter
         against this threshold reports a ~40x shortfall that does not exist.
-        `docs/BASELINE.md` §4.
+        `docs/platform.md` §4.
         """
         if not self.prefill_samples:
             return {"pass": False, "reason": "no samples taken"}
