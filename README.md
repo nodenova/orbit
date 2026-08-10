@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/nodenova/orbit/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/nodenova/orbit/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://www.python.org/downloads/"><img alt="Python 3.11 | 3.14" src="https://img.shields.io/badge/python-3.11%20%7C%203.14-blue"></a>
+  <a href="https://www.python.org/downloads/"><img alt="Python 3.11 – 3.14" src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue"></a>
   <a href="LICENSE"><img alt="Licence: Apache-2.0" src="https://img.shields.io/badge/licence-Apache--2.0-green"></a>
   <img alt="Tests: 570" src="https://img.shields.io/badge/tests-570-brightgreen">
   <img alt="Network: none by construction" src="https://img.shields.io/badge/network-none%20by%20construction-informational">
@@ -106,8 +106,10 @@ it — see [`docs/platform.md`](docs/platform.md). One consequence worth knowing
 Metal's real ceiling is `max_recommended_working_set_size` = **28.08 GiB**, not 36 GB, and
 tier 0 alone is 23.0 GiB of it.
 
-Python 3.14 is the current release and 3.11 the declared floor; CI runs both, so both are
-guarded. 3.12 and 3.13 sit between two tested ends rather than being tested themselves.
+Python 3.14 is the current release and 3.11 the declared floor. **CI runs `pytest` and
+`mypy` on 3.11, 3.12, 3.13 and 3.14** — every version `requires-python` admits, so the
+support claim in the classifiers is one that executes rather than one interpolated between
+two tested ends.
 
 ## Install
 
@@ -351,11 +353,11 @@ CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs four jobs, all 
 
 - **ruff (lint and format)** — as two steps, so a defect and a reformat are two different
   failures.
-- **mypy** — strict over `src/`, on Python 3.11 and 3.14. The config sets no
+- **mypy** — strict over `src/`, on 3.11, 3.12, 3.13 and 3.14. The config sets no
   `python_version` on purpose, so each leg checks against the semantics of the interpreter
   it runs under.
 - **tests** — the full suite with `[constrain]` installed, so the prevention layer is
-  exercised rather than skipped as unavailable. On both ends of `requires-python`.
+  exercised rather than skipped as unavailable. On all four supported versions.
 - **cli and gateway smoke** — starts a real `orbit serve`, drives all three wire protocols
   against it, asserts the receipt carries an engine commit, and verifies the audit chain
   over the records those requests wrote. Then the blocking gates and both extractors. This

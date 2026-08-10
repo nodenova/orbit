@@ -30,7 +30,9 @@ orbit audit verify                   # hash-chained log (sec 9.2)
 ```
 
 `--config` is global and goes **before** the subcommand. CI is four blocking jobs
-(`.github/workflows/ci.yml`) over the two ends of `requires-python`, 3.11 and 3.14.
+(`.github/workflows/ci.yml`) over every version `requires-python` admits — 3.11, 3.12,
+3.13 and 3.14. Adding a `Programming Language :: Python :: 3.x` classifier without the
+matching matrix entry publishes a support claim nothing executes.
 
 Ruff and mypy live in `pyproject.toml`, where **every rule selected, ignored or relaxed
 carries a comment saying why** — read it before changing one; several obvious-looking

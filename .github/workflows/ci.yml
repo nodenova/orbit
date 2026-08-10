@@ -60,9 +60,9 @@ jobs:
       matrix:
         # Matrixed for the same reason the tests are, and for one more: the mypy
         # config deliberately sets no `python_version`, so each entry type-checks
-        # against the semantics of the interpreter it runs under. A single job would
-        # leave one end of `requires-python` unchecked.
-        python-version: ["3.11", "3.14"]
+        # against the semantics of the interpreter it runs under. A narrower matrix
+        # would leave a supported version's semantics unchecked.
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v7
 
@@ -91,10 +91,12 @@ jobs:
       # cancelling one to report the other loses half the answer.
       fail-fast: false
       matrix:
-        # Both ends of `requires-python`, because the floor was previously a claim
-        # nothing executed. 3.12 and 3.13 sit between two tested ends rather than
-        # being tested themselves, which is what the README says and now means.
-        python-version: ["3.11", "3.14"]
+        # Every version in `requires-python`, not just its two ends. The floor was
+        # once a claim nothing executed; testing only the ends made 3.12 and 3.13
+        # a weaker claim of the same kind — supported in the metadata, interpolated
+        # in the evidence. Four jobs of ~10 s each is not a budget worth optimising
+        # against that.
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v7
 

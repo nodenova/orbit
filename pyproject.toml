@@ -10,6 +10,30 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 
+# Every version listed here is one CI runs `pytest` and `mypy` against, not one
+# that ought to work — the matrix in `.github/workflows/ci.yml` is this list.
+# `Programming Language :: Python :: 3.x` is read by installers and indexes as a
+# support claim, so adding a row without adding the matrix entry publishes a
+# promise nothing executes.
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+
 # Licence discipline (spec sec 15): Apache-2.0 / MIT / BSD only.
 #   fastapi      MIT      uvicorn  BSD-3      pydantic MIT
 #   httpx        BSD-3    blake3   Apache-2.0/CC0
@@ -171,10 +195,11 @@ docstring-code-format = true
 
 [tool.mypy]
 # Deliberately no `python_version`: mypy targets whatever interpreter it runs
-# under, so the CI matrix checks 3.11 and 3.14 the same way pytest does. Pinning it
-# to 3.11 here checks one end twice and, worse, parses the *installed* stubs at
-# 3.11 — numpy's are `requires-python >=3.12` and use `type` statements, which is a
-# syntax error in a package nothing in this repo imports.
+# under, so the CI matrix checks all four supported versions the same way pytest
+# does. Pinning it to 3.11 here would check one version four times and, worse,
+# parse the *installed* stubs at 3.11 — numpy's are `requires-python >=3.12` and
+# use `type` statements, which is a syntax error in a package nothing in this
+# repo imports.
 files = ["src", "tests", "tools"]
 strict = true
 # tests/ and tools/ are not packages — no __init__.py, by design. Without these
