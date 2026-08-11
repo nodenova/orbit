@@ -522,3 +522,70 @@ tolerable, because prefix reuse makes turn 2 onward nearly free. `--prefill-step
 buys 317 tok/s of prefill at the price of an 89,791-token ceiling (§7.3). **Nothing here
 changes the rung-3 decision** — it demonstrates the harness *can* drive this model, not that
 it should generate.
+
+### 7.7 One session per engine lifetime, for a long sequence of them
+
+**Measured 2026-08-11**, across a fifteen-session agent run. §7.6's numbers are one
+session; this is what changes when you run many, and both findings below cost a
+measurement before they were understood.
+
+**The prompt cache grows per distinct conversation prefix, and nothing reclaims it.**
+Each new session carries its own ~22-27k-token Claude Code preamble, which becomes its
+own cached sequence. Ten sessions in, the engine reported:
+
+```
+INFO:root:Prompt Cache: 10 sequences, 14.40 GB
+```
+
+At that point a session returned **zero tokens in 58 minutes**, re-prefilling 22,172
+tokens while carrying that cache; stopping the engine returned 1.6 GB of active memory
+immediately. §7.6's "`--prompt-cache-bytes` was not required" holds for *one* session and
+does not generalise: the 0.50 GB cap it mentions plainly did not bound this. Nothing on
+`optiq serve --help` exposes a prompt-cache limit, so **the reliable control is process
+lifetime** — restart the engine between sessions. It costs ~10 s, because experts stream
+and the load is lazy, and it buys an identical engine state per session, which is a
+better measurement than one drifting underneath a long run.
+
+**This host kernel-panics under sustained MLX GPU load — and §3's headroom rule does not
+see it coming.**
+
+```
+panic(cpu 6): "completeMemory() prepare count underflow" @IOGPUMemory.cpp:550
+```
+
+Twice in three days — 2026-08-09 01:43 and 2026-08-11 18:31 — identical signature and
+line. It reads as a driver defect, and the first reading here was that it therefore was
+not a memory problem, because `total − active` showed ~25 GiB free at the time. **That
+reading was wrong, and the way it was wrong is the useful part.**
+
+Caught live on a later run, on an engine forty minutes old serving a *single* session:
+
+| | |
+|---|---|
+| `Prompt Cache` | **10 sequences, 24.08 GB** |
+| `Pages wired down` | **29.06 GB** |
+| `Pages free` | 0.05 GB |
+| `Pages active` | **1.81 GB** |
+| engine RSS | **1.12 GB** |
+| free percentage (`memory_pressure`) | **10%** |
+
+Killing the engine returned wired to 1.98 GB and free to 28.19 GB immediately.
+
+**The KV cache is *wired*, and wired is not *active*.** §3 says to read headroom as
+`total − active` and never `Pages free`, which is right for ordinary process memory and
+blind to this: at the moment of danger `active` read 1.81 GB and RSS read 1.12 GB, while
+the machine was 29 GB wired against Metal's 28.08 GiB working-set ceiling. Both of the
+numbers §3 tells you to trust looked healthy. **When a Metal process is resident, watch
+`Pages wired down` and `memory_pressure`, not `active`.**
+
+Two things follow. The panic is best read as GPU memory exhaustion surfacing as a
+refcount underflow, not as an unprovoked driver bug — which makes it preventable. And
+the growth is *per session*, not per run: ten cached sequences accumulated inside one
+agent session, because each turn extends the prefix and each distinct prefix is cached
+whole. `--max-context 131072` is what let each of them grow; the 32768 used elsewhere in
+this document bounds them, at the cost of rotating the KV window on a long session.
+
+**Treat a long GPU run as something the machine may end at any moment.** Anything that
+takes hours must checkpoint per unit of work and be able to resume — a run whose results
+are written only at the end will eventually lose all of them, and this one did — and it
+should sample wired memory as it goes and stop itself before the ceiling.
