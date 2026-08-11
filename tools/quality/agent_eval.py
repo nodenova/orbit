@@ -58,6 +58,7 @@ this tool.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import random
@@ -66,6 +67,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -92,11 +94,32 @@ ALLOWED_TOOLS = (
 )
 DISALLOWED_TOOLS = "WebSearch WebFetch"
 
+# An arm carrying `base_url` is served locally: the env below repoints Claude Code at
+# it and nothing else about the run changes. `opus` has none and goes to the real API.
+#
+# The two local arms reach Claude Code by different routes, and neither is a proxy for
+# the other. `local` is mlx-optiq behind `tools/serve/qcn_cc_proxy.py`, which exists
+# because optiq's Anthropic writer never closes the socket (operations.md §7.6).
+# `a1` is ollama, which serves `/v1/messages` natively, but still needs the proxy for a
+# different reason: Claude Code puts a system-role message inside `messages`, and this
+# model's Jinja refuses that with a 500 before the model runs (`--hoist-system`).
 ARMS: dict[str, dict[str, str]] = {
     "opus": {"model": "opus", "label": "Opus 5 (claude.ai)"},
-    "local": {"model": "qwen3-coder-next", "label": "Qwen3-Coder-Next-4bit (optiq)"},
+    "local": {
+        "model": "qwen3-coder-next",
+        "label": "Qwen3-Coder-Next-4bit (optiq)",
+        "base_url": "http://127.0.0.1:8082",
+    },
+    "a1": {
+        # `num_ctx` is not settable per request through /v1/messages, and the published
+        # model sets none, so it would serve ollama's small default against a ~26.7k
+        # token Claude Code preamble. This tag is the same blobs with the window
+        # raised — see the Modelfile step in the run notes.
+        "model": "a1-eval",
+        "label": "Agents-A1-4B-Q8 (ollama)",
+        "base_url": "http://127.0.0.1:8086",
+    },
 }
-LOCAL_BASE_URL = "http://127.0.0.1:8082"
 
 
 @dataclass
@@ -171,9 +194,16 @@ class Run:
 # --- worktree ---------------------------------------------------------------
 
 
-def head_sha() -> str:
+def head_sha(rev: str = "HEAD") -> str:
+    """Resolve a revision to a full sha.
+
+    Pinnable rather than always HEAD because the two arms must run against the
+    same tree to be comparable, and HEAD moves underneath a long run — this repo
+    took two commits between the Opus arm finishing and the local arm restarting,
+    one of them from a different session working in the same checkout.
+    """
     out = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
+        ["git", "rev-parse", rev],
         cwd=REPO,
         capture_output=True,
         text=True,
@@ -228,10 +258,11 @@ def drop_worktree(path: Path) -> None:
 def build_env(arm: str) -> dict[str, str]:
     env = dict(os.environ)
     env.pop("CLAUDE_CODE_SIMPLE", None)
-    if arm != "local":
+    base_url = ARMS[arm].get("base_url")
+    if not base_url:
         return env
     env.pop("ANTHROPIC_API_KEY", None)
-    env["ANTHROPIC_BASE_URL"] = LOCAL_BASE_URL
+    env["ANTHROPIC_BASE_URL"] = base_url
     env["ANTHROPIC_AUTH_TOKEN"] = "sk-optiq-local"
     env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
     # Nothing is emitted during prefill, so time-to-first-byte *equals* prefill time
@@ -287,6 +318,8 @@ def run_one(task: Task, arm: str, sha: str, *, verbose: bool = True) -> Run:
     turn_open = False
     saw_delta = False
     text_parts: list[str] = []
+    watchdog: threading.Timer | None = None
+    expired = threading.Event()
     try:
         proc = subprocess.Popen(
             cmd,
@@ -297,6 +330,22 @@ def run_one(task: Task, arm: str, sha: str, *, verbose: bool = True) -> Run:
             text=True,
             bufsize=1,
         )
+
+        # A watchdog rather than a deadline checked in the loop below: iterating
+        # `proc.stdout` blocks inside readline, and the local arm emits nothing for
+        # minutes at a time while it prefills, so an in-loop check never runs when it
+        # is needed. `proc.wait(timeout=...)` was the only enforcement and it happens
+        # after the stream closes — high-03 ran 68 minutes against a 60-minute cap
+        # and was stopped by Claude Code's idle timeout, not by this tool.
+        def expire() -> None:
+            expired.set()
+            with contextlib.suppress(OSError):
+                proc.kill()
+
+        watchdog = threading.Timer(task.timeout_s, expire)
+        watchdog.daemon = True
+        watchdog.start()
+
         assert proc.stdout is not None
         for line in proc.stdout:
             line = line.strip()
@@ -349,8 +398,17 @@ def run_one(task: Task, arm: str, sha: str, *, verbose: bool = True) -> Run:
                     run.error = str(event.get("subtype"))
                 final = event.get("result")
                 if isinstance(final, str) and final.strip():
-                    run.answer = final
-        proc.wait(timeout=task.timeout_s)
+                    # On a failed session `result` carries Claude Code's own error
+                    # text, not the model's answer — "The model's tool call could
+                    # not be parsed (retry also failed)" is what the local arm
+                    # returns when it emits a malformed call twice. Storing that as
+                    # `answer` hands the judge an error string to grade as prose and
+                    # scores a harness-visible failure as a bad reply.
+                    if run.ok:
+                        run.answer = final
+                    else:
+                        run.error = f"{run.error + ': ' if run.error else ''}{final}"
+        proc.wait(timeout=120)
         stderr = (proc.stderr.read() if proc.stderr else "") or ""
         if proc.returncode != 0 and not run.answer:
             run.ok = False
@@ -358,10 +416,17 @@ def run_one(task: Task, arm: str, sha: str, *, verbose: bool = True) -> Run:
     except subprocess.TimeoutExpired:
         proc.kill()
         run.ok = False
-        run.error = f"timeout after {task.timeout_s:.0f}s"
+        run.error = "did not exit within 120s of the stream closing"
     except (OSError, ValueError) as exc:
         run.ok = False
         run.error = f"{type(exc).__name__}: {exc}"
+    finally:
+        if watchdog is not None:
+            watchdog.cancel()
+
+    if expired.is_set():
+        run.ok = False
+        run.error = f"killed at the {task.timeout_s:.0f}s cap"
 
     if not run.wall_s:
         run.wall_s = time.perf_counter() - started
@@ -419,6 +484,17 @@ def _collect_patch(task: Task, run: Run, worktree: Path) -> None:
         check=False,
     ).stdout
 
+    _run_checks(task, run, worktree)
+
+
+def _run_checks(task: Task, run: Run, worktree: Path) -> None:
+    """The repository's own commands, inside the patched worktree.
+
+    Every tool is invoked through `sys.executable -m`, never bare on PATH. A session
+    restart dropped the venv off PATH and `ruff` and `mypy` both came back
+    `FileNotFoundError` recorded as `passed: False` — which in the result file is
+    indistinguishable from a model that wrote code failing lint and type checks.
+    """
     env = dict(os.environ)
     env["PYTHONPATH"] = str(worktree / "src")
     for check in task.checks:
@@ -427,15 +503,17 @@ def _collect_patch(task: Task, run: Run, worktree: Path) -> None:
                 [sys.executable, "-m", "pytest", "-q"], worktree, env
             )
         elif check == "ruff":
-            fmt = _shell(["ruff", "format", "--check", "."], worktree, env)
-            lint = _shell(["ruff", "check", "."], worktree, env)
+            fmt = _shell(
+                [sys.executable, "-m", "ruff", "format", "--check", "."], worktree, env
+            )
+            lint = _shell([sys.executable, "-m", "ruff", "check", "."], worktree, env)
             run.checks["ruff"] = {
                 "passed": fmt["passed"] and lint["passed"],
                 "format": fmt,
                 "lint": lint,
             }
         elif check == "mypy":
-            run.checks["mypy"] = _shell(["mypy"], worktree, env)
+            run.checks["mypy"] = _shell([sys.executable, "-m", "mypy"], worktree, env)
 
 
 def _shell(cmd: list[str], cwd: Path, env: dict[str, str]) -> dict[str, Any]:
@@ -674,33 +752,79 @@ def _tps(run: dict[str, Any]) -> str:
 
 
 def _run_mode(args: argparse.Namespace) -> int:
+    """Run an arm, checkpointing after every task so a lost machine costs one task.
+
+    The local arm takes hours, and this host kernel-panics under sustained MLX GPU
+    load — `completeMemory() prepare count underflow` at `IOGPUMemory.cpp:550`,
+    twice in three days, a driver refcount bug rather than anything about headroom.
+    The first local run lost thirteen completed tasks to it because results were
+    only written at the end. They are written after each task now, and `--resume`
+    reads them back.
+    """
     tasks = select(tuple(args.tier), tuple(args.task))
     if not tasks:
         print("no tasks selected", file=sys.stderr)
         return 2
-    sha = head_sha()
+    sha = head_sha(args.at)
     c = census()
+
+    done: dict[str, dict[str, Any]] = {}
+    if args.resume and args.out and args.out.exists():
+        prior = json.loads(args.out.read_text())
+        if prior.get("sha") != sha:
+            print(
+                f"refusing to resume: {args.out} ran at {str(prior.get('sha'))[:12]}, "
+                f"HEAD is {sha[:12]} — a different commit is a different measurement",
+                file=sys.stderr,
+            )
+            return 2
+        if prior.get("arm") != args.arm:
+            print(
+                f"refusing to resume: {args.out} holds arm {prior.get('arm')!r}",
+                file=sys.stderr,
+            )
+            return 2
+        done = {r["task_id"]: r for r in prior["runs"]}
+
+    pending = [t for t in tasks if t.id not in done]
     print(
         f"arm={args.arm} ({ARMS[args.arm]['label']})  commit={sha[:12]}  "
-        f"{len(tasks)} of {c.low + c.mid + c.high} tasks\n",
+        f"{len(pending)} to run of {len(tasks)} selected "
+        f"({c.low + c.mid + c.high} in the set)"
+        + (f", {len(done)} resumed" if done else ""),
         flush=True,
     )
-    runs = [run_one(t, args.arm, sha, verbose=True) for t in tasks]
-    payload = {
-        "mode": "run",
-        "arm": args.arm,
-        "label": ARMS[args.arm]["label"],
-        "sha": sha,
-        "runs": [asdict(r) for r in runs],
-    }
-    _write(args.out, payload)
-    ok = sum(1 for r in runs if r.ok)
-    hit = sum(r.anchors_hit for r in runs)
-    tot = sum(r.anchors_total for r in runs)
+    print()
+
+    def checkpoint() -> None:
+        ordered = [done[t.id] for t in select() if t.id in done]
+        _write(
+            args.out,
+            {
+                "mode": "run",
+                "arm": args.arm,
+                "label": ARMS[args.arm]["label"],
+                "sha": sha,
+                "runs": ordered,
+            },
+            quiet=True,
+        )
+
+    for task in pending:
+        done[task.id] = asdict(run_one(task, args.arm, sha, verbose=True))
+        checkpoint()
+
+    checkpoint()
+    finished = [done[t.id] for t in tasks if t.id in done]
+    ok = sum(1 for r in finished if r["ok"])
+    hit = sum(r["anchors_hit"] for r in finished)
+    tot = sum(r["anchors_total"] for r in finished)
     print(
-        f"\n{ok}/{len(runs)} sessions completed, anchors {hit}/{tot}, "
-        f"wall {sum(r.wall_s for r in runs) / 60:.1f} min"
+        f"\n{ok}/{len(finished)} sessions completed, anchors {hit}/{tot}, "
+        f"wall {sum(r['wall_s'] for r in finished) / 60:.1f} min"
     )
+    if args.out:
+        print(f"wrote {args.out}")
     return 0
 
 
@@ -732,6 +856,64 @@ def _regrade_mode(args: argparse.Namespace) -> int:
             run["anchors_missing"] = missing
         path.write_text(json.dumps(payload, indent=2) + "\n")
     print(f"regraded {len(args.files)} file(s), {changed} score(s) changed")
+    return 0
+
+
+def _recheck_mode(args: argparse.Namespace) -> int:
+    """Re-run the repository's checks against stored diffs, with no model calls.
+
+    Same principle as `regrade`: the expensive half is generating the patch, and
+    verifying it is cheap and repeatable. It exists because the checks have already
+    been wrong once for a reason that had nothing to do with any model — `ruff` and
+    `mypy` were invoked bare on PATH, a session restart dropped the venv, and both
+    recorded `passed: False` from `FileNotFoundError`.
+    """
+    for path in args.files:
+        payload = json.loads(path.read_text())
+        sha = payload["sha"]
+        for record in payload["runs"]:
+            task = by_id(record["task_id"])
+            if task.kind != "patch":
+                continue
+            if not record.get("diff"):
+                # "No patch produced" and "patch failed lint" are different results
+                # and were being reported as the same F. A session killed before it
+                # wrote anything leaves stale check entries behind; replace them.
+                record["checks"] = {
+                    "patch_produced": {"passed": False, "tail": "no diff produced"}
+                }
+                print(f"  {path.name}:{record['task_id']}  no diff — checks cleared")
+                continue
+            worktree = make_worktree(sha, f"recheck-{record['task_id']}")
+            try:
+                applied = subprocess.run(
+                    ["git", "apply", "--whitespace=nowarn", "-"],
+                    cwd=worktree,
+                    input=record["diff"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if applied.returncode != 0:
+                    record["checks"]["apply"] = {
+                        "passed": False,
+                        "tail": applied.stderr[-400:],
+                    }
+                    print(f"  {path.name}:{record['task_id']} diff did not apply")
+                    continue
+                stub = Run(task_id=task.id, tier=task.tier, arm=payload["arm"])
+                stub.checks = dict(record.get("checks") or {})
+                _run_checks(task, stub, worktree)
+                record["checks"] = stub.checks
+                summary = "  ".join(
+                    f"{k}={'P' if v.get('passed') else 'F'}"
+                    for k, v in stub.checks.items()
+                )
+                print(f"  {path.name}:{record['task_id']}  {summary}")
+            finally:
+                drop_worktree(worktree)
+        path.write_text(json.dumps(payload, indent=2) + "\n")
+        print(f"wrote {path}")
     return 0
 
 
@@ -795,12 +977,18 @@ def _report_mode(args: argparse.Namespace) -> int:
     return 0
 
 
-def _write(path: Path | None, payload: dict[str, Any]) -> None:
+def _write(path: Path | None, payload: dict[str, Any], *, quiet: bool = False) -> None:
     if not path:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + "\n")
-    print(f"wrote {path}")
+    # Write-then-rename: a checkpoint runs after every task, and a machine that
+    # dies mid-write would otherwise leave a truncated file where the completed
+    # results were — losing exactly what the checkpoint exists to protect.
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2) + "\n")
+    tmp.replace(path)
+    if not quiet:
+        print(f"wrote {path}")
 
 
 def main() -> int:
@@ -814,6 +1002,16 @@ def main() -> int:
     )
     r.add_argument("--task", action="append", default=[])
     r.add_argument("--out", type=Path)
+    r.add_argument(
+        "--at",
+        default="HEAD",
+        help="revision to run against; pin it so both arms share a tree",
+    )
+    r.add_argument(
+        "--resume",
+        action="store_true",
+        help="keep results already in --out and run only what is missing",
+    )
     r.set_defaults(fn=_run_mode)
 
     j = sub.add_parser("judge", help="blind rubric scoring of two arms")
@@ -822,6 +1020,10 @@ def main() -> int:
     j.add_argument("--judge-model", default="opus")
     j.add_argument("--out", type=Path)
     j.set_defaults(fn=_judge_mode)
+
+    c = sub.add_parser("recheck", help="re-run repo checks against stored diffs")
+    c.add_argument("files", type=Path, nargs="+")
+    c.set_defaults(fn=_recheck_mode)
 
     g = sub.add_parser("regrade", help="recompute anchors from stored answers")
     g.add_argument("files", type=Path, nargs="+")
