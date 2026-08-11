@@ -55,9 +55,56 @@ Two consequences worth carrying to any model:
 - **`total − active` is the wrong instrument for this failure.** §1.1 answers "is there
   room", and there was; the allocation that failed was one array, not the working set.
 - **`--max-context` does not guard it.** That run was 59% over a configured 32,768 and
-  the engine died inside the forward pass rather than refusing the request. The frontier
-  between fine and fatal is somewhere between 21,008 tokens and 52,008 and has not been
-  bisected.
+  the engine died inside the forward pass rather than refusing the request.
+
+### 1.2 The array that fails, and how to shrink it
+
+**Measured 2026-08-11**, `tools/qcn_context.py`, mlx 0.32.0 / mlx-lm 0.31.3 /
+mlx-optiq 0.4.18. The frontier is not a context length — it is a *product*:
+
+```
+worst single array = num_attention_heads × prefill_step_size × context × 2 B
+                   = 16 × Lq × Lk × 2      must stay ≤ 22,613,000,192
+```
+
+`head_dim` is **256**, outside the head dims MLX 0.32.0 fuses. Full-attention layers
+therefore take the unfused path and materialise a bf16 score matrix per prefill chunk;
+`head_dim` 128 measures **zero** transient on the same call, and 256 measures 2.06–2.19 B
+per score element regardless of whether the mask is absent, `"causal"`, or an array. The
+abort reproduces byte-for-byte: 16 × 8192 × 90,112 × 2 = **23,622,320,128**, the same
+count as 2026-08-10.
+
+So the reachable context is inversely proportional to the prefill step, and **the native
+262,144 is reachable** — it was never a hardware limit:
+
+| `--prefill-step-size` | max prompt | reaches native 262,144 |
+|---|---|---|
+| 8192 | 89,791 | no |
+| 4096 | 176,047 | no |
+| **2048** | **346,106** | **yes** |
+| 1024 | 690,176 | yes |
+
+2,695 is the largest step that still reaches 262,144. Seven probes, every one matching
+the formula's verdict:
+
+| prompt | step | worst array | prefill tok/s | result |
+|---|---|---|---|---|
+| 32,768 | 2048 | 2.00 GiB | 241.9 | ok |
+| 65,536 | 2048 | 4.00 GiB | 221.8 | ok |
+| 131,072 | 2048 | 8.00 GiB | 175.7 | ok |
+| **262,144** | 2048 | **15.99 GiB** | **124.4** | **ok** |
+| 40,960 | 8192 | 10.00 GiB | 317.5 | ok |
+| 49,152 | 8192 | 12.00 GiB | 290.2 | ok |
+| 131,072 | 8192 | 32.00 GiB | — | **abort at Lk 90,112** |
+
+Prefill rate falls with context (242 → 124 tok/s from 32k to 262k) and rises with the
+step, so the step trades reach against speed in both directions. The 262,144 run held
+1.36 GB resident and cost 2,107 s and ~6,200 pageouts.
+
+**One thing this does not explain.** The 2026-08-10 abort at 52,008 tokens implies
+Lq × Lk = 738,197,504, which for Lk ≤ 52,008 needs Lq ≥ 14,194 — larger than the 8192
+step that run recorded. The flags in effect then cannot have been exactly as written down,
+so treat that run's *configuration* as unverified; its byte count is reproduced above.
 
 ### 1.1 Judging headroom before a load
 

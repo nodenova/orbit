@@ -396,6 +396,13 @@ HF_HUB_OFFLINE=1 .venv-optiq/bin/optiq serve --stream-experts --model "$S" \
   --host 127.0.0.1 --port 8081 --max-context 32768 --prefill-step-size 8192
 ```
 
+**Those two flags are a 32k deployment, and neither is a memory guard.** `--max-context`
+installs mlx-lm's `RotatingKVCache`, a *sliding window*: past 32,768 tokens the model stops
+attending to the oldest ones rather than refusing or failing, so a long review is silently
+judged on its tail. `--prefill-step-size` is what actually sets the crash ceiling (§7.3).
+For the full native 262,144 context use `--max-context off --prefill-step-size 2048`,
+measured end to end at 124.4 tok/s (`platform.md` §1.2).
+
 Expect, and read before letting it serve anything:
 
 ```
@@ -410,10 +417,21 @@ is worth 1.08× for 4.86 GB — cheap here, where the same lever on DeepSeek nee
 
 ### 7.3 Do not overrun the context, and count tokens to know that you have not
 
-**A prompt past `--max-context` takes the process with it** — `[metal::malloc]` against
-Metal's 21.06 GiB single-array limit, not an out-of-memory, not a refusal (T35,
-`platform.md` §1). 21,008 input tokens is measured fine; 52,008 is measured fatal; nothing
-between has been tried.
+**A long prompt takes the process with it** — `[metal::malloc]` against Metal's 21.06 GiB
+single-array limit, not an out-of-memory, not a refusal (`platform.md` §1). What decides it
+is not the context alone but `16 × prefill_step_size × context × 2 B ≤ 22,613,000,192`,
+because `head_dim` 256 defeats MLX's fused attention and each prefill chunk materialises a
+bf16 score matrix. Reachable context is therefore inversely proportional to the step:
+
+| `--prefill-step-size` | max prompt |
+|---|---|
+| 8192 | 89,791 |
+| 4096 | 176,047 |
+| **2048** | **346,106** — past the model's own 262,144 |
+
+`tools/qcn_context.py --plan` prints that table without an engine or a GPU; the same script
+probes a live one at exact token counts. Full numbers and the seven confirming probes are
+`platform.md` §1.2.
 
 Size prompts by **tokens**, never characters or words: this tokenizer runs ~11.8 tokens per
 generated identifier, which is how the fatal prompt was sent in the first place. Gate B's
@@ -440,6 +458,67 @@ read `worst_tok_per_s`, not `pass`.
 | Does it pass Gate B at spec? | **measured — yes.** 258.0 against 200 |
 | Does the scales lever pay? | **measured — 1.08×**, against 1.36× on the sweep alone |
 | What does `container_hash` cost over 44.84 GB? | unmeasured, derived ~30 s at ~1.5 GB/s |
-| Where exactly does the buffer ceiling bite? | **unmeasured** — T35, and it is a bisection between 21k and 52k tokens |
+| Where exactly does the buffer ceiling bite? | **measured** — `16 × step × context × 2 B`, so 262,144 is reachable at step 2048 (`platform.md` §1.2) |
 | Does `reasoning_control` need to be set for this model? | **unmeasured.** Carried over from the 122B; Gate B reads prefill rate and never exercises it |
 | **Do its verdicts decorrelate from tier 0's?** | **the only question that decides anything now** — T5, and `tools/rung3_agreement.py` is the shape of the answer |
+
+### 7.6 Driving it from Claude Code
+
+**Measured 2026-08-11.** It works, end to end, including tool calls — a `Glob` task in this
+repo returned the right answer in **210 s**. **Exactly one thing has to be added**, and it is
+the proxy; §7.3's context flags matter only if you want more than 32k.
+
+```bash
+S=~/.cache/huggingface/hub/models--mlx-community--Qwen3-Coder-Next-4bit/snapshots/7b9321eabb85ce79625cac3f61ea691e4ea984b5
+HF_HUB_OFFLINE=1 .venv-optiq/bin/optiq serve --stream-experts --model "$S" \
+  --host 127.0.0.1 --port 8081 --max-context off --prefill-step-size 2048
+
+python3 tools/qcn_cc_proxy.py          # second terminal; 8082 -> 8081
+
+env -u ANTHROPIC_API_KEY \
+  ANTHROPIC_BASE_URL=http://127.0.0.1:8082 \
+  ANTHROPIC_AUTH_TOKEN=sk-optiq-local \
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 claude
+```
+
+**The proxy is the whole fix, and the bug it works around blames the model for a transport
+defect.** optiq 0.4.18 emits a complete `/v1/messages` event sequence ending in
+`message_stop` and then never closes the socket. Claude Code reports `API Error: The
+operation timed out.` on an answer it already holds — the same record carries
+`output_tokens: 2` and the correct text. `curl` shows it plainly: exit 28 after 120 s with
+all six events present, against exit 0 in 1.3 s on `/v1/chat/completions`, which localises
+the defect to the Anthropic writer. Without the proxy, four of four sessions failed; with
+it, three of three succeeded, including with no tuning of any kind. Verified pass-through:
+`GET /v1/models` 200, non-streaming `/v1/messages` 200, and the `count_tokens` 404 relayed
+unchanged.
+
+Measured behaviour of the session itself:
+
+| | |
+|---|---|
+| Claude Code's preamble | **21,759** tokens in a bare directory, **26,709** in this repo |
+| turn 1 | 26,709-token prefill, ~180 s, then a `tool_use` |
+| turn 2 | **44 tokens** — the prompt cache reuses the whole prefix |
+| total, one tool call | **210 s**, correct answer |
+
+**Two settings are commonly recommended for this and are not needed here — do not cargo-cult
+them.** Both were tested off and the session still worked:
+
+- `--prompt-cache-bytes` was **not** required. The default prints a 0.50 GB cap and turn 2
+  still reused the full 26,709-token prefix, so the arithmetic that says 656 MB of KV cannot
+  fit does not predict what the cache actually does. It becomes a real question only for a
+  prefix far larger than this: at 24 KiB/token a 128k prefix is ~3.1 GB. **Derived, not
+  measured** — raise it if a long-context session starts re-prefilling every turn.
+- `CLAUDE_STREAM_IDLE_TIMEOUT_MS` was **not** required, and it resolves to
+  `max(env, 300000)`, so it can only be raised. It matters because nothing is emitted during
+  prefill, making time-to-first-byte *equal* prefill time — 94.8 s at 22k, ~180 s at 26,709,
+  both inside the 5-minute floor. A first turn near 128k at ~175 tok/s is ~745 s and would
+  exceed it, so raise it for long-context work. **Derived from the prefill rates in
+  `platform.md` §1.2, not observed.** `CLAUDE_SLOW_FIRST_BYTE_MS` (30 s) only logs.
+
+**What it costs.** Prefill dominates and there is no hiding it: the first turn is ~180 s
+before anything appears, and decode runs single digits of tok/s. Multi-turn is what makes it
+tolerable, because prefix reuse makes turn 2 onward nearly free. `--prefill-step-size 8192`
+buys 317 tok/s of prefill at the price of an 89,791-token ceiling (§7.3). **Nothing here
+changes the rung-3 decision** — it demonstrates the harness *can* drive this model, not that
+it should generate.
