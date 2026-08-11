@@ -1,8 +1,11 @@
 # CLAUDE.md
 
-Orbit is a local coding-agent runtime that optimises for merge quality: a resident model
-carrying repo-derived LoRA adapters generates candidate patches, and a large streamed
-model verifies them rather than generating.
+Orbit is a local coding-agent runtime that runs a larger-than-memory model as a verifier,
+never a generator: a resident model carrying repo-derived LoRA adapters writes candidate
+patches, and a model too big for this machine's memory — experts streamed from NVMe —
+reads them and judges. The asymmetry that makes that affordable is prefill vs decode, ~40x
+on measured hardware; **improving merge quality is the goal it is pointed at, and the one
+claim here nothing has measured yet** (the merge eval has never run).
 
 Background, deliberately **not** `@`-imported — each is long, only sometimes needed, and
 loading them every session is what makes the rules below get ignored. `docs/README.md`

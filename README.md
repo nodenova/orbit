@@ -1,7 +1,7 @@
 <h1 align="center">Orbit</h1>
 
 <p align="center">
-  <strong>A local coding-agent runtime that optimises for merge quality.</strong><br>
+  <strong>A local coding-agent runtime that runs a larger-than-memory model as a verifier, never a generator.</strong><br>
   One machine, two model tiers, and a receipt for every change.
 </p>
 
@@ -16,9 +16,12 @@
 ---
 
 A fast resident model, adapted to *your* repository from its own git history, generates
-candidate patches. A large model reads those candidates and picks or rejects them — a
-**verifier, never a generator**. A hash-chained receipt proves which base and which adapter
-produced each change.
+candidate patches. A second model — one too large to hold in this machine's memory, its
+experts streamed from NVMe as they are needed — reads those candidates and picks or rejects
+them. It is a **verifier, never a generator**, and that is structural rather than a policy:
+streamed weights make reading ~40× cheaper per token than writing, so the interface has no
+`generate` at all. A hash-chained receipt proves which base and which adapter produced each
+change.
 
 Orbit speaks the Anthropic, OpenAI chat-completions and OpenAI responses APIs from one
 process, so Claude Code, OpenCode, Crush and Codex all point at the same
@@ -42,26 +45,37 @@ test — see [Offline by construction](#offline-by-construction).
 
 ## Why this shape
 
-Three facts, one product.
+Three measured facts, and one goal they are pointed at.
 
-**1. Streamed models are ~40× cheaper per input token than per output token.** Decode
+**1. On a bandwidth-limited machine, "does it fit in memory?" is the wrong question.** What
+decides whether a model is usable is *active* parameters, not total. A 27B dense model fits
+this 36 GB box comfortably and then decodes at **~9 tok/s** — loaded, and useless. A 122B
+MoE with 10B active does not fit at all, streams its experts off NVMe at **3.46 GB
+resident**, and is the more useful of the two. [`docs/platform.md`](docs/platform.md) §5 is
+a table of models sorted by that distinction; the rows marked *fits, unusable* are the
+finding.
+
+**2. Streamed models are ~40× cheaper per input token than per output token.** Decode
 streams top-k experts per token — **4.05 tok/s measured**, unusable. Prefill with a
 batch-union sweep reads each expert once per chunk — **165 tok/s measured**. Every
 published number in the field is single-request decode, so the field concluded streamed
 models are too slow. That is correct *for generation* and wrong for any task where input
-dominates output.
+dominates output. This is the whole reason a larger-than-memory model is worth having here.
 
-**2. The tasks where input dominates output are exactly the tasks that determine merge
-quality.** Reranking N candidates emits an integer. Reviewing a diff emits a verdict. Both
-read 5–30k tokens and write 10–300.
+**3. The tasks where input dominates output are exactly what a verifier does.** Reranking N
+candidates emits an integer. Reviewing a diff emits a verdict. Both read 5–30k tokens and
+write 10–300. So the model that cannot afford to write is pointed at the work that is all
+reading.
 
-**3. Merge quality, not benchmark score, is the binding constraint.** METR's standing
-finding: ~half of SWE-bench-passing PRs would not be merged by maintainers. A local 35B at
-73.4% SWE-bench Verified is not short of capability — it is short of *this repository's*
-conventions, which is what a repo-derived adapter encodes and a verifier pass enforces.
+**The goal: merge quality, not benchmark score.** METR's standing finding: ~half of
+SWE-bench-passing PRs would not be merged by maintainers. A local 35B at 73.4% SWE-bench
+Verified is not short of capability — it is short of *this repository's* conventions, which
+is what a repo-derived adapter encodes and a verifier pass enforces. **This is the one claim
+on this page with no measurement behind it**: the merge eval that would settle it has never
+been run, and it is tracked as such in [Status](#status).
 
-Both terms of fact 1 are measured on this project's reference machine, not borrowed:
-[`docs/platform.md`](docs/platform.md) §4.
+Facts 1–3 are measured on this project's reference machine, not borrowed:
+[`docs/platform.md`](docs/platform.md) §4 and §5.
 
 ## Status
 
@@ -78,6 +92,7 @@ at a time.**
 | Tier 1 (verifier) | **rung 1 serves.** Still *deployed* as rung 3 — tier 0 with its adapter stripped — which is ~3.5× faster and costs no memory |
 | Determinism (sec 9.3) | **measured, and G1 is red.** CPU and Metal diverge 4.375 logits against a 1.625 greedy margin and flip the first token — MLX runs a different linear-attention algorithm on CPU, so byte-identity is not the platform's to give. The same configuration reproduces *bitwise* |
 | Adapter isolation (sec 4.2) | **not run — needs a trained adapter.** No longer blocked by memory |
+| Merge eval (sec 10.1) — **the product thesis** | **never run.** Built and unit-tested; no result exists. It needs a trained A1 adapter, an `[eval]` block, and a repository with enough history to extract from — `orbit extract` exits 2 below 500 pairs, and this repo has 43 commits. Until it runs, "improves merge quality" is the design's intent and not one of its findings |
 
 The distinction that matters: every gate's *plumbing* is proven; not every *number* is.
 Everything above the backend interface runs against `MockBackend` — a deterministic,

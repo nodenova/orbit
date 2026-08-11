@@ -9,20 +9,31 @@
 
 ## 1. The shape
 
-**A local coding-agent runtime that optimises for merge quality.** Two model tiers on one
-machine: a fast resident model carrying repo-derived LoRA adapters generates candidate
-patches, and a large model reads them and picks or rejects — a **verifier, never a
-generator**.
+**A local coding-agent runtime that runs a larger-than-memory model as a verifier, never a
+generator.** Two model tiers on one machine: a fast resident model carrying repo-derived
+LoRA adapters writes candidate patches, and a model that does not fit in this machine's
+memory — its experts streamed from NVMe — reads them and picks or rejects.
 
-Three facts the whole design turns on:
+Four facts the whole design turns on. The first three are measured on this project's
+reference machine; the fourth is the goal the other three are pointed at, and it is the one
+nothing here has measured.
 
 | # | Fact | Consequence for the code |
 |---|---|---|
-| 1 | **Streamed models are ~40× cheaper per input token than per output token.** Decode streams top-k experts per token; prefill with a batch-union sweep reads each expert once per chunk. | Tier 1 is only ever asked input-dominated questions. |
-| 2 | **The input-dominated tasks are exactly the ones that decide merge quality.** Reranking N candidates emits an integer; reviewing a diff emits a verdict. Both read 5–30k tokens and write 10–300. | Tier 1 is a verifier *structurally*: the interface has no `generate`. |
-| 3 | **Merge quality, not benchmark score, is the binding constraint.** METR: ~half of SWE-bench-passing PRs would not be merged by maintainers. | A repo-derived adapter encodes this repository's conventions; a verifier pass enforces them. |
+| 1 | **On a bandwidth-limited host, "does it fit in memory" is the wrong question.** Active parameters are the constraint, not total. Models that load comfortably then miss the latency contract by 4–8× are the finding, not the exception — `platform.md` §5's *fits, unusable* rows. | Every viable configuration is a low-active-parameter MoE, and capacity is bought with NVMe streaming rather than with a smaller model. |
+| 2 | **Streamed models are ~40× cheaper per input token than per output token.** Decode streams top-k experts per token; prefill with a batch-union sweep reads each expert once per chunk. Measured: 4.05 tok/s decode against 164.7 prefill on the 122B. | Tier 1 is only ever asked input-dominated questions. |
+| 3 | **The input-dominated tasks are exactly the ones a verifier needs.** Reranking N candidates emits an integer; reviewing a diff emits a verdict. Both read 5–30k tokens and write 10–300. | Tier 1 is a verifier *structurally*: the interface has no `generate`. |
+| 4 | **The goal, not a measurement: merge quality rather than benchmark score.** METR: ~half of SWE-bench-passing PRs would not be merged by maintainers. | A repo-derived adapter encodes this repository's conventions; a verifier pass enforces them. **Whether that works is unmeasured** — the merge eval (`eval/merge_eval.py`, sec 10.1) has never been run. |
 
-Both terms of fact 1 are measured — `platform.md` §4.
+Facts 1–3 are measured — `platform.md` §4 and §5. Fact 4 is why the shape was chosen and
+carries no evidence yet; do not quote it as a result.
+
+**What ships is not yet what fact 2 describes.** Tier 0 at 23.0 GiB plus any streamed engine
+exceeds Metal's 28.08 GiB working set, so a serving deployment runs **rung 3** — tier 0 with
+its adapter unmounted — and the larger-than-memory verifier is a measured capability rather
+than a shipping default. `platform.md` §4.8 keeps that decision even after a streamed rung 1
+cleared the gate at spec. The rung ladder is §5.5; `Tier1Attestation.rung` records which one
+served every verdict, so a receipt never implies otherwise.
 
 ## 2. One request path
 

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "orbit"
 version = "0.1.0"
-description = "A local coding-agent runtime that optimises for merge quality."
+description = "A local coding-agent runtime that runs a larger-than-memory model as a verifier, never a generator."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
