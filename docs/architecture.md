@@ -75,7 +75,7 @@ src/orbit/
 tools/          not installed; grouped by what a script does, not by model
   bench/        throughput, SSD and constrained-decoding measurement
   probe/        header, context and determinism inspection
-  quality/      answer quality: the regression suite, rung-3 agreement
+  quality/      answer quality: regression suite, rung-3 agreement, agent eval
   serve/        engine and proxy processes, and the tier-1 transport
   corpus/       review export for adapter extraction
 tests/          mirrors src/orbit/, plus tools/ and the shared MLX stand-in
