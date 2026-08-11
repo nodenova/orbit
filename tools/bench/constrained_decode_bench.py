@@ -9,11 +9,11 @@ Every subcommand runs without weights. `loop` builds a ~4 GB synthetic decoder; 
 rest need only the tokenizer, and `filter`/`identity`/`components` pay LMFE's ~1.2 s
 vocabulary build.
 
-    python tools/constrained_decode_bench.py loop --layers 48
-    python tools/constrained_decode_bench.py filter
-    python tools/constrained_decode_bench.py identity
+    python tools/bench/constrained_decode_bench.py loop --layers 48
+    python tools/bench/constrained_decode_bench.py filter
+    python tools/bench/constrained_decode_bench.py identity
 
-**Check host health first.** `tools/mlxbench.py` must report ~247 GB/s; at the
+**Check host health first.** `tools/bench/mlxbench.py` must report ~247 GB/s; at the
 23 GB/s of `operations.md` §3.1 the GPU is so slow that host work vanishes into
 noise and `loop` reports every variant as equal.
 """
@@ -81,7 +81,7 @@ def default_model() -> Path:
 
 def load_filter(model: Path) -> tuple[Any, Any, list[int]]:
     """LMFE token filter for the `edit_file` schema, plus the tokenizer and target ids."""
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
     from mlx_lm.tokenizer_utils import load as load_tokenizer
 
     from orbit.gateway.toolcall.constrain import Constrainer, tool_call_schema
@@ -308,7 +308,7 @@ def cmd_filter(args: argparse.Namespace) -> None:
     """
     import mlx.core as mx
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
     from mlx_lm.tokenizer_utils import load as load_tokenizer
 
     from orbit.gateway.toolcall.constrain import Constrainer, tool_call_schema

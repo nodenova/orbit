@@ -110,7 +110,7 @@ request_timeout_s = 300.0
 # so that arming rung 1 does not re-find this.
 reasoning_control = "deepseek_v4"
 swap_budget_s = 0.0
-remote_transport = "tools/remote_tier1.py"
+remote_transport = "tools/serve/remote_tier1.py"
 remote_api_key_env = "ORBIT_REMOTE_API_KEY"
 remote_consent = ""
 

@@ -20,7 +20,7 @@ So four things are structural rather than advisory:
 
 * **The HTTP lives outside the package.** Nothing under `src/orbit/` makes an
   outbound call and a test pins that surface, so this backend holds no client at all:
-  the transport is injected and `tools/remote_tier1.py` is where the socket is. A rung
+  the transport is injected and `tools/serve/remote_tier1.py` is where the socket is. A rung
   that broke the airgap by pulling an HTTP client into the package would break it for
   every *other* rung too — including the three that are still airgapped, and including
   the deployments that never enable this one.
@@ -98,7 +98,7 @@ class RemoteTier1Backend(Backend):
         if not callable(transport):
             raise ValueError(
                 "RemoteTier1Backend needs a transport. The package makes no outbound "
-                "call by design (sec 8.6), so the HTTP lives in tools/remote_tier1.py "
+                "call by design (sec 8.6), so the HTTP lives in tools/serve/remote_tier1.py "
                 "and is injected here."
             )
         self._transport = transport

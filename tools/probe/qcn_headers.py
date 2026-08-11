@@ -1,6 +1,6 @@
 """Qwen3-Coder-Next-4bit's memory shape off the safetensors headers, no download.
 
-Same method as tools/ds4_headers.py, retargeted: that script reads DeepSeek config
+Same method as tools/probe/ds4_headers.py, retargeted: that script reads DeepSeek config
 keys (n_routed_experts, num_hash_layers) this architecture does not have.
 """
 

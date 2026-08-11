@@ -27,7 +27,7 @@ single-user local deployment was not using.
 
 Use it exactly as `optiq serve`; every argument is forwarded:
 
-    tools/ds4_serve.py --stream-experts --model "$SNAPSHOT" --port 8081
+    tools/serve/ds4_serve.py --stream-experts --model "$SNAPSHOT" --port 8081
 """
 
 from __future__ import annotations

@@ -72,10 +72,10 @@ class Tier1Config:
     # cost that was never observed.
     swap_budget_s: float = 0.0
     # Rung 4 only. The transport is a file outside the package, because nothing under
-    # src/orbit/ makes an outbound call (sec 8.6) — see tools/remote_tier1.py.
+    # src/orbit/ makes an outbound call (sec 8.6) — see tools/serve/remote_tier1.py.
     remote_endpoint: str = ""
     remote_model: str = ""
-    remote_transport: str = "tools/remote_tier1.py"
+    remote_transport: str = "tools/serve/remote_tier1.py"
     # The name of an environment variable, never the key itself: a config file is
     # committed, diffed and pasted into issues.
     remote_api_key_env: str = "ORBIT_REMOTE_API_KEY"

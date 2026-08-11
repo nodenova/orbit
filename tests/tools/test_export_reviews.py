@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-_PATH = Path(__file__).resolve().parents[1] / "tools" / "export_reviews.py"
+_PATH = Path(__file__).resolve().parents[2] / "tools" / "corpus" / "export_reviews.py"
 _spec = importlib.util.spec_from_file_location("export_reviews", _PATH)
 assert _spec and _spec.loader
 export_reviews = importlib.util.module_from_spec(_spec)
@@ -233,7 +233,10 @@ def test_the_exporter_is_not_part_of_the_package():
     import orbit
 
     pkg_root = Path(orbit.__file__).resolve().parent
-    assert _PATH.parent.name == "tools"
+    # Somewhere under `tools/` rather than directly in it: the tree is grouped by
+    # what a script does, and this test's claim is about which side of the package
+    # boundary the exporter sits on, not which group it was filed under.
+    assert "tools" in _PATH.parts
     assert pkg_root not in _PATH.parents
 
 

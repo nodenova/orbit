@@ -59,7 +59,7 @@ Two consequences worth carrying to any model:
 
 ### 1.2 The array that fails, and how to shrink it
 
-**Measured 2026-08-11**, `tools/qcn_context.py`, mlx 0.32.0 / mlx-lm 0.31.3 /
+**Measured 2026-08-11**, `tools/probe/qcn_context.py`, mlx 0.32.0 / mlx-lm 0.31.3 /
 mlx-optiq 0.4.18. The frontier is not a context length — it is a *product*:
 
 ```
@@ -147,7 +147,7 @@ elementwise work and what decode actually sees.
 > 15 h of uptime — ~9% and ~50% — with nothing resident; a reboot restored it to **323 /
 > 352 GB/s and 11.9 TFLOP/s**, which is *above* this table. Neither the degradation nor
 > the 1.3× headroom over the recorded figures is explained.
-> **Run `tools/mlxbench.py` and require ≥ ~250 GB/s before trusting any new measurement
+> **Run `tools/bench/mlxbench.py` and require ≥ ~250 GB/s before trusting any new measurement
 > on this machine** — `operations.md` §3.1 is the gate, `operations.md` §3.1 the finding.
 
 Three SSD facts govern any streaming path:
@@ -261,7 +261,7 @@ time on its own. **This is the workload Orbit is for, and the 2.38× decode rati
 express it.**
 
 **The paragraph above read 2.5 ms/token because its fixture had no escape at all.**
-`tools/constrained_decode_bench.py escape` reproduces the hardware figure to within 2%
+`tools/bench/constrained_decode_bench.py escape` reproduces the hardware figure to within 2%
 with no weights, and is the cheaper way to ask anything further about where the time goes.
 
 **Rung 0 now reproduces this without weights — `constrained-decoding.md` §3.2, §4.** Run
@@ -291,7 +291,7 @@ kernel compilation — ~9 s, enough to read 4.1 tok/s where the truth is 27.
 
 ### 2.4 Determinism, measured in logits rather than in text
 
-*2026-08-10, `tools/determinism_probe.py`, mlx 0.32.0, one load of 22.14 GB, host at
+*2026-08-10, `tools/probe/determinism_probe.py`, mlx 0.32.0, one load of 22.14 GB, host at
 325/347 GB/s. `var/determinism-device.json`, `var/determinism-chunk-8k.json`.*
 
 Sec 9.3's G1 and G2 compare *text* and answer yes/no. Measured one layer down — per step,
@@ -499,7 +499,7 @@ names and nobody has measured.
 
 **Nothing here required the weights.** The shape came off the 18 safetensors headers by
 HTTP Range request, and the throughput came from replaying the loader's exact read
-pattern against local blobs (`tools/ds4_streambench.py`). Both are reproducible in
+pattern against local blobs (`tools/bench/ds4_streambench.py`). Both are reproducible in
 about three minutes.
 
 **The engine will stream it, and that was the open question.** `--stream-experts`
@@ -592,7 +592,7 @@ against §4.5, which was free and strictly cheaper than fetching 92.83 GB.
 
 ### 4.5 Rung 3 is not a no-op, and the number that shows it is not the obvious one
 
-*2026-08-09. `tools/rung3_agreement.py`, 12 fixed tasks × 5 candidates at temperature
+*2026-08-09. `tools/quality/rung3_agreement.py`, 12 fixed tasks × 5 candidates at temperature
 0.6, `Qwen3.6-35B-A3B-OptiQ-4bit`, no adapter mounted. `var/rung3-agreement.json`.*
 
 `platform.md` §4.5 asked one question before spending 92.83 GB on an independent verifier:
@@ -652,7 +652,7 @@ serve because tier 1 runs `optiq serve --stream-experts`, so the OptiQ build is 
 engine is built for; `2.4bit-mixed` was only ever the fallback the 401 forced.
 
 Shape by the same method as §4.4 — 42 shard headers over HTTP Range, no weights, no GPU
-(`tools/ds4_headers.py` with `REPO` repointed):
+(`tools/probe/ds4_headers.py` with `REPO` repointed):
 
 | Component | GB | Fate |
 |---|---|---|
@@ -876,15 +876,15 @@ machine.
 .venv-optiq/bin/python -c "import mlx.core as mx; print(mx.device_info())"
 
 # §2.1 bandwidth and GEMM · SSD random read with the page cache bypassed
-.venv-optiq/bin/python tools/mlxbench.py    # it is also operations.md 3.1's gate
-python3 tools/ssdbench_verified.py
+.venv-optiq/bin/python tools/bench/mlxbench.py    # it is also operations.md 3.1's gate
+python3 tools/bench/ssdbench_verified.py
 
 # §4.6 / §4.4 DeepSeek-V4 without loading it: shape off the safetensors headers by HTTP
 # Range, then the loader's exact read pattern replayed against local blobs. ~3 min,
 # no weights, no GPU. Re-run the second one from a fresh boot; it reads ~1 TB.
-python3 tools/ds4_headers.py                                       # §4.6, the OptiQ quant
-python3 tools/ds4_headers.py mlx-community/DeepSeek-V4-Flash-0731-2.4bit-mixed   # §4.4
-python3 tools/ds4_streambench.py
+python3 tools/probe/ds4_headers.py                                       # §4.6, the OptiQ quant
+python3 tools/probe/ds4_headers.py mlx-community/DeepSeek-V4-Flash-0731-2.4bit-mixed   # §4.4
+python3 tools/bench/ds4_streambench.py
 
 # §2.2 Gate A
 .venv/bin/orbit bench latency --out var/gate-a.json
@@ -893,22 +893,22 @@ python3 tools/ds4_streambench.py
 .venv/bin/orbit gate toolcall --runs 100
 
 # §2.3's escape finding. No weights, ~1 min, reproduces the hardware cost to within 2%.
-HF_HUB_OFFLINE=1 .venv/bin/python tools/constrained_decode_bench.py escape
+HF_HUB_OFFLINE=1 .venv/bin/python tools/bench/constrained_decode_bench.py escape
 
 # §2.3's caching decision: which escapes share a state, and what a key would collapse.
-HF_HUB_OFFLINE=1 .venv/bin/python tools/constrained_decode_bench.py statekey
+HF_HUB_OFFLINE=1 .venv/bin/python tools/bench/constrained_decode_bench.py statekey
 
 # §2.4 determinism in logits. One load of 22.14 GB serves every arm, because on MLX a
 # CPU arm reads the same unified-memory buffers. The chunk arm is ~30 s; the CPU arm is
 # ~450 s for four tokens, so ladder it and do not raise --cpu-tokens casually.
-HF_HUB_OFFLINE=1 .venv/bin/python tools/determinism_probe.py \
+HF_HUB_OFFLINE=1 .venv/bin/python tools/probe/determinism_probe.py \
   --prompt-tokens 8000 --chunk-a 2048 --chunk-b 512 --decode-tokens 64 \
   --out var/determinism-chunk-8k.json
-HF_HUB_OFFLINE=1 .venv/bin/python tools/determinism_probe.py \
+HF_HUB_OFFLINE=1 .venv/bin/python tools/probe/determinism_probe.py \
   --decode-tokens 4 --cpu-tokens 4 --out var/determinism-device.json
 
 # §4.5 does rung 3 ever disagree with candidate 0. Loads tier 0; ~6 min for 12 tasks.
-python tools/rung3_agreement.py --config orbit.toml --prompts 12 --candidates 5 \
+python tools/quality/rung3_agreement.py --config orbit.toml --prompts 12 --candidates 5 \
   --out var/rung3-agreement.json
 
 # §4.1 tier-1 streaming. The engine is started by hand and Orbit never spawns it

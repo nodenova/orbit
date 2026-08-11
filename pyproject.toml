@@ -220,7 +220,7 @@ enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
 
 [[tool.mypy.overrides]]
 # `tools/` is real code — the no-outbound-network rule (CLAUDE.md) is enforced
-# against it by tests/test_export_reviews.py — so it keeps every check that finds a
+# against it by tests/tools/test_export_reviews.py — so it keeps every check that finds a
 # type error. Only the annotation-presence rules come off, because these are
 # argparse scripts, not a library surface.
 module = ["tools.*"]
@@ -288,7 +288,7 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 # `optiq` is never installed in this project's venv and is not a dependency: it is the
 # engine, a separate process behind sec 5.4's boundary, living in its own `.venv-optiq`
-# with its own mlx build. Only `tools/ds4_probe.py` and `tools/ds4_serve.py` import it,
+# with its own mlx build. Only `tools/probe/ds4_probe.py` and `tools/serve/ds4_serve.py` import it,
 # and they are run with that interpreter (`.venv-optiq/bin/python tools/...`) precisely
 # so the engine's environment stays out of ours. Scoped rather than global for the same
 # reason as the group above: a missing first-party import must still fail.
@@ -303,7 +303,7 @@ follow_imports = "skip"
 # error — which is what `follow_imports` answers, and that half must stay.
 #
 # `ignore_missing_imports` is the other half, and it was added when
-# `tools/determinism_probe.py` became the first file here to import numpy: without
+# `tools/probe/determinism_probe.py` became the first file here to import numpy: without
 # it that import is an `import-not-found` on every CI box and resolves fine on the
 # M4 Max, which is a gate that only passes on the machine that cannot run CI. Both
 # lines together pin the two machines to the same answer.

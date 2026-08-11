@@ -241,7 +241,7 @@ failure to work around — below that, A1 underfits, and the honest answer is to
 customer rather than ship a null adapter.
 
 A2 is stronger with real review timestamps, which live in the forge rather than in git.
-[`tools/export_reviews.py`](tools/export_reviews.py) fetches them; without it, extraction
+[`tools/corpus/export_reviews.py`](tools/corpus/export_reviews.py) fetches them; without it, extraction
 falls back to the first branch commit and labels every pair with which signal produced it.
 
 ## Gates and evals
@@ -356,7 +356,7 @@ resolve.
 
 ```bash
 pytest -q                                          # the whole suite, ~8 s
-pytest tests/test_router.py::test_n_equals_one_disables_reranking -q
+pytest tests/gateway/test_router.py::test_n_equals_one_disables_reranking -q
 ```
 
 The git-facing tests build small real repositories rather than mocking `git`, because every

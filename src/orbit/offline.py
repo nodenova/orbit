@@ -126,7 +126,7 @@ def endpoint_host(url: str) -> str:
     """The host of a URL — no scheme, credentials, port or path.
 
     Hand-parsed rather than `urllib.parse.urlsplit` because nothing under
-    `src/orbit/` imports `urllib` and `tests/test_export_reviews.py` walks the
+    `src/orbit/` imports `urllib` and `tests/tools/test_export_reviews.py` walks the
     package's imports to keep it that way (sec 8.6). A host is a prefix of a URL,
     so extracting one is three splits, and it is worth that to keep the pin crisp.
     """

@@ -1,6 +1,6 @@
 """Rung 1 for the constrained-decode fixes: do they hold against real weights?
 
-`tools/constrained_decode_bench.py` decomposes the cost without weights and concludes
+`tools/bench/constrained_decode_bench.py` decomposes the cost without weights and concludes
 that most of it is removable in Python (`docs/constrained-decoding.md`). This
 script is the confirmation that decomposition owes: six processor variants sharing
 one loaded model, so the comparison is apples-to-apples.
@@ -22,11 +22,11 @@ Loads tier 0 (~20.6 GiB) -- read `docs/operations.md` §1 and the `real-weights`
 first, and start at `--runs 1`. It reports pageins per variant and voids its own
 timings if the weights are being re-read from disk.
 
-**`tools/mlxbench.py` must report ~247 GB/s before this means anything.** At the
+**`tools/bench/mlxbench.py` must report ~247 GB/s before this means anything.** At the
 23 GB/s of `operations.md` §3.1 every variant reads the same, because a 15x-slow
 GPU swamps the host-side differences this measures.
 
-    python tools/constrained_decode_realweights.py --runs 1 --max-tokens 64
+    python tools/bench/constrained_decode_realweights.py --runs 1 --max-tokens 64
 """
 
 from __future__ import annotations
@@ -254,7 +254,7 @@ def main() -> None:
     args = ap.parse_args()
     model_path = args.model or default_model()
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
     import mlx.core as mx
     from mlx_lm import load, stream_generate
 

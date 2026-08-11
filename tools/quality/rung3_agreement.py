@@ -24,7 +24,7 @@ That is the degenerate case, and its number is the floor for every other rung.
 Lives in `tools/` rather than the package: it is a measurement, not a shipped feature.
 It loads tier 0 (23.0 GiB on the mlx backend) -- read `docs/operations.md` first.
 
-    python tools/rung3_agreement.py --config orbit.toml --prompts 12 --candidates 5
+    python tools/quality/rung3_agreement.py --config orbit.toml --prompts 12 --candidates 5
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from orbit.backends import build_tier0, build_tier1
 from orbit.config import Config

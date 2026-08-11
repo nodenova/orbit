@@ -34,9 +34,9 @@ measurement rather than failing:
 Lives in `tools/` rather than the package: it is a measurement, and it makes outbound
 HTTP calls, which nothing under `src/orbit/` may do.
 
-    python tools/qcn_quality.py suite --out var/qcn-suite.json
-    python tools/qcn_quality.py toolcall --runs 100 --out var/qcn-toolcall.json
-    python tools/qcn_quality.py throughput --out var/qcn-throughput.json
+    python tools/quality/qcn_quality.py suite --out var/qcn-suite.json
+    python tools/quality/qcn_quality.py toolcall --runs 100 --out var/qcn-toolcall.json
+    python tools/quality/qcn_quality.py throughput --out var/qcn-throughput.json
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ from typing import Any
 
 import httpx
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from orbit.eval.gates import SCENARIO_STEPS, SCENARIO_TOOLS
 from orbit.eval.regression import grade

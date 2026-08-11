@@ -64,7 +64,7 @@ Not code. The numbers appear where they bind:
 `MultiAdapterLinear` holds every mounted adapter's `(A, B)` at once and selects per
 request. The isolation gate is what proves it, and it runs two ways: vacuously in CI
 against a backend with no adapters mounted, so the gate itself cannot rot, and for
-real in `tests/test_mlx_tier0.py` against `MLXTier0Backend` with two overlapping
+real in `tests/backends/test_mlx_tier0.py` against `MLXTier0Backend` with two overlapping
 adapters under the fake MLX. The suite also drives a deliberately leaky wrapper past
 it, because a gate nobody has seen fail is a gate nobody has tested.
 
@@ -85,7 +85,7 @@ unproven.
 | 5.5 rung 1 (streamed) | `build_tier1()`, `backends/mlx_tier1.py` | **measured** — Gate B ran six times, 153.7 tok/s mean; the engine also answered real reranks through this client, `platform.md` §4.1a |
 | 5.5 rung 2 (80B resident-swapped) | `backends/resident_swap.py` | built (policy) / open (MLX occupants) |
 | 5.5 rung 3 (second opinion) | `backends/second_opinion.py` | built — **the rung this host serves** |
-| 5.5 rung 4 (remote) | `backends/remote_tier1.py`, `tools/remote_tier1.py` | built |
+| 5.5 rung 4 (remote) | `backends/remote_tier1.py`, `tools/serve/remote_tier1.py` | built |
 
 **Output ceilings are enforced in code, not requested of the model.** The verifier API
 has no `generate`. The clamp and the schema validation moved out of `mlx_tier1.py` once
@@ -169,7 +169,7 @@ made.
 |---|---|---|
 | 9.1 response metadata | `attest/receipt.py` | built |
 | 9.2 append-only audit log | `attest/audit.py` | built |
-| 9.3 G1 / G2 determinism gates | `eval/gates.py`, `tools/determinism_probe.py` | built; **the gates have still not run, and the question they ask is measured** — G1 is **red on hardware** (CPU vs Metal flips the first token) and T16's chunk mechanism is quantified, both via the probe. G2 reports *not measured* rather than the vacuous pass it used to. `platform.md` §2.4, `platform.md` §2.4, T33/T34 |
+| 9.3 G1 / G2 determinism gates | `eval/gates.py`, `tools/probe/determinism_probe.py` | built; **the gates have still not run, and the question they ask is measured** — G1 is **red on hardware** (CPU vs Metal flips the first token) and T16's chunk mechanism is quantified, both via the probe. G2 reports *not measured* rather than the vacuous pass it used to. `platform.md` §2.4, `platform.md` §2.4, T33/T34 |
 | 9.4 provenance of training data | `attest/provenance.py` | built |
 
 ### sec 10 — Evaluation

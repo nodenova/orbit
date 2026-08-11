@@ -255,7 +255,7 @@ def _load_transport(cfg: Config) -> Any:
     if not path.is_file():
         raise ValueError(
             f"tier1.remote_transport={str(path)!r} is not a file. The HTTP for rung 4 "
-            "lives outside the package (sec 8.6); tools/remote_tier1.py is the one "
+            "lives outside the package (sec 8.6); tools/serve/remote_tier1.py is the one "
             "that ships with orbit."
         )
     spec = importlib.util.spec_from_file_location("orbit_remote_tier1_transport", path)
@@ -266,7 +266,7 @@ def _load_transport(cfg: Config) -> Any:
     factory = getattr(module, "transport_from_config", None)
     if factory is None:
         raise ValueError(
-            f"{path} defines no transport_from_config(); see tools/remote_tier1.py"
+            f"{path} defines no transport_from_config(); see tools/serve/remote_tier1.py"
         )
     return factory(
         endpoint=cfg.tier1.remote_endpoint,

@@ -22,7 +22,7 @@ and local. A committed file may cite `docs/`; it may never cite `specs/`.
 ```bash
 pip install -e '.[dev,constrain]'    # what CI installs; '.[dev]' alone exercises repair instead of prevention
 pytest -q                            # whole suite, ~8 s
-pytest tests/test_router.py::test_n_equals_one_disables_reranking -q
+pytest tests/gateway/test_router.py::test_n_equals_one_disables_reranking -q
 ruff format <paths> && ruff check --fix <paths>   # touched paths, never `.`
 mypy                                 # strict over src/; whole-project, no useful per-file mode
 orbit doctor                         # runtime status, offline posture, tier-1 rung
@@ -188,8 +188,8 @@ Each has a comment in the code saying why; the full list with rationale is
   them. Both halves are load-bearing: dropping the schema is silent, and on hardware it is
   the sec 10.2 gate at **0.81** instead of **1.00**, and 0 first-attempt tool calls
   instead of 100.
-- `src/orbit/` makes no outbound network call — `tools/export_reviews.py` sits outside the
-  package for that reason and `tests/test_export_reviews.py` pins the surface. A new
+- `src/orbit/` makes no outbound network call — `tools/corpus/export_reviews.py` sits outside the
+  package for that reason and `tests/tools/test_export_reviews.py` pins the surface. A new
   `httpx`/`socket`/`urllib` import under `src/orbit/` fails that test.
 
 ## Gotchas

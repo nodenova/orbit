@@ -477,7 +477,7 @@ def test_a_missing_transport_file_names_the_one_that_ships(tmp_path):
     cfg.tier1.remote_endpoint = "https://api.example.com/v1"
     cfg.tier1.remote_consent = CONSENT
     cfg.tier1.remote_transport = str(tmp_path / "nope.py")
-    with pytest.raises(ValueError, match=r"tools/remote_tier1\.py"):
+    with pytest.raises(ValueError, match=r"tools/serve/remote_tier1\.py"):
         build_tier1(cfg, build_tier0(cfg))
 
 
@@ -556,7 +556,7 @@ async def test_a_transport_that_returns_nonsense_is_rejected():
 
 
 def test_the_backend_holds_no_transport_of_its_own():
-    with pytest.raises(ValueError, match=r"tools/remote_tier1\.py"):
+    with pytest.raises(ValueError, match=r"tools/serve/remote_tier1\.py"):
         RemoteTier1Backend(None, model="m")
 
 

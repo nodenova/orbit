@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Export first-review timestamps for merged PRs, for A2 extraction (spec sec 6.3).
 
-    python tools/export_reviews.py --owner pallets --repo click --out reviews.json
+    python tools/corpus/export_reviews.py --owner pallets --repo click --out reviews.json
     orbit extract a2 --repo ./click --reviews reviews.json
 
 **Deliberately outside the package.** `src/orbit/` makes no outbound network call

@@ -7,7 +7,7 @@
 | **Does not answer** | Whether constrained decoding is worth its cost — it is, and `platform.md` §2.3 is why (100/100 first-attempt tool calls against 0/100). What the host is doing to every throughput number — `operations.md` §3.1. |
 | **Status** | **F1 and F2 have landed and are now measured** — 2.55× → 2.38×, worth 11–15% (§8.1). **F3 is rejected on measurement** (§6); F4 is not attempted and is worth ~1.11×, not ~1.5× (§8.3). The ladder is complete through rung 3, which passes at 1.00. **T26 is decided** — the 425 ms state is cacheable in principle and not by us (§8.5). **T28 is closed** — §3.2 and §4 are rebuilt on both fixtures and rung 0 now predicts rung 1 to within 5%. |
 | **The finding** | **~97% of what constrained decoding costs is one parser state: the gap between a backslash and its escape character, at ~425 ms per occurrence** (§8.4). It is reproducible with no weights, and the rung-0 fixture never entered it, which is why every projection in §3–§4 is 5× low. **It is not one state but one per enclosing object stack** (§8.5), which is what decides whether a cache may collapse it. |
-| **Provenance** | Measured 2026-08-09 on the baseline M4 Max, `tools/constrained_decode_bench.py` (no weights) and `tools/constrained_decode_realweights.py` (rung 1–2, six variants). The host passed `operations.md` §3.1 before *and* after the run. Reproduction: §10. |
+| **Provenance** | Measured 2026-08-09 on the baseline M4 Max, `tools/bench/constrained_decode_bench.py` (no weights) and `tools/bench/constrained_decode_realweights.py` (rung 1–2, six variants). The host passed `operations.md` §3.1 before *and* after the run. Reproduction: §10. |
 
 This file is committed on purpose. It lived in `/specs/`, which is gitignored, while
 `platform.md` pointed at it for "full scope, measurements and design" — a citation that
@@ -123,7 +123,7 @@ size-independent. The cost is on the host.
 ### 3.2 What the real filter costs — real tokenizer + LMFE
 
 *Re-measured against both fixtures on 2026-08-10 (T28), host at 316/346 GB/s.
-`tools/constrained_decode_bench.py filter`; `--per-token` for the raw dump.*
+`tools/bench/constrained_decode_bench.py filter`; `--per-token` for the raw dump.*
 
 `TARGET_CALL` is the 43-token `edit_file` call this section was originally written
 against. `ESCAPED_CALL` is the same call as the model actually emitted it, and the only
@@ -305,7 +305,7 @@ If LMFE ever returned the same list mutated in place, a content key alone would 
 new contents against themselves, report a hit, and reuse a mask built from the old ones — a
 silently wrong constraint, which is the one failure §7.1 cannot tolerate. Today it costs
 nothing (0 of 42 shared an identity) and it fails toward a rebuild.
-`tests/test_constrain_mlx.py::test_the_cache_does_not_hit_on_a_list_mutated_in_place` pins
+`tests/gateway/test_constrain_mlx.py::test_the_cache_does_not_hit_on_a_list_mutated_in_place` pins
 it.
 
 **This supersedes the rejected-cache comment rather than contradicting it.** That comment
@@ -387,7 +387,7 @@ that host work, and removing it needs no ownership of the decode loop. Own the l
 > inside a single request cost ~420 ms each**, so nothing collapses them within a turn
 > either.
 
-*`tools/constrained_decode_bench.py reuse`, tier-0 tokenizer, no weights.*
+*`tools/bench/constrained_decode_bench.py reuse`, tier-0 tokenizer, no weights.*
 
 F3 read the profile as "three ~26 ms one-time state builds with a 0.00 ms repeat cost" and
 concluded that a second request could skip them by sharing the schema-derived parser. Both
@@ -541,7 +541,7 @@ the decode loop. Do §8.2 first.
 
 ### 8.4 It is one parser state, it costs 425 ms, and the fixture never entered it
 
-*`tools/constrained_decode_bench.py escape`. **No weights** — this reproduces the
+*`tools/bench/constrained_decode_bench.py escape`. **No weights** — this reproduces the
 real-weights figure to within 2% in about a minute.*
 
 The 22.15 ms/token is not spread across the decode at all. Of the ~1,000 ms of LMFE time
@@ -608,7 +608,7 @@ is silent. That principle is unchanged; what has changed is the prize, from 1.1 
 
 ### 8.5 It is not one state, and the key that would collapse it is not ours to write
 
-*`tools/constrained_decode_bench.py statekey`. **No weights**, ~7 s.*
+*`tools/bench/constrained_decode_bench.py statekey`. **No weights**, ~7 s.*
 
 §8.4 left the deciding number open: the two occurrences returned **5,798** and **5,795**
 allowed tokens, so "the same state every time" was an assumption with a 3-token
@@ -667,28 +667,28 @@ does not help it either**, since hiding 11 ms/token behind the forward pass leav
 
 ```bash
 # host health — REQUIRED FIRST. Expect ~247 GB/s; 23 GB/s means stop (operations.md §3.1).
-.venv-optiq/bin/python tools/mlxbench.py
+.venv-optiq/bin/python tools/bench/mlxbench.py
 
 # rung 0 — no weights
-.venv/bin/python tools/constrained_decode_bench.py loop --layers 48   # §3.1 mechanism
-HF_HUB_OFFLINE=1 .venv/bin/python tools/constrained_decode_bench.py filter      # §3.2, §4
+.venv/bin/python tools/bench/constrained_decode_bench.py loop --layers 48   # §3.1 mechanism
+HF_HUB_OFFLINE=1 .venv/bin/python tools/bench/constrained_decode_bench.py filter      # §3.2, §4
 # `filter` runs both fixtures; --per-token dumps every step instead of the state summary.
-HF_HUB_OFFLINE=1 .venv/bin/python tools/constrained_decode_bench.py components  # §3.3
-HF_HUB_OFFLINE=1 .venv/bin/python tools/constrained_decode_bench.py identity    # §3.4
-HF_HUB_OFFLINE=1 .venv/bin/python tools/constrained_decode_bench.py key         # §3.4
-HF_HUB_OFFLINE=1 .venv/bin/python tools/constrained_decode_bench.py reuse       # §6.1
-HF_HUB_OFFLINE=1 .venv/bin/python tools/constrained_decode_bench.py escape      # §8.4
-HF_HUB_OFFLINE=1 .venv/bin/python tools/constrained_decode_bench.py statekey    # §8.5
+HF_HUB_OFFLINE=1 .venv/bin/python tools/bench/constrained_decode_bench.py components  # §3.3
+HF_HUB_OFFLINE=1 .venv/bin/python tools/bench/constrained_decode_bench.py identity    # §3.4
+HF_HUB_OFFLINE=1 .venv/bin/python tools/bench/constrained_decode_bench.py key         # §3.4
+HF_HUB_OFFLINE=1 .venv/bin/python tools/bench/constrained_decode_bench.py reuse       # §6.1
+HF_HUB_OFFLINE=1 .venv/bin/python tools/bench/constrained_decode_bench.py escape      # §8.4
+HF_HUB_OFFLINE=1 .venv/bin/python tools/bench/constrained_decode_bench.py statekey    # §8.5
 # `escape` reproduces the real-weights per-token cost to within 2% and needs no model.
 # Prefer it to a 20.6 GiB load for anything about where the time goes. `statekey`
 # compares the allowed sets themselves and is the acceptance test any cache key owes.
 
 # rung 1 — real weights, ~20.6 GiB. Headroom >= 27 GB first; operations.md §3.
-HF_HUB_OFFLINE=1 .venv/bin/python tools/constrained_decode_realweights.py \
+HF_HUB_OFFLINE=1 .venv/bin/python tools/bench/constrained_decode_realweights.py \
     --runs 1 --max-tokens 64 --out var/constrained-decode.json
 
 # rung 2 — §8.1 and §8.2 as tabulated. Six variants, ~9 min, one load.
-HF_HUB_OFFLINE=1 .venv/bin/python tools/constrained_decode_realweights.py \
+HF_HUB_OFFLINE=1 .venv/bin/python tools/bench/constrained_decode_realweights.py \
     --runs 8 --max-tokens 64 --out var/constrained-decode.json
 
 # rung 3 — the sec 10.2 gate, blocking. ~2 min, loads tier 0.

@@ -36,7 +36,7 @@ Ports 8080 and 8081 come from `orbit.toml` (`[server] port`, `tier1.endpoint`).
 ### 1.1 ollama is a neighbour, not a dependency
 
 Nothing under `src/orbit/` opens a connection to 11434, and nothing can: the package
-makes no outbound network call at all, which `tests/test_export_reviews.py` pins. Tier
+makes no outbound network call at all, which `tests/tools/test_export_reviews.py` pins. Tier
 0 loads through `mlx_lm.load()` on a snapshot directory (`backends/mlx_tier0.py`) and
 tier 1 rung 1 is an httpx client against `tier1.endpoint` on loopback.
 
@@ -153,7 +153,7 @@ meaningless pass and a red one is a meaningless fail, so this check comes before
 measurement, and again after any large model load.
 
 ```bash
-.venv-optiq/bin/python tools/mlxbench.py     # loads no weights, ~30 s
+.venv-optiq/bin/python tools/bench/mlxbench.py     # loads no weights, ~30 s
 ```
 
 | Reading | Healthy | Degraded, as observed |
@@ -246,7 +246,7 @@ hour. `platform.md` §5 is the arithmetic for every candidate, and it is worth r
 > `std::runtime_error: There is no Stream(gpu, 1) in current thread`. **Driving the same
 > call chain single-threaded works** — `load_streaming` + `stream_generate` on the main
 > thread has never failed, and that is where 2026-08-10's numbers come from. So the
-> procedure below still does not produce a verifier over HTTP; `tools/ds4_probe.py` produces
+> procedure below still does not produce a verifier over HTTP; `tools/probe/ds4_probe.py` produces
 > one in-process. **`platform.md` §4.7 is the record**: the crash mechanism, the measured
 > prefill/decode/context figures, and why rung 3 still ships.
 
@@ -314,7 +314,7 @@ measured (`platform.md` §4.7):
 | `=12` | `9.3 GB vs budget 12.0 GB -> resident` | 15.21 GB | **23.80 GB** |
 
 `swapped 129 expert projections` in both — 43 layers × 3, the whole main tower, which
-`tools/ds4_headers.py` predicts. **A resident figure near 92 GB means the swap did not
+`tools/probe/ds4_headers.py` predicts. **A resident figure near 92 GB means the swap did not
 happen: kill it before it wedges the machine.** And note the peak, not the resident
 figure, is what has to fit: making the scales resident costs 8.7 GB of steady state and
 raises the peak to **3.7×** it.
@@ -410,7 +410,7 @@ Expect, and read before letting it serve anything:
 [moe_stream] swapped 144 expert projections; resident 1.36 GB (load peak 1.36 GB)
 ```
 
-`swapped 144` is 48 layers × 3 projections, which `tools/qcn_headers.py` predicts without
+`swapped 144` is 48 layers × 3 projections, which `tools/probe/qcn_headers.py` predicts without
 downloading anything. **A resident figure near 45 GB means the swap did not happen: kill
 it.** Adding `OPTIQ_STREAM_SCALES_BUDGET_GB=6` turns the first line into `-> resident` and
 is worth 1.08× for 4.86 GB — cheap here, where the same lever on DeepSeek needs 9.3 GB.
@@ -429,7 +429,7 @@ bf16 score matrix. Reachable context is therefore inversely proportional to the 
 | 4096 | 176,047 |
 | **2048** | **346,106** — past the model's own 262,144 |
 
-`tools/qcn_context.py --plan` prints that table without an engine or a GPU; the same script
+`tools/probe/qcn_context.py --plan` prints that table without an engine or a GPU; the same script
 probes a live one at exact token counts. Full numbers and the seven confirming probes are
 `platform.md` §1.2.
 
@@ -460,7 +460,7 @@ read `worst_tok_per_s`, not `pass`.
 | What does `container_hash` cost over 44.84 GB? | unmeasured, derived ~30 s at ~1.5 GB/s |
 | Where exactly does the buffer ceiling bite? | **measured** — `16 × step × context × 2 B`, so 262,144 is reachable at step 2048 (`platform.md` §1.2) |
 | Does `reasoning_control` need to be set for this model? | **unmeasured.** Carried over from the 122B; Gate B reads prefill rate and never exercises it |
-| **Do its verdicts decorrelate from tier 0's?** | **the only question that decides anything now** — T5, and `tools/rung3_agreement.py` is the shape of the answer |
+| **Do its verdicts decorrelate from tier 0's?** | **the only question that decides anything now** — T5, and `tools/quality/rung3_agreement.py` is the shape of the answer |
 
 ### 7.6 Driving it from Claude Code
 
@@ -473,7 +473,7 @@ S=~/.cache/huggingface/hub/models--mlx-community--Qwen3-Coder-Next-4bit/snapshot
 HF_HUB_OFFLINE=1 .venv-optiq/bin/optiq serve --stream-experts --model "$S" \
   --host 127.0.0.1 --port 8081 --max-context off --prefill-step-size 2048
 
-python3 tools/qcn_cc_proxy.py          # second terminal; 8082 -> 8081
+python3 tools/serve/qcn_cc_proxy.py          # second terminal; 8082 -> 8081
 
 env -u ANTHROPIC_API_KEY \
   ANTHROPIC_BASE_URL=http://127.0.0.1:8082 \

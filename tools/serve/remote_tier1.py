@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The transport for fallback ladder rung 4 — a remote tier-1 verifier (spec sec 5.5).
 
-    python tools/remote_tier1.py --endpoint https://api.example.com/v1 --model m --ping
+    python tools/serve/remote_tier1.py --endpoint https://api.example.com/v1 --model m --ping
 
     # orbit.toml
     [tier1]
@@ -9,7 +9,7 @@
     rung = "remote"
     remote_endpoint = "https://api.example.com/v1"
     remote_model = "some-large-model"
-    remote_transport = "tools/remote_tier1.py"
+    remote_transport = "tools/serve/remote_tier1.py"
     remote_consent = "tier 1 leaves this machine"
 
 **Deliberately outside the package**, for the same reason as `export_reviews.py`:

@@ -27,8 +27,8 @@ Lives in `tools/` rather than the package: it is a measurement, not a shipped fe
 It loads tier 0 (23.0 GiB on the mlx backend) -- read `docs/operations.md` first, and
 climb the rungs. `--rung 1` loads and reports footprint and stops.
 
-    python tools/kv_state_bench.py --rung 1
-    python tools/kv_state_bench.py --rung 3 --out var/kv-state-bench.json
+    python tools/bench/kv_state_bench.py --rung 1
+    python tools/bench/kv_state_bench.py --rung 3 --out var/kv-state-bench.json
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from orbit.backends import build_tier0
 from orbit.config import Config
