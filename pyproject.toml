@@ -310,3 +310,18 @@ follow_imports = "skip"
 module = ["numpy.*"]
 ignore_missing_imports = true
 follow_imports = "skip"
+
+[[tool.mypy.overrides]]
+# transformers is the same shape as numpy above: `mlx-lm` requires
+# `transformers>=5.0.0`, so it arrives only with the Apple-only [mlx] extra and CI
+# never has it. `tools/probe/qcn_context.py` imports `AutoTokenizer` to build a prompt
+# of an exact token count, which is the one thing a tokenizer-free stand-in cannot
+# fake — and it is an `import-not-found` on every CI box while resolving on the
+# M4 Max. That failed four mypy jobs while the workstation reported success.
+#
+# `follow_imports = "skip"` is the other half and is not redundant: transformers
+# ships `py.typed`, so where it *is* installed mypy reads its real signatures and
+# answers a question CI cannot ask. Skipping pins both machines to the CI answer.
+module = ["transformers.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
