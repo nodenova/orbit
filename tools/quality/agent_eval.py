@@ -69,7 +69,7 @@ import sys
 import tempfile
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -154,6 +154,23 @@ class Run:
     diff: str = ""
     files_touched: list[str] = field(default_factory=list)
     checks: dict[str, Any] = field(default_factory=dict)
+    # Arm-independent, and invisible in every column until now: an answer that asserts
+    # it wrote a file the worktree has no record of. One local session reported creating
+    # a file that did not exist, and nothing in the result file said so.
+    claimed_edits_without_diff: bool = False
+
+    @classmethod
+    def from_dict(cls, record: dict[str, Any]) -> Run:
+        """Rehydrate a stored run, dropping keys this class does not declare.
+
+        A second arm records more per run than this holds — the A1 harness writes
+        per-turn wire stats and typed tool-call counters — and `Run(**record)` raises
+        `TypeError` on the first of them. That would make the judge unable to read an
+        artifact that is otherwise schema-identical, which is the whole point of the
+        schema being identical.
+        """
+        declared = {f.name for f in fields(cls)}
+        return cls(**{key: value for key, value in record.items() if key in declared})
 
     @property
     def stream_observable(self) -> bool:
@@ -449,6 +466,35 @@ def run_one(task: Task, arm: str, sha: str, *, verbose: bool = True) -> Run:
     return run
 
 
+_EDIT_CLAIM = re.compile(
+    r"\bI\s+(?:have\s+|just\s+)?"
+    r"(?:added|created|wrote|written|edited|updated|modified|patched|implemented)\b",
+    re.IGNORECASE,
+)
+_FILE_TOKEN = re.compile(r"[\w./-]+\.(?:py|pyi|md|toml|yml|yaml|json|cfg|ini|txt|sh)\b")
+
+
+def claimed_edits_without_diff(answer: str, files_touched: list[str]) -> bool:
+    """Whether the answer claims a file it wrote and the worktree disagrees.
+
+    Deliberately conservative — a first-person edit verb *and* a named file, none of
+    which the tree records as touched — because a false positive on this metric accuses
+    a model of confabulating. "I would add X" and "I did not edit X" do not match.
+    """
+    if not _EDIT_CLAIM.search(answer):
+        return False
+    claimed = {
+        match.group(0).removeprefix("./") for match in _FILE_TOKEN.finditer(answer)
+    }
+    if not claimed:
+        return False
+    touched = {path.removeprefix("./") for path in files_touched}
+    return not any(
+        any(name.endswith(seen) or seen.endswith(name) for seen in touched)
+        for name in claimed
+    )
+
+
 def _collect_patch(task: Task, run: Run, worktree: Path) -> None:
     status = subprocess.run(
         ["git", "status", "--porcelain"],
@@ -464,6 +510,9 @@ def _collect_patch(task: Task, run: Run, worktree: Path) -> None:
     # the first line, which is what made it look like a path rather than a bug.
     run.files_touched = sorted(
         entry for line in status.splitlines() if (entry := line[2:].strip())
+    )
+    run.claimed_edits_without_diff = claimed_edits_without_diff(
+        run.answer, run.files_touched
     )
 
     if "no_edits" in task.checks:
@@ -483,6 +532,16 @@ def _collect_patch(task: Task, run: Run, worktree: Path) -> None:
         text=True,
         check=False,
     ).stdout
+
+    if not run.diff.strip():
+        # The repository's checks against an *unmodified* tree pass, and recording that
+        # as a passing patch task is a silently wrong answer: measured on the A1 harness
+        # arm, two patch tasks produced no diff at all and scored `pytest`, `ruff` and
+        # `mypy` green — 6 of 6 checks earned by touching nothing, while the answers
+        # claimed the edits. "No patch produced" and "patch failed" are different
+        # results. `recheck` already drew this distinction; the run path did not.
+        run.checks["patch_produced"] = {"passed": False, "tail": "no diff produced"}
+        return
 
     _run_checks(task, run, worktree)
 
@@ -934,8 +993,8 @@ def _judge_mode(args: argparse.Namespace) -> int:
 
     rows = []
     for task in shared:
-        lrun = Run(**by_id_left[task.id])
-        rrun = Run(**by_id_right[task.id])
+        lrun = Run.from_dict(by_id_left[task.id])
+        rrun = Run.from_dict(by_id_right[task.id])
         verdict = judge_pair(task, lrun, rrun, args.judge_model)
         rows.append(
             {

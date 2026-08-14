@@ -84,6 +84,15 @@ def anchors_found(task: Task, text: str) -> tuple[int, list[str]]:
     Whole-word matching for anything that is a bare number or a short token: an
     answer that says "exit code 2" and one that happens to contain "3.12" both
     contain the character "2", and substring matching scores the second as correct.
+
+    **The trailing boundary excludes a following word character, and a period only
+    when a word character follows it.** The earlier form excluded any following period
+    and therefore failed on a sentence-final version number: two harness runs whose
+    answers read ">=0.16.2,<0.17." scored 0 on the `0.17` anchor while a third, whose
+    only difference was ">=0.16.2,<0.17, as specified in", scored 1. It cost `exit
+    code 2.` and `Python 3.12.` the same way, so it under-counted every arm including
+    the control. `0.17.3` and `0.170` are still correctly rejected, which is what the
+    boundary was for.
     """
     body = text.lower()
     missing: list[str] = []
@@ -93,7 +102,7 @@ def anchors_found(task: Task, text: str) -> tuple[int, list[str]]:
         for raw in alternatives:
             needle = raw.lower()
             if re.fullmatch(r"[\w.\-+/]{1,6}", needle):
-                pattern = rf"(?<![\w.]){re.escape(needle)}(?![\w.])"
+                pattern = rf"(?<![\w.]){re.escape(needle)}(?!\w)(?!\.\w)"
             else:
                 pattern = re.escape(needle)
             if re.search(pattern, body):

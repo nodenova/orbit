@@ -1,0 +1,288 @@
+"""CLI. The pilot ladder is the interface: `preflight`, then `probe`, then `run --task`.
+
+    python -m tools.quality.a1_harness preflight
+    python -m tools.quality.a1_harness probe --tools --prompt 'read pyproject.toml'
+    python -m tools.quality.a1_harness run --task low-01-ruff-pin \\
+        --out var/agent-eval/a1-harness.json
+
+Never open with the full task set. One call, then one task, then a tier, then the
+fifteen — each measurement is what authorises the next step, and this host wedges rather
+than failing cleanly when unified memory is overcommitted.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from dataclasses import asdict
+from pathlib import Path
+from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
+from tools.quality.a1_harness import tools
+from tools.quality.a1_harness.loop import (
+    ARM,
+    LABEL,
+    PromptPack,
+    artifact,
+    run_task,
+)
+from tools.quality.a1_harness.transport import (
+    DEFAULT_HOST,
+    DEFAULT_KEEP_ALIVE,
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    DEFAULT_MODEL,
+    DEFAULT_NUM_CTX,
+    SAMPLINGS,
+    Transport,
+    TransportError,
+)
+from tools.quality.agent_eval import _write, head_sha
+from tools.quality.agent_eval_tasks import select
+
+
+def _transport(args: argparse.Namespace) -> Transport:
+    return Transport(
+        host=args.host,
+        model=args.model,
+        num_ctx=args.num_ctx,
+        think=args.think == "on",
+        sampling=SAMPLINGS[args.sampling],
+        keep_alive=args.keep_alive,
+        openai_compat=args.openai_compat,
+        max_output_tokens=args.max_output_tokens,
+    )
+
+
+def _preflight_mode(args: argparse.Namespace) -> int:
+    transport = _transport(args)
+    try:
+        host = transport.preflight()
+    except TransportError as exc:
+        print(f"preflight refused: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(asdict(host), indent=2))
+    for entry in transport.resident():
+        print(
+            f"resident: {entry.get('name')} "
+            f"{float(entry.get('size') or 0) / 2**30:.2f} GiB "
+            f"ctx={entry.get('context_length')} expires={entry.get('expires_at')}"
+        )
+    return 0
+
+
+def _probe_mode(args: argparse.Namespace) -> int:
+    """One turn, printed as wire facts. The rung between preflight and a whole task."""
+    transport = _transport(args)
+    try:
+        host = transport.preflight()
+    except TransportError as exc:
+        print(f"preflight refused: {exc}", file=sys.stderr)
+        return 2
+    definitions = tools.definitions() if args.tools else None
+    messages: list[dict[str, Any]] = []
+    if args.system:
+        messages.append({"role": "system", "content": args.system})
+    messages.append({"role": "user", "content": args.prompt})
+    try:
+        turn = transport.chat(messages, definitions, timeout=args.timeout)
+    except TransportError as exc:
+        print(f"probe failed: {exc}", file=sys.stderr)
+        return 1
+    transport.verify_keep_alive()
+    print(
+        json.dumps(
+            {
+                "endpoint": transport.endpoint,
+                "ollama_version": host.ollama_version,
+                "tools_passed": len(definitions or []),
+                "keep_alive_verified": transport.keep_alive_verified,
+                "stats": turn.stats(),
+                "thinking_chars": len(turn.thinking),
+                "content": turn.content[:1200],
+                "tool_calls": [
+                    {
+                        "name": call.name,
+                        "arguments": call.arguments,
+                        "salvaged": call.salvaged,
+                    }
+                    for call in turn.tool_calls
+                ],
+                "trailing_prose_dropped": turn.trailing_prose_dropped,
+            },
+            indent=2,
+        )
+    )
+    for entry in transport.resident():
+        print(
+            f"resident: {float(entry.get('size') or 0) / 2**30:.2f} GiB "
+            f"ctx={entry.get('context_length')}",
+            file=sys.stderr,
+        )
+    return 0
+
+
+def _run_mode(args: argparse.Namespace) -> int:
+    """Checkpoint after every task: a lost machine should cost one task, not a run."""
+    tasks = select(tuple(args.tier), tuple(args.task))
+    if not tasks:
+        print("no tasks selected", file=sys.stderr)
+        return 2
+    try:
+        pack = PromptPack.load(args.prompt_pack)
+    except ValueError as exc:
+        print(f"prompt pack: {exc}", file=sys.stderr)
+        return 2
+
+    transport = _transport(args)
+    try:
+        host = transport.preflight()
+    except TransportError as exc:
+        print(f"preflight refused: {exc}", file=sys.stderr)
+        return 2
+    for warning in host.warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+
+    sha = head_sha(args.at)
+    done: dict[str, dict[str, Any]] = {}
+    if args.resume and args.out and args.out.exists():
+        prior = json.loads(args.out.read_text())
+        if prior.get("sha") != sha:
+            print(
+                f"refusing to resume: {args.out} ran at {str(prior.get('sha'))[:12]}, "
+                f"asked for {sha[:12]} — a different commit is a different measurement",
+                file=sys.stderr,
+            )
+            return 2
+        if prior.get("arm") != ARM:
+            print(
+                f"refusing to resume: {args.out} holds arm {prior.get('arm')!r}",
+                file=sys.stderr,
+            )
+            return 2
+        done = {record["task_id"]: record for record in prior["runs"]}
+
+    pending = [task for task in tasks if task.id not in done]
+    print(
+        f"arm={ARM} ({LABEL})  commit={sha[:12]}  pack={pack.name}@{pack.sha}  "
+        f"num_ctx={transport.num_ctx}  think={transport.think}  "
+        f"sampling={transport.sampling.mode}  min_evidence={args.min_evidence}\n"
+        f"{len(pending)} to run of {len(tasks)} selected"
+        + (f", {len(done)} resumed" if done else ""),
+        flush=True,
+    )
+    print()
+
+    search_backend = tools.search_backend()
+
+    def checkpoint() -> None:
+        ordered = [done[task.id] for task in select() if task.id in done]
+        _write(
+            args.out,
+            artifact(
+                ordered,
+                sha=sha,
+                transport=transport,
+                pack=pack,
+                host=host,
+                min_evidence=args.min_evidence,
+                max_nudges=args.nudges,
+                search_backend=search_backend,
+            ),
+            quiet=True,
+        )
+
+    for task in pending:
+        run = run_task(
+            task,
+            transport,
+            pack,
+            sha=sha,
+            min_evidence=args.min_evidence,
+            max_nudges=args.nudges,
+        )
+        done[task.id] = asdict(run)
+        checkpoint()
+
+    checkpoint()
+    finished = [done[task.id] for task in tasks if task.id in done]
+    ok = sum(1 for record in finished if record["ok"])
+    hit = sum(record["anchors_hit"] for record in finished)
+    total = sum(record["anchors_total"] for record in finished)
+    print(
+        f"\n{ok}/{len(finished)} episodes completed, anchors {hit}/{total}, "
+        f"wall {sum(record['wall_s'] for record in finished) / 60:.1f} min"
+    )
+    if args.out:
+        print(f"wrote {args.out}")
+    return 0
+
+
+def _common(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--host", default=DEFAULT_HOST)
+    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--num-ctx", type=int, default=DEFAULT_NUM_CTX)
+    parser.add_argument("--think", choices=("on", "off"), default="on")
+    parser.add_argument("--sampling", choices=sorted(SAMPLINGS), default="greedy")
+    parser.add_argument("--keep-alive", default=DEFAULT_KEEP_ALIVE)
+    parser.add_argument(
+        "--max-output-tokens",
+        type=int,
+        default=DEFAULT_MAX_OUTPUT_TOKENS,
+        help="per-turn decode cap; uncapped, greedy ran to 13.5k tokens on one question",
+    )
+    parser.add_argument(
+        "--openai-compat",
+        action="store_true",
+        help="portability check only: /v1 re-serialises tool arguments to a JSON string",
+    )
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    sub = ap.add_subparsers(dest="mode", required=True)
+
+    p = sub.add_parser(
+        "preflight", help="host state, and refuse if something else is resident"
+    )
+    _common(p)
+    p.set_defaults(fn=_preflight_mode)
+
+    b = sub.add_parser("probe", help="one turn, printed as wire facts")
+    _common(b)
+    b.add_argument("--prompt", required=True)
+    b.add_argument("--system", default="")
+    b.add_argument("--tools", action="store_true")
+    b.add_argument("--timeout", type=float, default=900.0)
+    b.set_defaults(fn=_probe_mode)
+
+    r = sub.add_parser("run", help="drive the task set through this harness")
+    _common(r)
+    r.add_argument(
+        "--tier", action="append", default=[], choices=("low", "mid", "high")
+    )
+    r.add_argument("--task", action="append", default=[])
+    r.add_argument("--out", type=Path)
+    r.add_argument(
+        "--at", default="HEAD", help="revision to run against; pin it across arms"
+    )
+    r.add_argument("--resume", action="store_true")
+    r.add_argument("--prompt-pack", default="v1")
+    r.add_argument(
+        "--min-evidence",
+        type=int,
+        default=1,
+        help="successful read_file/search calls required before finish is accepted; 0 disables",
+    )
+    r.add_argument("--nudges", type=int, default=2)
+    r.set_defaults(fn=_run_mode)
+
+    args = ap.parse_args()
+    result: int = args.fn(args)
+    return result
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
