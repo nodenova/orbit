@@ -124,6 +124,14 @@ loads on demand — read it before any run that touches MLX. What must not need 
   trouble.
 - **Warm up before timing anything** — the first generation after a load pays ~9 s of Metal
   kernel compilation, enough to read 4 tok/s where the truth is 27.
+- **YOU MUST reclaim memory when the work is done, and say what you freed.** Nothing here
+  releases itself: ollama holds a model for its whole `keep_alive` (the agent eval asks for
+  30 m), `agent_eval.py` leaves a `git worktree` per task, and a backgrounded `tail -f`
+  outlives the run it watched. The sweep is `curl -s -X POST localhost:11434/api/generate -d
+  '{"model":"<tag>","keep_alive":0}'`, then `git worktree prune`, then kill the watchers.
+  Report the state you left with a `total − active` headroom figure — an Activity Monitor
+  "memory used" reading counts reclaimable inactive pages and looks like a full machine
+  when 25 GiB is free.
 
 ## Architecture
 
