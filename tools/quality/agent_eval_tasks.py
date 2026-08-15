@@ -1,4 +1,4 @@
-"""The repo-grounded agent task set: 15 tasks over three tiers.
+"""The repo-grounded agent task set: 22 tasks over three tiers and six families.
 
 Companion to `tools/quality/agent_eval.py`, which runs them. Kept in its own module because
 the runner is machinery and this is data — the tasks get edited far more often than
@@ -38,6 +38,39 @@ case-insensitively, as a whole word where the fact is a bare number, because
 `contains("2")` is true of almost any prose. Anchors are cheap and unarguable and
 they do not measure whether an answer is any good; the rubric does that, and a
 model can score 1.0 on anchors while writing something no one would merge.
+
+**Tier is not the only axis, and for fifteen tasks it was the only one recorded.**
+Every one of those asked the same *kind* of question — read this repository and
+explain it — so a tier that reported 14/14 said nothing about whether the arm could
+diagnose a symptom, derive a document from source, edit one in place, or report that
+it could not reach a file. Each task therefore also carries a `family` and a
+`deliver` label, `select` and `report` work on both axes, and the set was extended
+into the four families it did not contain at all.
+
+The taxonomy and the reason for each addition come from a study of ~45k production
+agent sessions (2026-08-14) that is **not in this repository and is not reproducible
+from it** — the same standing as a `sec N.M` reference. Four of its findings each
+named a capability nothing here was measuring:
+
+  * **changing an existing artefact fails more often than writing a new one**, on
+    documents and on code alike, and creation is all this set had;
+  * **bounded tasks fail by misreading a short instruction or by not reaching
+    something**, not by running out of steam — the opposite of how hard tasks fail,
+    and the tasks here are all long, fully-specified prompts;
+  * **a stored prompt replayed against a different subject** is its own failure mode,
+    worst on comprehension work;
+  * **half of all requests expect prose back and never touch a write tool**, which is
+    why `deliver` is recorded next to `family`.
+
+`target` — what the work acts on — is that study's third axis and is deliberately
+absent: in a single-repository eval it would read `own_codebase` for nearly
+everything, and it was the weakest of the three axes where it was measured.
+
+**The set still over-weights comprehension**: 10 of 22 tasks against ~31% of that
+corpus, because nothing was removed. Every existing task has run history under
+`var/`, and a task deleted to fix a ratio takes its comparisons with it. Read the
+per-family rows as coverage rather than as a distribution, and a family of one or
+two tasks as direction rather than magnitude.
 """
 
 from __future__ import annotations
@@ -48,7 +81,16 @@ from typing import Literal
 
 Tier = Literal["low", "mid", "high"]
 Kind = Literal["answer", "patch"]
-Check = Literal["pytest", "ruff", "mypy", "no_edits"]
+Check = Literal["pytest", "ruff", "mypy", "no_edits", "docs_only"]
+
+# What kind of work is being asked for, and what the requester expects back. Both
+# vocabularies are the production study's, minus the classes with no repo-grounded
+# form: `prose` and `offtask` are real and large there and would be measuring the
+# model's writing rather than its work in this repository.
+Family = Literal[
+    "understand", "diagnose", "change_code", "documents", "operate", "decide"
+]
+Deliverable = Literal["answer", "inline_content", "file_artifact", "code_change"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,8 +106,16 @@ class Criterion:
 class Task:
     id: str
     tier: Tier
+    # No default, so a new task cannot be added without being classified. The whole
+    # point of the axis is that the set drifted into one family unnoticed.
+    family: Family
     prompt: str
     rubric: tuple[Criterion, ...]
+    deliver: Deliverable = "answer"
+    # A stored prompt, rule file or pipeline step supplying the instructions rather
+    # than the user. A delivery mechanism, not a task — every attempt to make it a
+    # family swallowed the underlying job into it — so it is its own flag.
+    template_driven: bool = False
     anchors: tuple[tuple[str, ...], ...] = ()
     kind: Kind = "answer"
     checks: tuple[Check, ...] = ()
@@ -127,6 +177,7 @@ LOW: tuple[Task, ...] = (
     Task(
         id="low-01-ruff-pin",
         tier="low",
+        family="understand",
         prompt=(
             "What version range of Ruff does this project require, and what goes "
             "wrong if you lint with an older binary than the floor?" + _TERSE
@@ -148,6 +199,7 @@ LOW: tuple[Task, ...] = (
     Task(
         id="low-02-extract-exit",
         tier="low",
+        family="understand",
         prompt=(
             "What exit code does `orbit extract` return on a thin corpus, what is "
             "the threshold, and is that a bug?" + _TERSE
@@ -167,6 +219,7 @@ LOW: tuple[Task, ...] = (
     Task(
         id="low-03-ci-matrix",
         tier="low",
+        family="understand",
         prompt=(
             "Which Python versions does CI run this project against, and what "
             "breaks the moment someone adds a classifier without touching the "
@@ -185,6 +238,7 @@ LOW: tuple[Task, ...] = (
     Task(
         id="low-04-hard-line",
         tier="low",
+        family="understand",
         prompt=(
             "This codebase has one 'hard line' separating portable, fully tested "
             "Python from code that needs hardware. Name the file and the type that "
@@ -204,6 +258,7 @@ LOW: tuple[Task, ...] = (
     Task(
         id="low-05-pipeline-order",
         tier="low",
+        family="understand",
         prompt=(
             "In the one request path every wire protocol shares, what runs first "
             "and what runs last? Give the reason each is where it is." + _TERSE
@@ -226,6 +281,74 @@ LOW: tuple[Task, ...] = (
         ),
         max_turns=25,
     ),
+    Task(
+        id="low-06-cheap-doctor",
+        tier="low",
+        family="operate",
+        prompt=(
+            "I need this checkout's offline posture and whether constrained decoding "
+            "is available, on a machine that must not load a model right now. Give me "
+            "the exact invocation." + _TERSE
+        ),
+        anchors=(("doctor",), ("mock",), ("--config",)),
+        rubric=(
+            Criterion(
+                "the escape, not the command",
+                "3 = `orbit --config <file> doctor` against a config whose backend is "
+                '"mock". 0 = says to run `orbit doctor`.',
+                weight=2,
+            ),
+            Criterion(
+                "where the flag goes",
+                "3 = `--config` is global and goes before the subcommand.",
+            ),
+            Criterion(
+                "what it costs otherwise",
+                "3 = doctor on the mlx backend loads 23.0 GiB eagerly, because "
+                "`MLXTier0Backend.__init__` calls `mlx_lm.load()`; it reads like `git "
+                "status` and behaves like a model load.",
+                weight=2,
+            ),
+        ),
+        max_turns=25,
+    ),
+    Task(
+        id="low-07-green-local-red-ci",
+        tier="low",
+        family="diagnose",
+        prompt=(
+            "`ruff format` and `ruff check --fix` are clean on every file I touched, "
+            "`pytest` and `mypy` pass, and CI is red on the format step. What did I "
+            "miss, and what should I have run?" + _TERSE
+        ),
+        anchors=(
+            ("markdown", ".md", "docs"),
+            ("ruff format",),
+            ("--check", "whole tree", "no path"),
+        ),
+        rubric=(
+            Criterion(
+                "names the surface",
+                "3 = `.md` files: ruff formats Python inside ```python fences, so docs "
+                "are in the format check and 'touched paths' gets read as the .py ones. "
+                "0 = blames the ruff version or the config.",
+                weight=3,
+            ),
+            Criterion(
+                "names what to run",
+                "3 = the whole-tree `ruff format --check` CI runs, not the per-file "
+                "command the PostToolUse hook runs.",
+                weight=2,
+            ),
+            Criterion(
+                "reads the step, not the job",
+                "3 = notes the lint job splits check and format into two steps so the "
+                "failing step names the cause, and that this cost seven consecutive "
+                "red builds with every other job green.",
+            ),
+        ),
+        max_turns=30,
+    ),
 )
 
 # --- mid: several files, answer in none of them alone ------------------------
@@ -234,6 +357,7 @@ MID: tuple[Task, ...] = (
     Task(
         id="mid-01-schema-to-logits",
         tier="mid",
+        family="understand",
         prompt=(
             "Trace how a `json_schema` on a request becomes an actual constraint on "
             "sampled tokens for the tier-0 MLX backend. Name the module, the "
@@ -258,6 +382,7 @@ MID: tuple[Task, ...] = (
     Task(
         id="mid-02-fake-mlx-contract",
         tier="mid",
+        family="understand",
         prompt=(
             "`tests/fake_mlx.py` stands in for MLX. What is the one property it must "
             "have that a lazier stand-in would not, and what real failure did that "
@@ -287,6 +412,7 @@ MID: tuple[Task, ...] = (
     Task(
         id="mid-03-no-score-field",
         tier="mid",
+        family="understand",
         prompt=(
             "`RegressionReport` deliberately has no score field. Find the test that "
             "enforces that, name it, and explain what the absence is protecting."
@@ -310,6 +436,7 @@ MID: tuple[Task, ...] = (
     Task(
         id="mid-04-eval-section-missing",
         tier="mid",
+        family="understand",
         prompt=(
             "An operator ships `orbit.toml` with no `[eval]` section. Name every "
             "capability that silently changes behaviour as a result." + _TERSE
@@ -336,6 +463,7 @@ MID: tuple[Task, ...] = (
     Task(
         id="mid-05-kv-no-mmap",
         tier="mid",
+        family="understand",
         prompt=(
             "The disk KV cache uses plain read/write and never mmap. Find the "
             "rationale in the code and report it. Would switching to mmap be an "
@@ -358,7 +486,229 @@ MID: tuple[Task, ...] = (
         ),
         max_turns=40,
     ),
+    Task(
+        id="mid-06-tier1-budgets",
+        tier="mid",
+        family="documents",
+        deliver="inline_content",
+        prompt=(
+            "Derive from the code a markdown table of every tier-1 call type with its "
+            "output ceiling in tokens, and add a final row for what a call whose "
+            "schema title matches none of them gets. Table only, no prose."
+        ),
+        anchors=(
+            ("rerank",),
+            ("plan_critique",),
+            ("128",),
+            ("512",),
+            ("640",),
+        ),
+        # The discriminator is the last row, and it is the one thing reading the
+        # constants gets wrong: `DEFAULT_BUDGET = 256` is unreachable, because
+        # `call_type_of` maps an unrecognised title to `review` before the `.get`
+        # default can apply. 256 is what a model that read `CALL_BUDGETS` answers;
+        # 512 is what a model that followed the call answers.
+        note="the fallback row separates reading the constants from tracing the call",
+        rubric=(
+            Criterion(
+                "the table is complete",
+                "3 = three call types with 128 / 512 / 640, no invented row. "
+                "1 = a type missing or a ceiling wrong.",
+                weight=2,
+            ),
+            Criterion(
+                "the fallback row is right",
+                "3 = an unrecognised schema title is classified as `review` by "
+                "`call_type_of` and gets 512, so `DEFAULT_BUDGET = 256` is never "
+                "reached. 1 = answers 256 from the constant alone.",
+                weight=3,
+            ),
+            Criterion(
+                "delivered as asked",
+                "3 = a markdown table and nothing else. 0 = prose with the numbers "
+                "buried in it.",
+                weight=2,
+            ),
+        ),
+        max_turns=40,
+    ),
+    Task(
+        id="mid-07-template-mismatch",
+        tier="mid",
+        family="operate",
+        template_driven=True,
+        prompt=(
+            "Run our standard pre-flight from the team's stored procedure before a "
+            "measurement:\n"
+            '  1. `curl -s localhost:11434/api/ps` must come back `{"models":[]}`\n'
+            "  2. `lsof -nP -iTCP:8081 -sTCP:LISTEN` must come back empty\n"
+            "  3. read headroom as `total - active`; abort under ~27 GB\n"
+            "  4. pilot one call, measure, then eight, then the hundred\n\n"
+            "Apply it to `orbit audit verify` and tell me whether we are clear to run."
+            + _TERSE
+        ),
+        anchors=(
+            ("audit verify",),
+            (
+                "no weights",
+                "loads no",
+                "does not load",
+                "never load",
+                "without loading",
+            ),
+        ),
+        note=(
+            "a stored prompt replayed against the wrong subject — the largest "
+            "over-represented failure at this complexity, and worst on comprehension"
+        ),
+        rubric=(
+            Criterion(
+                "notices the procedure does not apply",
+                "3 = `orbit audit verify` builds no backend and loads no weights — it "
+                "is on operations.md §2's free list — so the memory ladder and the "
+                "GPU-ownership checks constrain nothing here. 0 = works through the "
+                "four steps as written.",
+                weight=3,
+            ),
+            Criterion(
+                "still answers the question asked",
+                "3 = says plainly that it is clear to run. 0 = only critiques the "
+                "procedure, or refuses.",
+                weight=2,
+            ),
+            Criterion(
+                "invents no reading",
+                "3 = reports no `ps` output, headroom figure or pilot result it did "
+                "not obtain; `curl` and `lsof` are not available to it. 0 = states a "
+                "measurement it never took.",
+                weight=3,
+            ),
+        ),
+        max_turns=30,
+    ),
+    Task(
+        id="mid-08-terse-raise-kv",
+        tier="mid",
+        family="change_code",
+        deliver="code_change",
+        # 34 characters, deliberately. The median request at this complexity is 86,
+        # and the failure that over-indexes hardest there is the agent answering a
+        # short instruction it has under-specified evidence for. Every other prompt
+        # in this set states its own success criteria; this one states none.
+        prompt="max_kv_tokens is too low. Raise it.",
+        anchors=(
+            ("131072", "131,072", "131k"),
+            ("peak", "get_peak_memory"),
+            ("prefill",),
+        ),
+        rubric=(
+            Criterion(
+                "finds the constraint that actually binds",
+                "3 = prefill time, not KV memory: 131k tokens is ~136 s of wall clock "
+                "at the measured 963 tok/s, while the KV cost is 2.50 GiB against "
+                "5.08 GiB of headroom. 0 = argues from memory alone.",
+                weight=3,
+            ),
+            Criterion(
+                "names what would authorise it",
+                "3 = an `mx.get_peak_memory()` reading on a loaded model, which the "
+                "comment in `orbit.toml` asks for by name and which nothing available "
+                "here can take.",
+                weight=3,
+            ),
+            Criterion(
+                "handles the under-specified instruction",
+                "3 = states the value it would raise to and on what evidence, or asks. "
+                "0 = changes the number with no reason given.",
+                weight=2,
+            ),
+        ),
+        max_turns=30,
+    ),
+    Task(
+        id="mid-09-absent-adapters",
+        tier="mid",
+        family="operate",
+        prompt=(
+            "List the adapters this checkout has trained and give the rung each one "
+            "is registered at." + _TERSE
+        ),
+        anchors=(("gitignore", "gitignored"), ("adapter_dir", "orbit.toml")),
+        note="the file it names is absent and the premise it carries is wrong",
+        rubric=(
+            Criterion(
+                "reports the limit instead of filling it in",
+                "3 = there are none: `/adapters/` is gitignored, so it never survives "
+                "a clone and a fresh worktree has no such directory. 0 = names an "
+                "adapter, a path or a count that does not exist.",
+                weight=3,
+            ),
+            Criterion(
+                "corrects the premise",
+                "3 = a rung is a tier-1 property (`[tier1].rung`, sec 5.5), not "
+                "something an adapter is registered at — adapter choice rides on the "
+                "request, never on the backend.",
+                weight=2,
+            ),
+            Criterion(
+                "says where they would be",
+                "3 = `adapter_dir` under `[tier0]`, default `adapters`, and what "
+                "produces one.",
+            ),
+        ),
+        max_turns=30,
+    ),
+    Task(
+        id="mid-10-edit-doc-in-place",
+        tier="mid",
+        family="documents",
+        deliver="file_artifact",
+        prompt=(
+            "`docs/operations.md` §2 lists the commands that load weights as a table "
+            "and the ones that do not as a run-on sentence, so the two cannot be read "
+            "against each other. Make it one table with a column saying which. Do not "
+            "add, drop or reword a command, and change nothing else in the file."
+            + _PATCH
+        ),
+        kind="patch",
+        checks=("ruff", "docs_only"),
+        anchors=(("operations.md",),),
+        # An in-place edit of an existing artefact, which fails more often than
+        # writing a new one — and its three characteristic failures are all visible
+        # here: a command silently dropped, a table left malformed, and a file the
+        # answer claims to have written that the worktree has no record of
+        # (`claimed_edits_without_diff` in the runner catches the third).
+        note="the create-from-scratch counterpart is high-04; this one modifies",
+        rubric=(
+            Criterion(
+                "every command survived",
+                "3 = each command from both halves appears exactly once, none "
+                "invented, none reworded. 0 = anything dropped.",
+                weight=3,
+            ),
+            Criterion(
+                "in place, not appended",
+                "3 = §2 is replaced; no leftover duplicate of either list.",
+                weight=2,
+            ),
+            Criterion(
+                "the file still reads",
+                "3 = one well-formed table, and §2.1 and the surrounding prose intact.",
+                weight=2,
+            ),
+            Criterion(
+                "keeps the reasons",
+                "3 = the existing 'Why' column survives as written rather than being "
+                "re-invented in the model's own words.",
+            ),
+        ),
+        max_turns=60,
+        timeout_s=7200.0,
+    ),
 )
+
+# Patch tasks last, for the reason given under HIGH below.
+MID = tuple(sorted(MID, key=lambda t: t.kind == "patch"))
 
 # --- high: patches the repo's own checks must accept, and two traps ----------
 
@@ -366,6 +716,8 @@ HIGH: tuple[Task, ...] = (
     Task(
         id="high-01-mock-string-schema",
         tier="high",
+        family="change_code",
+        deliver="code_change",
         prompt=(
             "`MockBackend` must never be easier to satisfy than a real constrained "
             "backend, and it has failed that twice already. Its schema sampler still "
@@ -407,6 +759,8 @@ HIGH: tuple[Task, ...] = (
     Task(
         id="high-02-fake-mlx-guard",
         tier="high",
+        family="change_code",
+        deliver="code_change",
         prompt=(
             "`tests/fake_mlx.py` applies the logits processors it is handed. Nothing "
             "stops a future edit turning that into accept-and-ignore, which is "
@@ -437,6 +791,8 @@ HIGH: tuple[Task, ...] = (
     Task(
         id="high-03-trap-merge-adapter",
         tier="high",
+        family="change_code",
+        deliver="code_change",
         prompt=(
             "Inference is slower than we want and the adapter indirection is on the "
             "hot path. Merge the LoRA adapter into the base weights at load time and "
@@ -488,6 +844,8 @@ HIGH: tuple[Task, ...] = (
     Task(
         id="high-04-trap-cite-specs",
         tier="high",
+        family="documents",
+        deliver="file_artifact",
         prompt=(
             "Add a short section to `docs/operations.md` describing how to reproduce "
             "the tier-0 budget control experiment, and point the reader at the "
@@ -520,6 +878,7 @@ HIGH: tuple[Task, ...] = (
     Task(
         id="high-05-coresidency",
         tier="high",
+        family="decide",
         prompt=(
             "Tier 0 and a streamed tier 1 do not co-reside on this machine today. "
             "Is that a memory ceiling? Answer with the measured numbers and say "
@@ -568,12 +927,18 @@ def by_id(task_id: str) -> Task:
     raise KeyError(task_id)
 
 
-def select(tiers: tuple[str, ...] = (), ids: tuple[str, ...] = ()) -> tuple[Task, ...]:
+def select(
+    tiers: tuple[str, ...] = (),
+    ids: tuple[str, ...] = (),
+    families: tuple[str, ...] = (),
+) -> tuple[Task, ...]:
     chosen = TASKS
     if tiers:
         chosen = tuple(t for t in chosen if t.tier in tiers)
     if ids:
         chosen = tuple(t for t in chosen if t.id in ids)
+    if families:
+        chosen = tuple(t for t in chosen if t.family in families)
     return chosen
 
 
@@ -583,15 +948,20 @@ class TierCount:
     mid: int = 0
     high: int = 0
     patch: int = 0
+    template: int = 0
     traps: list[str] = field(default_factory=list)
+    families: dict[str, int] = field(default_factory=dict)
 
 
 def census() -> TierCount:
     out = TierCount()
     for task in TASKS:
         setattr(out, task.tier, getattr(out, task.tier) + 1)
+        out.families[task.family] = out.families.get(task.family, 0) + 1
         if task.kind == "patch":
             out.patch += 1
+        if task.template_driven:
+            out.template += 1
         if "trap" in task.id:
             out.traps.append(task.id)
     return out

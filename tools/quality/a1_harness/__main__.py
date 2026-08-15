@@ -40,7 +40,7 @@ from tools.quality.a1_harness.transport import (
     TransportError,
 )
 from tools.quality.agent_eval import _write, head_sha
-from tools.quality.agent_eval_tasks import select
+from tools.quality.agent_eval_tasks import census, select
 
 
 def _transport(args: argparse.Namespace) -> Transport:
@@ -126,7 +126,7 @@ def _probe_mode(args: argparse.Namespace) -> int:
 
 def _run_mode(args: argparse.Namespace) -> int:
     """Checkpoint after every task: a lost machine should cost one task, not a run."""
-    tasks = select(tuple(args.tier), tuple(args.task))
+    tasks = select(tuple(args.tier), tuple(args.task), tuple(args.family))
     if not tasks:
         print("no tasks selected", file=sys.stderr)
         return 2
@@ -280,6 +280,13 @@ def main() -> int:
     _common(r)
     r.add_argument(
         "--tier", action="append", default=[], choices=("low", "mid", "high")
+    )
+    r.add_argument(
+        "--family",
+        action="append",
+        default=[],
+        choices=sorted(census().families),
+        help="what kind of work, independent of how hard it is",
     )
     r.add_argument("--task", action="append", default=[])
     r.add_argument("--out", type=Path)

@@ -283,7 +283,7 @@ def run_task(
     evict_at: float = 0.75,
     verbose: bool = True,
 ) -> HarnessRun:
-    run = HarnessRun(task_id=task.id, tier=task.tier, arm=ARM)
+    run = HarnessRun(task_id=task.id, tier=task.tier, arm=ARM, family=task.family)
     run.anchors_total = task.anchor_total
     worktree = make_worktree(sha, f"a1h-{task.id}")
     box = tools.Toolbox(

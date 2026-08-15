@@ -48,6 +48,11 @@ judge-free, so a rubric that disagrees with them is visible rather than silent. 
 the three columns together; a claim resting on the rubric alone is not supported by
 this tool.
 
+**Everything is reported twice, by tier and by family**, because the totals hid a
+one-sided set for fifteen tasks: every one of them was a comprehension question, so
+an arm that could not diagnose, derive a document or edit one in place scored the
+same as one that could. `--family` selects on the same axis.
+
     python tools/quality/agent_eval.py run --arm opus  --out var/agent-eval/opus.json
     python tools/quality/agent_eval.py run --arm local --out var/agent-eval/local.json
     python tools/quality/agent_eval.py judge \\
@@ -135,6 +140,7 @@ class Run:
     task_id: str
     tier: str
     arm: str
+    family: str = ""
     ok: bool = False
     error: str = ""
     answer: str = ""
@@ -300,7 +306,7 @@ def _usage_from(node: dict[str, Any]) -> dict[str, int]:
 
 
 def run_one(task: Task, arm: str, sha: str, *, verbose: bool = True) -> Run:
-    run = Run(task_id=task.id, tier=task.tier, arm=arm)
+    run = Run(task_id=task.id, tier=task.tier, arm=arm, family=task.family)
     run.anchors_total = task.anchor_total
     worktree = make_worktree(sha, f"{arm}-{task.id}")
     cmd = [
@@ -521,6 +527,17 @@ def _collect_patch(task: Task, run: Run, worktree: Path) -> None:
         # of the worktree, not of the prose.
         run.checks["no_edits"] = {"passed": not run.files_touched}
 
+    if "docs_only" in task.checks:
+        # The characteristic failure of an in-place edit is collateral: the file it
+        # was asked for, plus one it was not. `ruff` and `mypy` see a stray `.py`
+        # edit; nothing sees a stray `.md` one, and on a documents task that is the
+        # whole risk.
+        stray = [p for p in run.files_touched if not p.startswith("docs/")]
+        run.checks["docs_only"] = {
+            "passed": bool(run.files_touched) and not stray,
+            "tail": ("touched " + ", ".join(stray[:6])) if stray else "",
+        }
+
     if task.kind != "patch":
         return
 
@@ -724,6 +741,58 @@ def _checks_passed(run: dict[str, Any]) -> tuple[int, int]:
     return passed, total
 
 
+def _family_of(row: dict[str, Any]) -> str:
+    """The task's family, read from the set rather than from the record.
+
+    Artifacts written before the family axis existed carry no label, and so does the
+    A1 harness's, which builds its own run record. Both are still worth reporting on
+    this axis, and the set is where the label actually lives — the record's copy is
+    the fallback for a task the set no longer has.
+    """
+    try:
+        return by_id(row["task_id"]).family
+    except KeyError:
+        return str((row.get("left") or {}).get("family") or "?")
+
+
+_THIN = 3
+
+
+def _family_rows(rows: list[dict[str, Any]]) -> list[str]:
+    """Per-family aggregates, which is the only place a one-sided set shows up.
+
+    A tier is how hard a task is and a family is what kind it is, and the second
+    axis went unrecorded for fifteen tasks that were all one family. Families with
+    fewer than three tasks are marked: they are direction, not magnitude.
+    """
+    fields = ("n", "lh", "lt", "le", "lp", "rh", "rt", "re", "rp")
+    agg: dict[str, dict[str, float]] = {}
+    for row in rows:
+        acc = agg.setdefault(_family_of(row), dict.fromkeys(fields, 0.0))
+        acc["n"] += 1
+        rub = row.get("rubric") or {}
+        for side, prefix in (("left", "l"), ("right", "r")):
+            run = row[side]
+            scored = rub.get(side) or {}
+            acc[f"{prefix}h"] += run["anchors_hit"]
+            acc[f"{prefix}t"] += run["anchors_total"]
+            acc[f"{prefix}e"] += scored.get("earned", 0)
+            acc[f"{prefix}p"] += scored.get("possible", 0)
+
+    out = ["", f"{'family':<14} {'n':>2}   {'anchors L/R':<15} rubric L/R"]
+    for family, acc in sorted(agg.items(), key=lambda kv: -kv[1]["n"]):
+        thin = "† " if acc["n"] < _THIN else "  "
+        anchors = f"{acc['lh']:.0f}/{acc['lt']:.0f} vs {acc['rh']:.0f}/{acc['rt']:.0f}"
+        lr = acc["le"] / acc["lp"] if acc["lp"] else None
+        rr = acc["re"] / acc["rp"] if acc["rp"] else None
+        out.append(
+            f"{family:<14} {acc['n']:>2.0f} {thin}{anchors:<15} {_pct(lr)} vs {_pct(rr)}"
+        )
+    if any(acc["n"] < _THIN for acc in agg.values()):
+        out.append("† fewer than three tasks — read the row as direction only")
+    return out
+
+
 def report(judged: dict[str, Any]) -> str:
     left_arm = judged["arms"]["left"]
     right_arm = judged["arms"]["right"]
@@ -794,6 +863,7 @@ def report(judged: dict[str, Any]) -> str:
             f"  total wall {a['wall'] / 60:.1f} min"
             f"  output {a['out']:.0f} tok"
         )
+    lines.extend(_family_rows(rows))
     return "\n".join(lines)
 
 
@@ -820,7 +890,7 @@ def _run_mode(args: argparse.Namespace) -> int:
     only written at the end. They are written after each task now, and `--resume`
     reads them back.
     """
-    tasks = select(tuple(args.tier), tuple(args.task))
+    tasks = select(tuple(args.tier), tuple(args.task), tuple(args.family))
     if not tasks:
         print("no tasks selected", file=sys.stderr)
         return 2
@@ -1000,6 +1070,7 @@ def _judge_mode(args: argparse.Namespace) -> int:
             {
                 "task_id": task.id,
                 "tier": task.tier,
+                "family": task.family,
                 "kind": task.kind,
                 "left": by_id_left[task.id],
                 "right": by_id_right[task.id],
@@ -1058,6 +1129,13 @@ def main() -> int:
     r.add_argument("--arm", choices=sorted(ARMS), required=True)
     r.add_argument(
         "--tier", action="append", default=[], choices=("low", "mid", "high")
+    )
+    r.add_argument(
+        "--family",
+        action="append",
+        default=[],
+        choices=sorted(census().families),
+        help="what kind of work, independent of how hard it is",
     )
     r.add_argument("--task", action="append", default=[])
     r.add_argument("--out", type=Path)
