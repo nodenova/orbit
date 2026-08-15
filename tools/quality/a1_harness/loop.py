@@ -64,6 +64,14 @@ PACK_VARIABLES: dict[str, frozenset[str]] = {
     "finish_blocked.md": frozenset({"evidence_count", "min_evidence"}),
 }
 
+# Loaded only when `--answer-review` asks for it, so adding the gate does not change the
+# hash of a pack that predates it — a pack sha is how a score stays attached to the prompt
+# that produced it, and silently moving v1's would orphan every number recorded against it.
+OPTIONAL_PACK_VARIABLES: dict[str, frozenset[str]] = {
+    "answer_review.md": frozenset(),
+    "handed_context.md": frozenset({"path"}),
+}
+
 _TOOL_CALL_BLOCK = re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL)
 
 
@@ -81,9 +89,11 @@ class PromptPack:
         if not path.is_dir():
             raise ValueError(f"no prompt pack at {path}")
         files: dict[str, str] = {}
-        for name, allowed in PACK_VARIABLES.items():
+        for name, allowed in {**PACK_VARIABLES, **OPTIONAL_PACK_VARIABLES}.items():
             source = path / name
             if not source.is_file():
+                if name in OPTIONAL_PACK_VARIABLES:
+                    continue
                 raise ValueError(f"prompt pack {path.name} is missing {name}")
             text = source.read_text()
             used = {
@@ -118,8 +128,16 @@ class HarnessRun(Run):
 
     turn_stats: list[dict[str, Any]] = field(default_factory=list)
     tool_calls: dict[str, Any] = field(default_factory=dict)
+    tool_log: list[dict[str, Any]] = field(default_factory=list)
     prefix_reuse: dict[str, Any] = field(default_factory=dict)
     finish_blocked: int = 0
+    answer_key_reads: int = 0
+    answer_key_mentions: int = 0
+    answer_key_blocked: int = 0
+    answer_reviews: int = 0
+    answer_revised: bool = False
+    draft_answer: str = ""
+    handed_context_chars: int = 0
     nudges: int = 0
     length_capped: int = 0
     truncated_turns: int = 0
@@ -258,6 +276,10 @@ def run_task(
     sha: str,
     min_evidence: int = 1,
     max_nudges: int = 2,
+    answer_reviews: int = 0,
+    review_think: bool = False,
+    handed: tuple[str, ...] = (),
+    hide_answer_key: bool = True,
     evict_at: float = 0.75,
     verbose: bool = True,
 ) -> HarnessRun:
@@ -265,9 +287,36 @@ def run_task(
     run.anchors_total = task.anchor_total
     worktree = make_worktree(sha, f"a1h-{task.id}")
     box = tools.Toolbox(
-        worktree, truncation_note=pack.files["observation_truncated.md"]
+        worktree,
+        truncation_note=pack.files["observation_truncated.md"],
+        hide_answer_key=hide_answer_key,
     )
     wrapper = "task_patch.md" if task.kind == "patch" else "task_answer.md"
+    task_message = pack.render(
+        wrapper,
+        task_prompt=task.prompt,
+        worktree=str(worktree),
+        max_turns=task.max_turns,
+    )
+    if handed:
+        # The Claude Code arm auto-loads `CLAUDE.md` for *both* its arms — that is stated
+        # in its own module docstring, and the low tier is designed around it. This arm
+        # replaced the whole 26.7 k preamble with a 2 k prompt and dropped the repository's
+        # instruction file with it, which was never on the declared-delta list. So it was
+        # an undeclared difference in the model's context, not a design choice, and the
+        # tier it costs most is the one whose answers are written down in that file: the
+        # `lm-format-enforcer` name, the 0.81-against-1.00 gate figure and the property
+        # `tests/fake_mlx.py` exists to hold are all in it and nowhere in the file the
+        # question points at.
+        #
+        # It is concatenated rather than `format`-substituted because the file contains
+        # brace-bearing JSON (`{"models":[]}`) and `str.format` would raise on it.
+        blocks = [pack.render("handed_context.md", path=", ".join(handed))]
+        for relative in handed:
+            body = (worktree / relative).read_text()
+            blocks.append(f"--- {relative} ---\n{body}\n--- end {relative} ---")
+            run.handed_context_chars += len(body)
+        task_message = "\n\n".join([*blocks, task_message])
     messages: list[dict[str, Any]] = [
         {
             "role": "system",
@@ -278,19 +327,16 @@ def run_task(
                 max_turns=task.max_turns,
             ),
         },
-        {
-            "role": "user",
-            "content": pack.render(
-                wrapper,
-                task_prompt=task.prompt,
-                worktree=str(worktree),
-                max_turns=task.max_turns,
-            ),
-        },
+        {"role": "user", "content": task_message},
     ]
     definitions = tools.definitions()
     started = time.perf_counter()
     deadline = started + task.timeout_s
+    # Applying a fixed checklist to text already written is not a reasoning task, and the
+    # turn after a review is the one turn where that is known in advance. Left to think,
+    # the review turn is what made the gate cost 30% of the wall clock for four rubric
+    # points; with thinking off this model answers directly.
+    think_next: bool | None = None
 
     while run.turns < task.max_turns:
         remaining = deadline - time.perf_counter()
@@ -298,7 +344,10 @@ def run_task(
             run.end_reason = f"wall cap at {task.timeout_s:.0f}s"
             break
         try:
-            turn = transport.chat(messages, definitions, timeout=remaining)
+            turn = transport.chat(
+                messages, definitions, timeout=remaining, think=think_next
+            )
+            think_next = None
         except ContextOverflow as overflow:
             given_up = _evict(messages)
             if not given_up:
@@ -329,7 +378,27 @@ def run_task(
             box.counters.no_tool_call += 1
             answer = turn.content.strip()
             if answer and box.evidence >= min_evidence:
+                # The gate has to sit on this path too. With thinking on, this model
+                # frequently answers in prose and never calls `finish` — 3 of 10 episodes
+                # in the first review run, including the worst-scoring one — so a gate
+                # hung only on the tool call reviews the episodes that needed it least.
+                if run.answer_reviews < answer_reviews:
+                    run.answer_reviews += 1
+                    run.draft_answer = answer
+                    messages.append(_assistant_message(turn.content, []))
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_name": "harness",
+                            "content": pack.render("answer_review.md"),
+                        }
+                    )
+                    think_next = review_think
+                    continue
                 run.answer, run.answer_source = answer, "implicit"
+                run.answer_revised = bool(
+                    run.draft_answer and answer != run.draft_answer
+                )
                 run.end_reason = "answered without calling finish"
                 break
             # A turn the cap cut off mid-reasoning is not prose and not a refusal to act:
@@ -442,8 +511,33 @@ def run_task(
                         }
                     )
                     continue
-                run.answer = str(call.arguments.get("answer") or "").strip()
-                run.answer_source = "finish"
+                draft = str(call.arguments.get("answer") or "").strip()
+                # One bounded revision, and the checklist it carries is the same text the
+                # system prompt already holds. The prompt-only form of it did not take:
+                # low-01 read the pyproject comment that says "from 59 rules to 413",
+                # answered "a twentieth of the rules" from the next line of the same
+                # comment, and dropped the figure. This delivers it as the last thing in
+                # the context before the answer is written instead of the first.
+                if draft and run.answer_reviews < answer_reviews:
+                    run.answer_reviews += 1
+                    run.draft_answer = draft
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_name": "finish",
+                            "content": pack.render("answer_review.md"),
+                        }
+                    )
+                    think_next = review_think
+                    continue
+                # Never worse than the draft: a revision turn that comes back empty must
+                # not overwrite an answer the model had already written, which is the same
+                # failure the forced-answer path was built for.
+                run.answer = draft or run.draft_answer
+                run.answer_revised = bool(
+                    run.draft_answer and draft and draft != run.draft_answer
+                )
+                run.answer_source = "finish" if draft else "draft after review"
                 run.end_reason = "finish"
                 finished = True
                 break
@@ -467,12 +561,18 @@ def run_task(
 
     if not run.end_reason:
         run.end_reason = f"turn cap at {task.max_turns}"
+    if not run.answer and run.draft_answer:
+        run.answer, run.answer_source = run.draft_answer, "draft after review"
     if not run.answer and run.answer_source != "finish":
         run.answer_source = run.answer_source or "none"
 
     run.wall_s = time.perf_counter() - started
     run.tool_uses = box.counters.total
     run.tool_calls = box.counters.as_dict()
+    run.tool_log = box.log
+    run.answer_key_reads = box.answer_key_reads
+    run.answer_key_mentions = box.answer_key_mentions
+    run.answer_key_blocked = box.answer_key_blocked
     run.prefix_reuse = prefix_reuse(run.turn_stats)
     run.ok = bool(run.answer.strip()) and not run.error
     run.anchors_hit, run.anchors_missing = anchors_found(task, run.answer)
@@ -484,6 +584,11 @@ def run_task(
             f"  {ARM} {task.id:<26} {'ok ' if run.ok else 'ERR'} "
             f"{run.wall_s:7.1f}s  ttft {run.ttft_s:5.1f}s  "
             f"{run.turns:>2}t {run.tool_uses:>2}tc  out {run.output_tokens:>6}  "
+            # Answer length, because with `think: false` this model reasons in `content`
+            # instead of not reasoning: one mid-tier answer came back as 9,107 characters
+            # of unresolved deliberation that scored both anchors on substring matches
+            # while failing the task's four-sentence instruction outright.
+            f"ans {len(run.answer):>5}c  "
             f"anchors {run.anchors_hit}/{run.anchors_total}  "
             f"reuse {run.prefix_reuse.get('verdict', '?')}  {run.end_reason}"
             + (f"  {run.error[:60]}" if run.error else ""),
@@ -499,6 +604,9 @@ def declared_deltas(
     search_backend: str,
     think: bool,
     max_output_tokens: int,
+    answer_reviews: int = 0,
+    handed: tuple[str, ...] = (),
+    hide_answer_key: bool = True,
 ) -> list[str]:
     """Every deliberate difference from the Claude Code arm. Anything absent is a bug."""
     deltas = [
@@ -515,6 +623,22 @@ def declared_deltas(
         deltas.append(
             f"finish is blocked until {min_evidence} read_file/search calls succeed"
         )
+    if answer_reviews > 0:
+        deltas.append(
+            f"{answer_reviews} bounded answer review(s), taken with thinking off, "
+            f"before the first answer is recorded"
+        )
+    if hide_answer_key:
+        deltas.append(
+            "read_file and search hide the eval's own task module, which is in the "
+            "worktree and whose anchor tuples a plain search returns"
+        )
+    deltas.append(
+        f"{', '.join(handed)} handed in the pinned prefix, as Claude Code auto-loads it"
+        if handed
+        else "no repository instruction file in the prefix, where Claude Code auto-loads "
+        "CLAUDE.md for both of its arms"
+    )
     if search_backend != "rg":
         deltas.append(
             f"search runs {search_backend}; ripgrep is not installed on this host"
@@ -533,6 +657,9 @@ def artifact(
     host: HostState,
     min_evidence: int,
     max_nudges: int,
+    answer_reviews: int,
+    handed: tuple[str, ...],
+    hide_answer_key: bool,
     search_backend: str,
 ) -> dict[str, Any]:
     """Schema-identical to the other arm's `run` output, plus a `harness` block."""
@@ -558,6 +685,9 @@ def artifact(
             "think": transport.think,
             "min_evidence": min_evidence,
             "max_nudges": max_nudges,
+            "answer_reviews": answer_reviews,
+            "handed_context": list(handed),
+            "hide_answer_key": hide_answer_key,
             "search_backend": search_backend,
             "env": {
                 **host.env,
@@ -571,6 +701,9 @@ def artifact(
                 search_backend=search_backend,
                 think=transport.think,
                 max_output_tokens=transport.max_output_tokens,
+                answer_reviews=answer_reviews,
+                handed=handed,
+                hide_answer_key=hide_answer_key,
             ),
         },
         "runs": runs,

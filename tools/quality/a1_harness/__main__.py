@@ -135,6 +135,16 @@ def _run_mode(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"prompt pack: {exc}", file=sys.stderr)
         return 2
+    for flag, required in (
+        ("--answer-review", "answer_review.md" if args.answer_review else ""),
+        ("--handed-context", "handed_context.md" if args.handed_context else ""),
+    ):
+        if required and required not in pack.files:
+            print(
+                f"{flag} needs {required}, which pack {pack.name} does not carry",
+                file=sys.stderr,
+            )
+            return 2
 
     transport = _transport(args)
     try:
@@ -168,7 +178,9 @@ def _run_mode(args: argparse.Namespace) -> int:
     print(
         f"arm={ARM} ({LABEL})  commit={sha[:12]}  pack={pack.name}@{pack.sha}  "
         f"num_ctx={transport.num_ctx}  think={transport.think}  "
-        f"sampling={transport.sampling.mode}  min_evidence={args.min_evidence}\n"
+        f"sampling={transport.sampling.mode}  min_evidence={args.min_evidence}  "
+        f"answer_review={args.answer_review}  "
+        f"handed={','.join(args.handed_context) or 'none'}\n"
         f"{len(pending)} to run of {len(tasks)} selected"
         + (f", {len(done)} resumed" if done else ""),
         flush=True,
@@ -189,6 +201,9 @@ def _run_mode(args: argparse.Namespace) -> int:
                 host=host,
                 min_evidence=args.min_evidence,
                 max_nudges=args.nudges,
+                answer_reviews=args.answer_review,
+                handed=tuple(args.handed_context),
+                hide_answer_key=not args.show_answer_key,
                 search_backend=search_backend,
             ),
             quiet=True,
@@ -202,6 +217,9 @@ def _run_mode(args: argparse.Namespace) -> int:
             sha=sha,
             min_evidence=args.min_evidence,
             max_nudges=args.nudges,
+            answer_reviews=args.answer_review,
+            handed=tuple(args.handed_context),
+            hide_answer_key=not args.show_answer_key,
         )
         done[task.id] = asdict(run)
         checkpoint()
@@ -277,6 +295,27 @@ def main() -> int:
         help="successful read_file/search calls required before finish is accepted; 0 disables",
     )
     r.add_argument("--nudges", type=int, default=2)
+    r.add_argument(
+        "--answer-review",
+        type=int,
+        default=0,
+        help="bounded revisions of the first finish against the pack's checklist; "
+        "needs answer_review.md in the pack",
+    )
+    r.add_argument(
+        "--show-answer-key",
+        action="store_true",
+        help="stop hiding the eval's own task module from read_file and search; it is in "
+        "the worktree and a plain search returns the anchors of the question being asked",
+    )
+    r.add_argument(
+        "--handed-context",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="repo-relative file quoted into the pinned prefix, the way Claude Code "
+        "auto-loads CLAUDE.md for both of its arms; needs handed_context.md in the pack",
+    )
     r.set_defaults(fn=_run_mode)
 
     args = ap.parse_args()

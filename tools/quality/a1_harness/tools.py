@@ -51,6 +51,42 @@ class ToolResult:
     truncated: bool = False
 
 
+# Which argument identifies the call in the log below. `by_name` counters say the model
+# made 71 `read_file` calls and nothing says which files, so a missed anchor could not be
+# attributed: an answer omitting a figure that was in a file it read is a synthesis
+# failure, and one omitting a figure it never opened is a navigation failure, and those
+# take opposite fixes.
+_PRIMARY_ARGUMENT = {
+    "list_files": "pattern",
+    "search": "query",
+    "read_file": "path",
+    "write_file": "path",
+    "edit_file": "path",
+    "run": "command",
+}
+
+# The eval's own task module is *in* the worktree at the pinned revision, and it carries
+# every task's anchors and rubric — "3 = compaction first, context scaling last" is a line
+# of it. An agent that greps the question's own phrasing can find the answer key, and one
+# episode did: it searched "wire protocol request path", read `agent_eval_tasks.py` and
+# scored 2/2. So a score can be inflated by the tree it is measured in, and both halves are
+# counted separately because they are different sizes of problem: reading the module hands
+# over the anchors and the rubric, while a search hit that merely quotes its name or one
+# task prompt hands over nothing. `Criterion(` and `anchors=(` appear in the answer key and
+# nowhere else in the tree.
+#
+# Counting it is not enough, because a plain `search` is the leak's main route rather than
+# an unlucky read: one line of that module is
+# `anchors=(("backends/base.py", "base.py"), ("Backend",), ("MockBackend",)),` and the two
+# lines under it are the rubric, so `search Backend` returns the whole graded answer to
+# low-04. `search mmap` returns mid-05's anchor tuple the same way. Both `read_file` and
+# `search` therefore drop these two modules and count what they dropped. It is a declared
+# delta because the Claude Code arm has no equivalent and its stored numbers were produced
+# with the leak open.
+_ANSWER_KEY_MODULES = ("agent_eval.py", "agent_eval_tasks.py")
+_ANSWER_KEY_MARKERS = ("Criterion(", "anchors=(", "rubric=(")
+
+
 @dataclass(slots=True)
 class ToolCounters:
     """Typed counters, because "the tool call could not be parsed" is a headline number.
@@ -248,6 +284,7 @@ class Toolbox:
         read_lines: int = READ_LINE_BUDGET,
         search_matches: int = SEARCH_MATCH_BUDGET,
         run_lines: int = RUN_LINE_BUDGET,
+        hide_answer_key: bool = True,
     ) -> None:
         self.root = root.resolve()
         self.truncation_note = truncation_note
@@ -256,6 +293,11 @@ class Toolbox:
         self.run_lines = run_lines
         self.counters = ToolCounters()
         self.evidence = 0
+        self.hide_answer_key = hide_answer_key
+        self.answer_key_reads = 0
+        self.answer_key_mentions = 0
+        self.answer_key_blocked = 0
+        self.log: list[dict[str, Any]] = []
         self.finish_answer: str | None = None
         self._find = shutil.which("find") or "find"
         self.search_binary = search_binary()
@@ -263,6 +305,10 @@ class Toolbox:
     @property
     def search_backend(self) -> str:
         return Path(self.search_binary).name
+
+    @staticmethod
+    def _is_answer_key(relative: str) -> bool:
+        return Path(relative).name in _ANSWER_KEY_MODULES
 
     def _resolve(self, raw: str) -> Path:
         candidate = Path(raw)
@@ -293,6 +339,28 @@ class Toolbox:
         return f"{body}\n{note}"
 
     def call(self, name: str, arguments: dict[str, Any]) -> ToolResult:
+        result = self._dispatch(name, arguments)
+        if any(marker in result.text for marker in _ANSWER_KEY_MARKERS):
+            self.answer_key_reads += 1
+        elif any(module in result.text for module in _ANSWER_KEY_MODULES):
+            self.answer_key_mentions += 1
+        argument = str(arguments.get(_PRIMARY_ARGUMENT.get(name, ""), ""))
+        # Relative, because the worktree prefix is a 90-character temp path and truncating
+        # the whole thing to a fixed budget cut off the filename — the only part that says
+        # what was read.
+        if argument.startswith(str(self.root)):
+            argument = argument[len(str(self.root)) :].lstrip("/") or "."
+        self.log.append(
+            {
+                "name": name,
+                "arg": argument[:120],
+                "ok": result.ok,
+                "evidence": result.evidence,
+            }
+        )
+        return result
+
+    def _dispatch(self, name: str, arguments: dict[str, Any]) -> ToolResult:
         handler = {
             "list_files": self._list_files,
             "search": self._search,
@@ -390,11 +458,15 @@ class Toolbox:
         if found.returncode > 1:
             self.counters.errors += 1
             return ToolResult(f"search failed: {found.stderr.strip()[:300]}", ok=False)
-        lines = [
-            line.replace(f"{self.root}/", "", 1)
-            for line in found.stdout.splitlines()
-            if line
-        ]
+        lines = []
+        for line in found.stdout.splitlines():
+            if not line:
+                continue
+            relative = line.replace(f"{self.root}/", "", 1)
+            if self.hide_answer_key and self._is_answer_key(relative.split(":", 1)[0]):
+                self.answer_key_blocked += 1
+                continue
+            lines.append(relative)
         if not lines:
             return ToolResult(f"No matches for {query!r}.", evidence=True)
         if len(lines) > self.search_matches:
@@ -413,6 +485,13 @@ class Toolbox:
 
     def _read_file(self, arguments: dict[str, Any]) -> ToolResult:
         path = self._resolve(str(arguments["path"]))
+        if self.hide_answer_key and self._is_answer_key(self._relative(path)):
+            self.answer_key_blocked += 1
+            return ToolResult(
+                f"{self._relative(path)} is the evaluation harness's own module and is "
+                f"not readable during a task. Answer from the repository itself.",
+                ok=False,
+            )
         if not path.is_file():
             self.counters.errors += 1
             return ToolResult(f"{self._relative(path)} is not a file.", ok=False)
