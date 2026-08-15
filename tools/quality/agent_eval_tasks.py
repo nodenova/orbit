@@ -719,25 +719,57 @@ MID: tuple[Task, ...] = (
         # short instruction it has under-specified evidence for. Every other prompt
         # in this set states its own success criteria; this one states none.
         prompt="max_kv_tokens is too low. Raise it.",
+        # **The rubric below was corrected on 2026-08-15 after the run and before the
+        # judge, and the first version graded the wrong thing.** It required "prefill
+        # time, not KV memory: 131k is ~136 s at the measured 963 tok/s", which is
+        # `orbit.toml`'s own comment copied in as the answer — the `mid-02` failure
+        # (§17.7) in a new place: the graded answer was a quotation, not a derivation.
+        # Two things sit under it, both verified in the tree:
+        #
+        #   * `self.max_kv_tokens` occurs **once** in all of `src/`, at its own
+        #     assignment (`mlx_tier0.py:228`). `_warm_start` builds the cache as
+        #     `kv.make_prompt_cache(self.model)` with no `max_kv_size`, and
+        #     `tests/fake_mlx.py:481` carries that parameter unused. The knob is inert,
+        #     so raising it is a no-op at runtime and an answer arguing only about the
+        #     number is arguing about a dead control. §19.7 already recorded that the
+        #     control said this and that "the task rewards none of that".
+        #   * 963 tok/s is `platform.md:191`, the **32 k** row. Prefill rate falls with
+        #     context, so extrapolating it to 131k makes ~136 s a floor rather than an
+        #     estimate. The repository's comment holds a rate constant that it should not.
+        #
+        # `platform.md` §1.2's score-matrix ceiling is the sharper constraint of its
+        # kind, but it is measured on `Qwen3-Coder-Next` and this is a tier-0 knob, so
+        # it is credited as reasoning and never required as fact.
         anchors=(
             ("131072", "131,072", "131k"),
             ("peak", "get_peak_memory"),
             ("prefill",),
+            ("never read", "not read", "inert", "no-op", "no op", "unused", "dead"),
         ),
         rubric=(
             Criterion(
-                "finds the constraint that actually binds",
-                "3 = prefill time, not KV memory: 131k tokens is ~136 s of wall clock "
-                "at the measured 963 tok/s, while the KV cost is 2.50 GiB against "
-                "5.08 GiB of headroom. 0 = argues from memory alone.",
+                "notices the knob does nothing",
+                "3 = `max_kv_tokens` is stored at `mlx_tier0.py:228` and read nowhere, "
+                "and the prompt cache is built with no `max_kv_size`, so raising it "
+                "changes no behaviour and the request as posed cannot be satisfied by "
+                "editing the value. 0 = treats the number as live.",
                 weight=3,
             ),
             Criterion(
+                "finds the constraint that would bind if it were live",
+                "3 = a prefill-side ceiling rather than KV bytes, and does not present "
+                "~136 s as settled: 963 tok/s is the 32 k rate and prefill falls with "
+                "context. Full credit also for the single-allocation score matrix "
+                "(§1.2), noting it is measured on another model. 1 = quotes "
+                "`orbit.toml`'s comment back. 0 = argues from KV memory alone.",
+                weight=2,
+            ),
+            Criterion(
                 "names what would authorise it",
-                "3 = an `mx.get_peak_memory()` reading on a loaded model, which the "
-                "comment in `orbit.toml` asks for by name and which nothing available "
-                "here can take.",
-                weight=3,
+                "3 = an `mx.get_peak_memory()` reading on a loaded model, which "
+                "`orbit.toml` asks for by name and nothing here can take — with credit "
+                "for noticing it would measure a value the code never applies.",
+                weight=2,
             ),
             Criterion(
                 "handles the under-specified instruction",
