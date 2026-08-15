@@ -538,7 +538,7 @@ def _collect_patch(task: Task, run: Run, worktree: Path) -> None:
             "tail": ("touched " + ", ".join(stray[:6])) if stray else "",
         }
 
-    if task.kind != "patch":
+    if not task.expects_diff:
         return
 
     subprocess.run(["git", "add", "-A"], cwd=worktree, capture_output=True, check=False)
@@ -557,7 +557,13 @@ def _collect_patch(task: Task, run: Run, worktree: Path) -> None:
         # `mypy` green — 6 of 6 checks earned by touching nothing, while the answers
         # claimed the edits. "No patch produced" and "patch failed" are different
         # results. `recheck` already drew this distinction; the run path did not.
-        run.checks["patch_produced"] = {"passed": False, "tail": "no diff produced"}
+        #
+        # Only asserted where the diff *is* the deliverable. A `code_change` task run
+        # as an answer may be correctly satisfied without one — `mid-08`'s rubric
+        # accepts asking for the missing measurement instead of editing — and scoring
+        # that as a missing patch would penalise the answer the task wants.
+        if task.kind == "patch":
+            run.checks["patch_produced"] = {"passed": False, "tail": "no diff produced"}
         return
 
     _run_checks(task, run, worktree)
@@ -651,7 +657,7 @@ def judge_pair(
         f"## Answer A\n\n{a.answer[:12000] or '(empty)'}\n\n"
         f"## Answer B\n\n{b.answer[:12000] or '(empty)'}\n"
     )
-    if task.kind == "patch":
+    if task.expects_diff:
         prompt += (
             f"\n## Diff written by A\n\n```diff\n{a.diff[:12000] or '(none)'}\n```\n"
             f"\n## Diff written by B\n\n```diff\n{b.diff[:12000] or '(none)'}\n```\n"
@@ -1002,16 +1008,19 @@ def _recheck_mode(args: argparse.Namespace) -> int:
         sha = payload["sha"]
         for record in payload["runs"]:
             task = by_id(record["task_id"])
-            if task.kind != "patch":
+            if not task.expects_diff:
                 continue
             if not record.get("diff"):
                 # "No patch produced" and "patch failed lint" are different results
                 # and were being reported as the same F. A session killed before it
                 # wrote anything leaves stale check entries behind; replace them.
-                record["checks"] = {
-                    "patch_produced": {"passed": False, "tail": "no diff produced"}
-                }
-                print(f"  {path.name}:{record['task_id']}  no diff — checks cleared")
+                if task.kind == "patch":
+                    record["checks"] = {
+                        "patch_produced": {"passed": False, "tail": "no diff produced"}
+                    }
+                    print(
+                        f"  {path.name}:{record['task_id']}  no diff — checks cleared"
+                    )
                 continue
             worktree = make_worktree(sha, f"recheck-{record['task_id']}")
             try:

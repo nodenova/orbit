@@ -41,6 +41,7 @@ from tools.quality.a1_harness.transport import (
     ToolCall,
     Transport,
     TransportError,
+    TruncatedToolCall,
 )
 from tools.quality.agent_eval import Run, _collect_patch, drop_worktree, make_worktree
 from tools.quality.agent_eval_tasks import Task, anchors_found
@@ -141,6 +142,7 @@ class HarnessRun(Run):
     nudges: int = 0
     length_capped: int = 0
     truncated_turns: int = 0
+    truncated_tool_calls: int = 0
     final_answer_forced: bool = False
     evictions: int = 0
     observations_elided: int = 0
@@ -355,6 +357,18 @@ def run_task(
                 break
             run.evictions += 1
             run.observations_elided += 1
+            continue
+        except TruncatedToolCall as exc:
+            # Retried once with thinking off rather than counted as a failure. Under
+            # greedy sampling an identical retry reproduces the identical truncated
+            # call, so the retry has to change something, and thinking is what the cap
+            # was spent on — the same reasoning as the forced final answer below.
+            run.truncated_tool_calls += 1
+            if think_next is False:
+                run.error = str(exc)
+                run.end_reason = "tool call truncated twice"
+                break
+            think_next = False
             continue
         except TransportError as exc:
             run.error = str(exc)

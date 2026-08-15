@@ -62,6 +62,20 @@ class TransportError(RuntimeError):
     """The endpoint refused, or the host is in a state that would make a run a lie."""
 
 
+class TruncatedToolCall(Exception):
+    """`num_predict` cut a tool call mid-JSON and ollama could not parse the remains.
+
+    The same event as `done_reason == "length"` on a turn that emitted no call, and
+    it must be handled the same way — the model spent its budget and needs another
+    turn, not an aborted episode. It arrives differently because ollama parses tool
+    arguments server-side and reports the failure as a stream error, so it reached
+    the loop as a fatal `TransportError` and killed the run outright: measured on
+    `mid-08` at a 2,048-token cap, where the episode died on turn 4 of a 30-turn
+    budget. At 4,096 the same task completed. A cap that ends a run rather than a
+    turn silently converts a configuration choice into a model result.
+    """
+
+
 class ContextOverflow(Exception):
     """The prompt did not fit. ollama types this rather than truncating silently.
 
@@ -250,6 +264,13 @@ def _post_json(url: str, body: dict[str, Any], timeout: float = 30.0) -> dict[st
             return payload
     except urllib.error.HTTPError as exc:
         _raise_for_body(exc)
+
+
+def _raise_for_chunk(message: str) -> NoReturn:
+    """Classify a mid-stream ollama error. Only one of them is recoverable."""
+    if "invalid tool call arguments" in message:
+        raise TruncatedToolCall(message[:400])
+    raise TransportError(message[:400])
 
 
 def _raise_for_body(exc: urllib.error.HTTPError) -> NoReturn:
@@ -451,7 +472,7 @@ class Transport:
                         continue
                     chunk: dict[str, Any] = json.loads(line)
                     if chunk.get("error"):
-                        raise TransportError(str(chunk["error"])[:400])
+                        _raise_for_chunk(str(chunk["error"]))
                     message = chunk.get("message") or {}
                     piece = str(message.get("content") or "")
                     reasoning = str(message.get("thinking") or "")

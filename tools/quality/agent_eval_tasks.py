@@ -1,4 +1,4 @@
-"""The repo-grounded agent task set: 22 tasks over three tiers and six families.
+"""The repo-grounded agent task set: 28 tasks over three tiers and six families.
 
 Companion to `tools/quality/agent_eval.py`, which runs them. Kept in its own module because
 the runner is machinery and this is data — the tasks get edited far more often than
@@ -66,11 +66,32 @@ named a capability nothing here was measuring:
 absent: in a single-repository eval it would read `own_codebase` for nearly
 everything, and it was the weakest of the three axes where it was measured.
 
-**The set still over-weights comprehension**: 10 of 22 tasks against ~31% of that
+**The set still over-weights comprehension**: 12 of 28 tasks against ~31% of that
 corpus, because nothing was removed. Every existing task has run history under
 `var/`, and a task deleted to fix a ratio takes its comparisons with it. Read the
 per-family rows as coverage rather than as a distribution, and a family of one or
 two tasks as direction rather than magnitude.
+
+The six most recent tasks close the classes that had no representative at all, each
+one named by that study and sized by its share of the tier it sits in:
+`explain_general_tech` (26.5% of `low`), `explain_business_term` (10.3% of `low`),
+`ops_setup`, `review_code`, `review_doc`, and `write_code` — the last of which is
+the create-side control the set could not previously run, so the corpus finding that
+**creating is easier than modifying** (`write_code` 8.3% unhappy against `edit_code`
+11.7%) had no form here that could confirm or refute it.
+
+Three of that study's classes are still absent, and deliberately:
+
+  * `write_business_text`, `translate` and `offtask_personal` — real and large there,
+    but a repo-grounded form would measure the model's prose rather than its work in
+    this repository, which is the same reason the `prose` and `offtask` families are
+    not in `Family`;
+  * `analyze_data` — every candidate artefact lives under `var/`, which is gitignored
+    and therefore absent from the detached worktree every run uses. A task whose
+    subject does not survive `git worktree add` grades the checkout, not the model;
+  * `summarize` — 1.4% and the thinnest class in the source gold set, and in a
+    single-repository eval every draft of it collapsed into `understand_own_system`
+    or `generate_doc_from_source`, both of which are already covered.
 """
 
 from __future__ import annotations
@@ -126,6 +147,23 @@ class Task:
     @property
     def anchor_total(self) -> int:
         return len(self.anchors)
+
+    @property
+    def expects_diff(self) -> bool:
+        """Whether an edit is part of what was asked for, so the tree must be diffed.
+
+        `kind` is how a task is run; `deliver` is what the requester wanted back, and
+        the two came apart on `mid-08`. It is `deliver="code_change"` held at
+        `kind="answer"` on purpose — the prompt is 34 characters and stating a
+        procedure would destroy the ambiguity it exists to measure — so diff
+        collection returned early, `_run_checks` never ran, and the judge was shown
+        prose only. Both arms edited the tree anyway, two files and four, and none of
+        it was recorded. A `no_edits` trap is excluded because there the correct diff
+        is the empty one.
+        """
+        return self.kind == "patch" or (
+            self.deliver == "code_change" and "no_edits" not in self.checks
+        )
 
 
 def anchors_found(task: Task, text: str) -> tuple[int, list[str]]:
@@ -348,6 +386,91 @@ LOW: tuple[Task, ...] = (
             ),
         ),
         max_turns=30,
+    ),
+    Task(
+        id="low-08-prefill-vs-decode",
+        tier="low",
+        family="understand",
+        # The production corpus's largest `low` class by a distance: 26.5% of `low` is
+        # a general technical question, against 2.6% that touches code at all. The
+        # class is not "what is prefill" — that needs no repository — it is a general
+        # question asked *of a codebase*, and the failure it exists to catch is an
+        # answer that is textbook-correct and says nothing about this checkout.
+        prompt=(
+            "I know roughly what prefill and decode are. Why does the gap between "
+            "them decide the whole design here, rather than being an implementation "
+            "detail?" + _TERSE
+        ),
+        anchors=(("prefill",), ("decode",), ("40x", "40×", "~40")),
+        rubric=(
+            Criterion(
+                "gets the direction right",
+                "3 = prefill is the cheap direction and reading is prefill-bound, so a "
+                "model too big to generate with is still affordable to read with. "
+                "0 = has the asymmetry backwards or treats the two as interchangeable.",
+                weight=3,
+            ),
+            Criterion(
+                "connects it to this design",
+                "3 = it is why the streamed tier is a verifier and never a generator: "
+                "the resident model writes, the larger one only judges. 0 = a correct "
+                "general explanation with nothing in it specific to this repository.",
+                weight=3,
+            ),
+            Criterion(
+                "carries the number",
+                "3 = ~40x on measured hardware, and says it was measured here rather "
+                "than quoting a figure from the literature.",
+                weight=2,
+            ),
+        ),
+        max_turns=25,
+    ),
+    Task(
+        id="low-09-what-is-a-rung",
+        tier="low",
+        family="understand",
+        # `explain_business_term` is 10.3% of `low` and 2.8% of `mid` — a vocabulary
+        # lookup, where the word is the organisation's rather than the industry's.
+        # "Rung" is this repository's: it appears in `CLAUDE.md` without a definition,
+        # which is exactly the position a newcomer is in.
+        prompt=(
+            "Someone told me tier 1 is 'at rung 3 on this machine'. What is a rung, "
+            "how many are there, and what does rung 3 actually mean?" + _TERSE
+        ),
+        # Not an anchor on "4" or "rung 4": any answer on this topic contains both,
+        # so it would score without discriminating — the `low-06` defect. `5.5` and a
+        # second rung name each require having found the ladder rather than the word.
+        anchors=(
+            ("second_opinion",),
+            ("adapter",),
+            ("5.5", "ladder", "fallback"),
+            ("resident_swap", "remote", "streamed"),
+        ),
+        rubric=(
+            Criterion(
+                "defines the term",
+                "3 = the sec 5.5 fallback ladder — which of four ways the tier-1 "
+                "verifier role is filled when the streamed 122B is not available. "
+                "0 = guesses from the word, or conflates a rung with a tier.",
+                weight=3,
+            ),
+            Criterion(
+                "rung 3 specifically",
+                "3 = `second_opinion`: tier 0 itself with its adapter unmounted, so it "
+                "needs no second model and costs no memory, and it is weaker than the "
+                "streamed verifier while still catching adapter overfit.",
+                weight=3,
+            ),
+            Criterion(
+                "names the others without padding",
+                "3 = 1 streamed, 2 `resident_swap` (evicts tier 0, ~10 s each way), "
+                "4 `remote` (leaves the machine, breaks the offline claim). Credit for "
+                "brevity — this is a vocabulary question, not a tour.",
+                weight=2,
+            ),
+        ),
+        max_turns=25,
     ),
 )
 
@@ -704,6 +827,224 @@ MID: tuple[Task, ...] = (
         ),
         max_turns=60,
         timeout_s=7200.0,
+    ),
+    Task(
+        id="mid-11-ops-constrain-missing",
+        tier="mid",
+        family="operate",
+        # `ops_setup` is 2.8% of `mid` and its complaint mix is dominated by the agent
+        # answering the general form of the question. The trap is that the obvious
+        # answer — install the extra — is right and incomplete: this repository draws a
+        # distinction between prevention and repair that a stock answer will not carry.
+        prompt=(
+            "I set this up with `pip install -e '.[dev]'` and everything passes, but a "
+            "colleague says my tool-call numbers are not comparable to CI's. What is "
+            "different about my environment, and what do I run?" + _TERSE
+        ),
+        anchors=(
+            ("constrain",),
+            ("lm-format-enforcer", "lm_format_enforcer"),
+            ("repair",),
+        ),
+        rubric=(
+            Criterion(
+                "names the missing extra",
+                "3 = `pip install -e '.[dev,constrain]'`, which is what CI installs; "
+                "`lm-format-enforcer` is the package it pulls in.",
+                weight=2,
+            ),
+            Criterion(
+                "says what actually differs",
+                "3 = without it the tool-call path exercises *repair* rather than "
+                "*prevention* — the schema never reaches the logits, so a malformed "
+                "call is fixed after the fact instead of being impossible. 0 = says "
+                "only that a dependency is missing.",
+                weight=3,
+            ),
+            Criterion(
+                "the numbers are the point",
+                "3 = the two configurations are graded by the same blocking gate and "
+                "do not score the same, so a local pass proves less than CI's. Credit "
+                "for `orbit gate toolcall --runs 100` or `orbit doctor` as the check.",
+                weight=2,
+            ),
+        ),
+        max_turns=30,
+    ),
+    Task(
+        id="mid-12-review-adapter-patch",
+        tier="mid",
+        family="change_code",
+        # `review_code` is 2.8% and is the one `change_code` task where the deliverable
+        # is prose. The diff is in the prompt on purpose: a review task supplies the
+        # artefact, and making the model find it first would measure navigation again.
+        # What it must supply is the invariant, which is nowhere in the diff.
+        prompt=(
+            "Review this patch before I push it.\n\n"
+            "```diff\n"
+            "--- a/src/orbit/backends/mlx_tier0.py\n"
+            "+++ b/src/orbit/backends/mlx_tier0.py\n"
+            "@@\n"
+            "     def __init__(self, cfg: Tier0Config) -> None:\n"
+            "         self._model, self._tokenizer = mlx_lm.load(cfg.model)\n"
+            "+        self._active_adapter: str | None = None\n"
+            "+\n"
+            "+    def set_adapter(self, adapter: str | None) -> None:\n"
+            "+        self._active_adapter = adapter\n"
+            "\n"
+            "     async def generate(self, req: GenRequest) -> GenResult:\n"
+            "-        adapter = req.adapter\n"
+            "+        adapter = self._active_adapter\n"
+            "         ...\n"
+            "```\n\n"
+            "It removes a per-request lookup from the hot path and the suite is green."
+            + _TERSE
+        ),
+        anchors=(
+            ("concurren", "race", "races"),
+            ("GenRequest", "req.adapter", "per-request"),
+            ("4.2", "isolation"),
+        ),
+        rubric=(
+            Criterion(
+                "rejects it, for the right reason",
+                "3 = adapter choice is bound per request and never on the backend, "
+                "because backend-global state races under concurrency: two in-flight "
+                "requests wanting different adapters get whichever was set last. "
+                "0 = approves it, or objects on style or naming.",
+                weight=3,
+            ),
+            Criterion(
+                "says why green tests do not clear it",
+                "3 = the failure is a silently wrong answer, not an exception, and a "
+                "suite that issues one request at a time cannot see it. 0 = treats "
+                "the passing suite as evidence either way.",
+                weight=3,
+            ),
+            Criterion(
+                "grounds it in the rule",
+                "3 = names the do-not-undo invariant (sec 4.2 / adapter isolation) "
+                "rather than deriving the objection from first principles alone.",
+                weight=2,
+            ),
+            Criterion(
+                "answers the premise it was given",
+                "3 = engages with the stated motive — says whether the indirection is "
+                "actually on the hot path, or what would have to be measured to know. "
+                "0 = ignores the performance claim entirely.",
+            ),
+        ),
+        max_turns=30,
+    ),
+    Task(
+        id="mid-13-review-onboarding-doc",
+        tier="mid",
+        family="documents",
+        deliver="answer",
+        # `review_doc` is 4.2% corrected and 8.8% unhappy. Three errors are planted and
+        # each is checkable against exactly one place in the tree; a fourth statement is
+        # correct and unremarkable, because a review that flags everything is not a
+        # review. The `mid-06` lesson applies — the anchors measure how many were found,
+        # and whether the correct line survived is the rubric's job.
+        prompt=(
+            "A new joiner wrote this section for our onboarding page. Check it against "
+            "the repository and tell me what to fix.\n\n"
+            "> ## Before your first PR\n"
+            # Deliberately `[dev,constrain]` and not `[dev]`: the latter is a real
+            # deficiency (it exercises repair rather than prevention) and is what
+            # `mid-11` grades, so an arm that knows the repository would correctly
+            # flag it and be marked down by the criterion that wants a correct line
+            # left alone. A control line has to be one with nothing wrong with it.
+            "> Install with `pip install -e '.[dev,constrain]'`, then run `pytest -q`.\n"
+            "> We pin `ruff>=0.15` so everyone lints the same rule set.\n"
+            "> Run `orbit doctor --config orbit.toml` to check your runtime.\n"
+            "> If `orbit extract` finds too few pairs it exits 1, so treat a 1 as "
+            "'corpus not ready yet' and move on.\n"
+            # No `_TERSE` here, unlike every other answer task at this tier. The
+            # deliverable is a list of findings with a reason each, and a four-sentence
+            # cap would make the task measure compression instead of review — the arm
+            # that finds all three and explains them would be graded against the same
+            # ceiling as one that finds two.
+        ),
+        anchors=(("0.16.2",), ("before",), ("exit 2", "exits 2", "exit code 2")),
+        rubric=(
+            Criterion(
+                "finds all three",
+                "3 = the ruff floor is `>=0.16.2,<0.17`, `--config` is global and goes "
+                "before the subcommand, and `extract` exits 2. 2 = two of three.",
+                weight=3,
+            ),
+            Criterion(
+                "says why each matters",
+                "3 = 0.16 moved the default rule set from 59 rules to 413, so an older "
+                "binary lints a twentieth of what CI does and reports success; the "
+                "exit code is depended on by CI and is an answer rather than a "
+                "failure. 0 = corrects the values with no consequence attached.",
+                weight=3,
+            ),
+            Criterion(
+                "leaves the correct line alone",
+                "3 = does not invent a fault in the install or `pytest -q` line. "
+                "0 = rewrites the whole section, or flags a correct statement.",
+                weight=2,
+            ),
+        ),
+        max_turns=40,
+    ),
+    Task(
+        id="mid-14-write-scaler-inverse",
+        tier="mid",
+        family="change_code",
+        deliver="code_change",
+        # The create-side control for `mid-08`. The production corpus puts `write_code`
+        # at 8.3% unhappy against `edit_code`'s 11.7% — creating is measurably easier
+        # than modifying — and until this task the set had no mid-tier creation at all,
+        # so that asymmetry could not be reproduced or refuted here. Deliberately a
+        # *new* function rather than a change to `headroom_tokens`, which would make it
+        # a second edit task.
+        prompt=(
+            "`ContextScaler` can turn a real token count into the inflated one we "
+            "report to the harness. Nothing can go the other way, and the receipt code "
+            "needs it: given a usage figure a harness was shown, how many real tokens "
+            "did that request actually spend? Add it, and the tests that pin it. Keep "
+            "`pytest -q`, `ruff` and `mypy` clean." + _PATCH
+        ),
+        kind="patch",
+        checks=("pytest", "ruff", "mypy"),
+        # One anchor, on the one thing that separates a correct inverse from an
+        # obvious one. `scale` rounds up with `math.ceil`, so the round trip is not
+        # exact and the inverse cannot simply divide; an arm that never says so has
+        # not read the function it is inverting.
+        anchors=(("ceil", "round", "exact"),),
+        rubric=(
+            Criterion(
+                "the inverse is correct",
+                "3 = divides by the same factor and handles the disabled scaler, where "
+                "the factor is 1.0 and the figure passes through unchanged. 0 = wrong "
+                "direction, or divides by a hardcoded constant.",
+                weight=3,
+            ),
+            Criterion(
+                "handles the rounding it inherits",
+                "3 = notices `scale` rounds up, so the round trip recovers a range "
+                "rather than a value, and either documents the bound or rounds in the "
+                "direction that cannot under-report. 0 = presents it as exact.",
+                weight=3,
+            ),
+            Criterion(
+                "the tests would fail without it",
+                "3 = covers the round trip, the disabled scaler, and a zero or "
+                "out-of-range input. 0 = asserts one happy-path value.",
+                weight=2,
+            ),
+            Criterion(
+                "house style",
+                "3 = lives in `context_scale.py` beside `scale`, no narrating "
+                "comments, docstring precise and only where a caller needs it.",
+            ),
+        ),
+        max_turns=100,
+        timeout_s=10800.0,
     ),
 )
 
