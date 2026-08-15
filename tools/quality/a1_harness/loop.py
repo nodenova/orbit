@@ -283,6 +283,7 @@ def run_task(
     handed: tuple[str, ...] = (),
     hide_answer_key: bool = True,
     evict_at: float = 0.75,
+    wrapper_override: str = "",
     verbose: bool = True,
 ) -> HarnessRun:
     run = HarnessRun(task_id=task.id, tier=task.tier, arm=ARM, family=task.family)
@@ -293,7 +294,16 @@ def run_task(
         truncation_note=pack.files["observation_truncated.md"],
         hide_answer_key=hide_answer_key,
     )
-    wrapper = "task_patch.md" if task.kind == "patch" else "task_answer.md"
+    # Normally the wrapper follows `kind`, and the override exists for one experiment:
+    # a patch task run under the answer wrapper. `task_patch.md` prescribes editing in
+    # five numbered steps and says the diff is the deliverable, and the arm under it
+    # calls neither write tool — while the same model under `task_answer.md`, which
+    # says nothing about editing, edits three files and verifies with `git diff`
+    # unprompted. Wrapper and task both differed there, so it was a confound until this
+    # flag could hold the task fixed.
+    wrapper = wrapper_override or (
+        "task_patch.md" if task.kind == "patch" else "task_answer.md"
+    )
     task_message = pack.render(
         wrapper,
         task_prompt=task.prompt,
@@ -621,6 +631,7 @@ def declared_deltas(
     answer_reviews: int = 0,
     handed: tuple[str, ...] = (),
     hide_answer_key: bool = True,
+    wrapper_override: str = "",
 ) -> list[str]:
     """Every deliberate difference from the Claude Code arm. Anything absent is a bug."""
     deltas = [
@@ -659,6 +670,11 @@ def declared_deltas(
         )
     if not think:
         deltas.append("thinking disabled")
+    if wrapper_override:
+        deltas.append(
+            f"every task wrapped in {wrapper_override} regardless of its kind, so a "
+            f"patch task is not shown the five-step patch procedure"
+        )
     return deltas
 
 
@@ -675,6 +691,7 @@ def artifact(
     handed: tuple[str, ...],
     hide_answer_key: bool,
     search_backend: str,
+    wrapper_override: str = "",
 ) -> dict[str, Any]:
     """Schema-identical to the other arm's `run` output, plus a `harness` block."""
     return {
@@ -703,6 +720,7 @@ def artifact(
             "handed_context": list(handed),
             "hide_answer_key": hide_answer_key,
             "search_backend": search_backend,
+            "wrapper_override": wrapper_override,
             "env": {
                 **host.env,
                 "keep_alive": transport.keep_alive,
@@ -718,6 +736,7 @@ def artifact(
                 answer_reviews=answer_reviews,
                 handed=handed,
                 hide_answer_key=hide_answer_key,
+                wrapper_override=wrapper_override,
             ),
         },
         "runs": runs,

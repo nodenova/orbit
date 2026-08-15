@@ -205,6 +205,7 @@ def _run_mode(args: argparse.Namespace) -> int:
                 handed=tuple(args.handed_context),
                 hide_answer_key=not args.show_answer_key,
                 search_backend=search_backend,
+                wrapper_override=args.wrapper,
             ),
             quiet=True,
         )
@@ -220,6 +221,7 @@ def _run_mode(args: argparse.Namespace) -> int:
             answer_reviews=args.answer_review,
             handed=tuple(args.handed_context),
             hide_answer_key=not args.show_answer_key,
+            wrapper_override=args.wrapper,
         )
         done[task.id] = asdict(run)
         checkpoint()
@@ -322,6 +324,14 @@ def main() -> int:
         metavar="PATH",
         help="repo-relative file quoted into the pinned prefix, the way Claude Code "
         "auto-loads CLAUDE.md for both of its arms; needs handed_context.md in the pack",
+    )
+    r.add_argument(
+        "--wrapper",
+        choices=("task_answer.md", "task_patch.md"),
+        default="",
+        help="force one task wrapper regardless of task kind, instead of letting kind "
+        "choose; the A/B for whether the five-step patch procedure suppresses the write "
+        "tools it prescribes",
     )
     r.set_defaults(fn=_run_mode)
 
