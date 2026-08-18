@@ -138,6 +138,8 @@ def _run_mode(args: argparse.Namespace) -> int:
     for flag, required in (
         ("--answer-review", "answer_review.md" if args.answer_review else ""),
         ("--handed-context", "handed_context.md" if args.handed_context else ""),
+        ("--patch-gate", "patch_blocked.md" if args.patch_gate else ""),
+        ("--idle-notices", "no_changes_yet.md" if args.idle_notices else ""),
     ):
         if required and required not in pack.files:
             print(
@@ -179,6 +181,9 @@ def _run_mode(args: argparse.Namespace) -> int:
         f"arm={ARM} ({LABEL})  commit={sha[:12]}  pack={pack.name}@{pack.sha}  "
         f"num_ctx={transport.num_ctx}  think={transport.think}  "
         f"sampling={transport.sampling.mode}  min_evidence={args.min_evidence}  "
+        f"nudges={args.nudges}  patch_gate={args.patch_gate}  "
+        f"idle_notices={args.idle_notices}/{args.idle_notice_every}t  "
+        f"think_off_after={args.think_off_after}  "
         f"answer_review={args.answer_review}  "
         f"handed={','.join(args.handed_context) or 'none'}\n"
         f"{len(pending)} to run of {len(tasks)} selected"
@@ -206,6 +211,10 @@ def _run_mode(args: argparse.Namespace) -> int:
                 hide_answer_key=not args.show_answer_key,
                 search_backend=search_backend,
                 wrapper_override=args.wrapper,
+                patch_gate=args.patch_gate,
+                idle_notice_every=args.idle_notice_every,
+                max_idle_notices=args.idle_notices,
+                think_off_after=args.think_off_after,
             ),
             quiet=True,
         )
@@ -222,6 +231,10 @@ def _run_mode(args: argparse.Namespace) -> int:
             handed=tuple(args.handed_context),
             hide_answer_key=not args.show_answer_key,
             wrapper_override=args.wrapper,
+            patch_gate=args.patch_gate,
+            idle_notice_every=args.idle_notice_every,
+            max_idle_notices=args.idle_notices,
+            think_off_after=args.think_off_after,
         )
         done[task.id] = asdict(run)
         checkpoint()
@@ -296,14 +309,47 @@ def main() -> int:
         "--at", default="HEAD", help="revision to run against; pin it across arms"
     )
     r.add_argument("--resume", action="store_true")
-    r.add_argument("--prompt-pack", default="v1")
+    # v5 rather than v1: `--patch-gate` and `--idle-notices` are on by default and the
+    # templates they render exist only from v5 on, so a v1 default would make the
+    # documented invocation fail at startup. An older pack still runs, with the two
+    # flags set to 0, and every artifact records which pack answered.
+    r.add_argument("--prompt-pack", default="v5")
     r.add_argument(
         "--min-evidence",
         type=int,
         default=1,
         help="successful read_file/search calls required before finish is accepted; 0 disables",
     )
-    r.add_argument("--nudges", type=int, default=2)
+    r.add_argument(
+        "--nudges",
+        type=int,
+        default=2,
+        help="consecutive stalled turns tolerated before the episode ends; any tool "
+        "call resets the count",
+    )
+    r.add_argument(
+        "--patch-gate",
+        type=int,
+        default=3,
+        help="times finish is refused on a patch task while git diff is empty; "
+        "0 disables, needs patch_blocked.md in the pack",
+    )
+    r.add_argument(
+        "--idle-notices",
+        type=int,
+        default=3,
+        help="times an unchanged working tree is reported on a patch task; 0 disables, "
+        "needs no_changes_yet.md in the pack",
+    )
+    r.add_argument("--idle-notice-every", type=int, default=10, metavar="TURNS")
+    r.add_argument(
+        "--think-off-after",
+        type=int,
+        default=0,
+        help="capped-empty turns after which thinking is disabled for the rest of the "
+        "episode; measured over two change_code runs and rejected, so 0 by default — "
+        "every episode that tripped it ran long and three of four hit the turn cap",
+    )
     r.add_argument(
         "--answer-review",
         type=int,

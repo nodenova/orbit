@@ -13,6 +13,7 @@ than a write. Every observation is capped before it enters the history: uncapped
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shlex
@@ -29,6 +30,7 @@ SEARCH_MATCH_BUDGET = 60
 LIST_ENTRY_BUDGET = 200
 RUN_LINE_BUDGET = 80
 RUN_TIMEOUT_S = 900.0
+DIFFSTAT_LINE_BUDGET = 24
 
 _ALLOWED_GIT = ("diff", "status", "log", "show")
 # `pytest`, `ruff` and `mypy` are run as `sys.executable -m`, never bare on PATH. The
@@ -86,6 +88,12 @@ _PRIMARY_ARGUMENT = {
 _ANSWER_KEY_MODULES = ("agent_eval.py", "agent_eval_tasks.py")
 _ANSWER_KEY_MARKERS = ("Criterion(", "anchors=(", "rubric=(")
 
+# Read-only and deterministic between writes, so an identical repeat is answerable from
+# the history the model already has. `run` is excluded because `pytest` after an edit is
+# the same command with a different answer, which is the point of running it.
+_REPEATABLE = frozenset({"search", "list_files", "read_file"})
+_REPEAT_LIMIT = 2
+
 
 @dataclass(slots=True)
 class ToolCounters:
@@ -107,6 +115,7 @@ class ToolCounters:
     truncated: int = 0
     salvaged: int = 0
     no_tool_call: int = 0
+    repeats_blocked: int = 0
 
     @property
     def parse_failures(self) -> int:
@@ -129,6 +138,7 @@ class ToolCounters:
             "errors": self.errors,
             "truncated": self.truncated,
             "no_tool_call": self.no_tool_call,
+            "repeats_blocked": self.repeats_blocked,
         }
 
 
@@ -194,7 +204,7 @@ def definitions() -> list[dict[str, Any]]:
         ),
         _definition(
             "write_file",
-            "Write a file, replacing it entirely. Creates it if absent.",
+            "Create a new file. To change a file that already exists, use edit_file.",
             {"path": _STRING, "content": _STRING},
             ["path", "content"],
         ),
@@ -293,6 +303,9 @@ class Toolbox:
         self.run_lines = run_lines
         self.counters = ToolCounters()
         self.evidence = 0
+        self.writes = 0
+        self.created: set[str] = set()
+        self._repeats: Counter[tuple[str, str]] = Counter()
         self.hide_answer_key = hide_answer_key
         self.answer_key_reads = 0
         self.answer_key_mentions = 0
@@ -322,6 +335,52 @@ class Toolbox:
     def _relative(self, path: Path) -> str:
         return str(path.relative_to(self.root)) if path != self.root else "."
 
+    def _git(self, *argv: str) -> str:
+        done = subprocess.run(
+            ["git", *argv],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120,
+        )
+        return done.stdout
+
+    @property
+    def tree_changed(self) -> bool:
+        """Whether the worktree holds anything the grader would collect as a diff."""
+        return bool(self._git("status", "--porcelain", "-uall").strip())
+
+    def tree_summary(self) -> str:
+        """`git diff --stat`, plus the paths git does not track yet.
+
+        Handed back on every successful write rather than left for the model to ask
+        for. `task_patch.md` already *instructs* a `git diff` after editing and the
+        prescription was ignored — `run` calls went 7 to 0 between packs — while the
+        three episodes that did produce a diff are the three that ran commands
+        unprompted. An observation arrives whether or not the model thought to look.
+
+        Untracked paths are listed separately because `git diff` cannot see them, and
+        a new test file is the whole deliverable on two of the patch tasks.
+        """
+        stat = self._git("diff", "--stat").strip().splitlines()
+        created = [
+            line[3:]
+            for line in self._git("status", "--porcelain", "-uall").splitlines()
+            if line.startswith("??")
+        ]
+        if not stat and not created:
+            return "git diff --stat: the working tree is unchanged."
+        blocks = []
+        if stat:
+            shown = stat[:DIFFSTAT_LINE_BUDGET]
+            if len(stat) > DIFFSTAT_LINE_BUDGET:
+                shown.append(f"[... {len(stat) - DIFFSTAT_LINE_BUDGET} more lines ...]")
+            blocks.append("git diff --stat:\n" + "\n".join(shown))
+        if created:
+            blocks.append("new files, not yet tracked by git:\n" + "\n".join(created))
+        return "\n".join(blocks)
+
     def _within(self, line: str) -> str:
         """A `find` hit as a repo-relative path, or "" if it landed outside the tree."""
         try:
@@ -339,7 +398,7 @@ class Toolbox:
         return f"{body}\n{note}"
 
     def call(self, name: str, arguments: dict[str, Any]) -> ToolResult:
-        result = self._dispatch(name, arguments)
+        result = self._repeat_guard(name, arguments) or self._dispatch(name, arguments)
         if any(marker in result.text for marker in _ANSWER_KEY_MARKERS):
             self.answer_key_reads += 1
         elif any(module in result.text for module in _ANSWER_KEY_MODULES):
@@ -347,9 +406,14 @@ class Toolbox:
         argument = str(arguments.get(_PRIMARY_ARGUMENT.get(name, ""), ""))
         # Relative, because the worktree prefix is a 90-character temp path and truncating
         # the whole thing to a fixed budget cut off the filename — the only part that says
-        # what was read.
-        if argument.startswith(str(self.root)):
-            argument = argument[len(str(self.root)) :].lstrip("/") or "."
+        # what was read. Resolved on both sides rather than compared as strings: the model
+        # is handed `/var/folders/...` from `tempfile.mkdtemp` while `self.root` is the
+        # resolved `/private/var/folders/...`, so a prefix test on the raw text never
+        # matched and every absolute-path call in the last full run logged as the same
+        # 40-character temp directory with the filename cut off.
+        if argument.startswith("/"):
+            with contextlib.suppress(ValueError, OSError):
+                argument = str(Path(argument).resolve().relative_to(self.root)) or "."
         self.log.append(
             {
                 "name": name,
@@ -359,6 +423,36 @@ class Toolbox:
             }
         )
         return result
+
+    def _repeat_guard(self, name: str, arguments: dict[str, Any]) -> ToolResult | None:
+        """Break an identical read-only call that has already been answered twice.
+
+        Greedy decoding makes this a hard loop rather than a tendency: the observation
+        coming back is byte-identical, so the next turn's prompt differs only by that
+        identical block and the model re-emits the same call. Measured on `high-01`,
+        which issued `search minLength` **81 times** in 93 searches and spent 79 of its
+        100 turns on it. The way out is to make the observation different, which is why
+        this replaces the result rather than suppressing it silently.
+
+        Only the read-only tools, and the counters reset on a write: `run pytest` after
+        an edit is a repeat whose answer legitimately changes, and so is re-reading a
+        file that has just been modified.
+        """
+        if name not in _REPEATABLE:
+            return None
+        key = (name, repr(sorted(arguments.items())))
+        self._repeats[key] += 1
+        if self._repeats[key] <= _REPEAT_LIMIT:
+            return None
+        self.counters.by_name[name] += 1
+        self.counters.repeats_blocked += 1
+        return ToolResult(
+            f"You have already run this exact {name} {self._repeats[key] - 1} times "
+            f"and the result has not changed; running it again will not change it. "
+            f"Ask something different, read_file the file you want to see, or make the "
+            f"edit the task asks for.",
+            ok=False,
+        )
 
     def _dispatch(self, name: str, arguments: dict[str, Any]) -> ToolResult:
         handler = {
@@ -527,11 +621,34 @@ class Toolbox:
     def _write_file(self, arguments: dict[str, Any]) -> ToolResult:
         path = self._resolve(str(arguments["path"]))
         content = str(arguments["content"])
+        # Whole-file replacement is refused on a file this episode did not create, and
+        # this is measured rather than cautious. Asked to *add* a test to
+        # `tests/fake_mlx.py`, the model called `write_file` on it and replaced 856
+        # lines with 19 — deleting the module every MLX test imports, along with the
+        # docstring that states what the stand-in proves. One call turned `pytest`,
+        # `ruff` and `mypy` from green to red, and the answer describing it was
+        # otherwise honest. A 4 B model cannot reproduce a file it is editing, so the
+        # tool that lets it try is a footgun; `edit_file` expresses the same intent
+        # without the blast radius. Re-writing a file the episode created itself is
+        # still allowed, because iterating on your own new test is not this failure.
+        relative = self._relative(path)
+        if path.is_file() and relative not in self.created:
+            self.counters.denied += 1
+            return ToolResult(
+                f"{relative} already exists and write_file would replace all "
+                f"{len(path.read_text(errors='replace').splitlines())} lines of it. "
+                f"Use edit_file to change part of it, or write_file to a new path.",
+                ok=False,
+            )
+        if not path.is_file():
+            self.created.add(relative)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
+        self.writes += 1
+        self._repeats.clear()
         return ToolResult(
             f"Wrote {self._relative(path)}: {len(content.splitlines())} lines, "
-            f"{len(content.encode())} bytes."
+            f"{len(content.encode())} bytes.\n\n{self.tree_summary()}"
         )
 
     def _edit_file(self, arguments: dict[str, Any]) -> ToolResult:
@@ -557,7 +674,9 @@ class Toolbox:
                 ok=False,
             )
         path.write_text(body.replace(old, new, 1))
-        return ToolResult(f"Edited {self._relative(path)}.")
+        self.writes += 1
+        self._repeats.clear()
+        return ToolResult(f"Edited {self._relative(path)}.\n\n{self.tree_summary()}")
 
     def _run(self, arguments: dict[str, Any]) -> ToolResult:
         raw = str(arguments["command"]).strip()

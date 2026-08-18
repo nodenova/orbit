@@ -97,7 +97,17 @@ ALLOWED_TOOLS = (
     "Bash(git diff:*) Bash(git status:*) Bash(git log:*) Bash(git show:*) "
     "Bash(ls:*) Bash(cat:*) Bash(rg:*) Bash(grep:*) Bash(find:*) Bash(head:*) Bash(tail:*)"
 )
-DISALLOWED_TOOLS = "WebSearch WebFetch"
+# `ListAgents` and `SendMessage` are here rather than merely absent from the allowlist
+# above, because absence is not removal: a headless session auto-denies what needs a
+# permission decision and these need none, so they stayed reachable and one episode used
+# them. Each `--arm opus` session is an ordinary peer in the session registry, and during
+# the 2026-08-15 run the `mid-08` episode messaged the orchestrating session to ask
+# whether it was safe to load tier 0. The reply landed inside `mid-12`'s episode, which
+# then spent its three turns relaying cross-session housekeeping and scored 11% against
+# 100% on a clean re-run — and the answer `mid-08` was given contained that task's own
+# weight-3 criterion. Both rows had to be discarded. This is the only channel by which
+# one episode can read another's context, and nothing else in the harness can see it.
+DISALLOWED_TOOLS = "WebSearch WebFetch ListAgents SendMessage"
 
 # An arm carrying `base_url` is served locally: the env below repoints Claude Code at
 # it and nothing else about the run changes. `opus` has none and goes to the real API.
@@ -676,8 +686,11 @@ def judge_pair(
             "user",
             "--allowedTools",
             "",
+            # The messaging tools for the same reason `DISALLOWED_TOOLS` carries them: a
+            # judge session is a peer in the registry too, and a grader that can be
+            # talked to while it grades is the §20.9 hazard one step further along.
             "--disallowedTools",
-            "WebSearch WebFetch Bash Read Edit Write Glob Grep",
+            "WebSearch WebFetch Bash Read Edit Write Glob Grep ListAgents SendMessage",
         ],
         cwd=REPO,
         capture_output=True,

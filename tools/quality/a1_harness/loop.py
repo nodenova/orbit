@@ -71,6 +71,8 @@ PACK_VARIABLES: dict[str, frozenset[str]] = {
 OPTIONAL_PACK_VARIABLES: dict[str, frozenset[str]] = {
     "answer_review.md": frozenset(),
     "handed_context.md": frozenset({"path"}),
+    "patch_blocked.md": frozenset({"turns_used", "max_turns"}),
+    "no_changes_yet.md": frozenset({"turns_used", "max_turns"}),
 }
 
 _TOOL_CALL_BLOCK = re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL)
@@ -140,6 +142,10 @@ class HarnessRun(Run):
     draft_answer: str = ""
     handed_context_chars: int = 0
     nudges: int = 0
+    stall_streak_max: int = 0
+    think_off_from_turn: int = 0
+    patch_blocked: int = 0
+    idle_notices: int = 0
     length_capped: int = 0
     truncated_turns: int = 0
     truncated_tool_calls: int = 0
@@ -156,6 +162,9 @@ class HarnessRun(Run):
 # carrying 66 new tokens reads as 3.3 tok/s on its delta. The gap is three orders of
 # magnitude, so the threshold is not a delicate one.
 DELTA_RATE_FLOOR_TOK_S = 200.0
+
+# What the forced final answer gets when the episode has already spent its wall budget.
+FORCED_ANSWER_TIMEOUT_S = 120.0
 
 
 def prefix_reuse(turn_stats: list[dict[str, Any]]) -> dict[str, Any]:
@@ -284,6 +293,10 @@ def run_task(
     hide_answer_key: bool = True,
     evict_at: float = 0.75,
     wrapper_override: str = "",
+    patch_gate: int = 3,
+    idle_notice_every: int = 10,
+    max_idle_notices: int = 3,
+    think_off_after: int = 0,
     verbose: bool = True,
 ) -> HarnessRun:
     run = HarnessRun(task_id=task.id, tier=task.tier, arm=ARM, family=task.family)
@@ -349,6 +362,79 @@ def run_task(
     # the review turn is what made the gate cost 30% of the wall clock for four rubric
     # points; with thinking off this model answers directly.
     think_next: bool | None = None
+    # Consecutive stalled turns, reset by any turn that calls a tool. The budget below
+    # is `max_nudges` against *this*, not against the episode total, and the difference
+    # decided five of 28 episodes in the last full run. Every one of them ended
+    # `nudges=2, capped=3` — and the three capped turns were spread out and recovered
+    # from, `high-04`'s at turns 30, 47 and 58 of 59 with 17 and 11 productive turns
+    # between them. §6.2 bounds this to stop "a loop burning a 100-turn budget arguing
+    # with itself"; a stall the model climbs out of twice is not that loop, and counting
+    # the episode total killed `high-01` at turn 15 of 100 and `high-02` at turn 10.
+    # `low-07`, whose caps fell on turns 3, 4 and 5, is the case the bound was written
+    # for and a consecutive budget still catches it.
+    stalls = 0
+    # Thinking off for the rest of the episode once the cap has cut this many turns off
+    # empty. **Measured over two full `change_code` runs and rejected: the default is 0
+    # and this is kept only as a knob.** It was proposed against `high-02` spending
+    # 167,936 of 182,347 output tokens on turns that emitted nothing, and it does stop
+    # that — but it buys a worse loop. Across the 12 episodes of those two runs the
+    # correlation is near-total: all 8 where it never tripped ended on a real `finish`
+    # in 7-23 turns, and all 4 where it did ran long, 3 of them to the 100-turn cap,
+    # producing `search minLength` x81, `read_file` x81 and `run` x76. That is §17.5's
+    # finding — with no reasoning channel the model does not reason less — arriving
+    # through the tools instead of through `content`, and it cost `mid-14` a patch that
+    # had passed `pytest`, `ruff` and `mypy` on the two runs before it.
+    think_locked = False
+
+    def patch_missing() -> bool:
+        """Whether the deliverable is a diff, there is none, and the gate has budget.
+
+        Keyed on `kind`, never on `expects_diff`. `mid-08` is `deliver="code_change"`
+        held at `kind="answer"` and its rubric's top criterion is *noticing the knob is
+        inert*, so the answer it wants may correctly touch nothing — the same
+        distinction `_collect_patch` draws before asserting `patch_produced`.
+        """
+        return (
+            task.kind == "patch"
+            and run.patch_blocked < patch_gate
+            and not box.tree_changed
+        )
+
+    def force_final_answer() -> str:
+        """One turn with thinking off, asked to conclude. Returns what it said."""
+        messages.append(
+            {
+                "role": "tool",
+                "tool_name": "harness",
+                "content": pack.render("final_answer.md", evidence_count=box.evidence),
+            }
+        )
+        forced = transport.chat(
+            messages,
+            definitions,
+            # Floored, never the bare remaining wall budget: this also runs at the turn
+            # and wall caps, where the remainder is zero or negative and the call would
+            # fail instead of answering. Overrunning by a minute to record what an
+            # episode found is the trade every other exit here already takes.
+            timeout=max(FORCED_ANSWER_TIMEOUT_S, deadline - time.perf_counter()),
+            think=False,
+        )
+        run.turns += 1
+        run.turn_stats.append(forced.stats())
+        run.input_tokens += forced.prompt_eval_count
+        run.output_tokens += forced.eval_count
+        # The forced turn may answer either way, and reading only `content` threw away a
+        # correct answer once: asked to stop and conclude, the model called `finish` with
+        # 193 tokens and the rescue recorded an empty string over the top of it. Tools
+        # stay on the call because that `finish` is the contract working — and because
+        # dropping them rewrites the system block and re-prefills the whole prompt.
+        said = forced.content.strip()
+        for call in forced.tool_calls:
+            if call.name == "finish":
+                box.counters.by_name["finish"] += 1
+                said = str(call.arguments.get("answer") or "").strip() or said
+                break
+        return said
 
     while run.turns < task.max_turns:
         remaining = deadline - time.perf_counter()
@@ -357,7 +443,10 @@ def run_task(
             break
         try:
             turn = transport.chat(
-                messages, definitions, timeout=remaining, think=think_next
+                messages,
+                definitions,
+                timeout=remaining,
+                think=False if think_locked else think_next,
             )
             think_next = None
         except ContextOverflow as overflow:
@@ -402,6 +491,22 @@ def run_task(
             box.counters.no_tool_call += 1
             answer = turn.content.strip()
             if answer and box.evidence >= min_evidence:
+                if patch_missing():
+                    run.patch_blocked += 1
+                    stalls = 0
+                    messages.append(_assistant_message(turn.content, []))
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_name": "harness",
+                            "content": pack.render(
+                                "patch_blocked.md",
+                                turns_used=run.turns,
+                                max_turns=task.max_turns,
+                            ),
+                        }
+                    )
+                    continue
                 # The gate has to sit on this path too. With thinking on, this model
                 # frequently answers in prose and never calls `finish` — 3 of 10 episodes
                 # in the first review run, including the worst-scoring one — so a gate
@@ -434,47 +539,49 @@ def run_task(
             cut_off = turn.done_reason == "length" and not answer
             if cut_off:
                 run.truncated_turns += 1
-            if run.nudges >= max_nudges:
+                # The same remedy the truncated-tool-call path already applies, for the
+                # same reason: the cap was spent on reasoning, so reasoning is what the
+                # next turn has to change. Measured across the last full run these turns
+                # cost 12,288 of `high-01`'s 18,061 output tokens (68%) and 12,288 of
+                # `high-02`'s 14,774 (83%), and every one of them emitted nothing at all.
+                # One turn only — `think_next` is cleared as soon as it is spent, because
+                # §17.5 measured a whole episode with thinking off as a trap: the model
+                # does not reason less, it reasons in `content`.
+                think_next = False
+                if think_off_after and run.truncated_turns >= think_off_after:
+                    if not think_locked:
+                        run.think_off_from_turn = run.turns
+                    think_locked = True
+            stalls += 1
+            run.stall_streak_max = max(run.stall_streak_max, stalls)
+            if stalls > max_nudges and patch_missing():
+                # Forcing an answer here is what produced the run's only confabulation:
+                # asked to conclude with no work done, the model reported the test it had
+                # been planning as written. On a patch task the tree is checkable, so say
+                # what it holds instead of asking for a summary of what it does not.
+                run.patch_blocked += 1
+                stalls = 0
+                messages.append(_assistant_message(turn.content, []))
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_name": "harness",
+                        "content": pack.render(
+                            "patch_blocked.md",
+                            turns_used=run.turns,
+                            max_turns=task.max_turns,
+                        ),
+                    }
+                )
+                continue
+            if stalls > max_nudges:
                 # One forced attempt with thinking off before giving up. The model has
                 # already demonstrated it will spend the whole cap reasoning; with
                 # thinking disabled it answers directly, measured at 31 tokens.
                 if not run.final_answer_forced and box.evidence >= min_evidence:
                     run.final_answer_forced = True
                     messages.append(_assistant_message(turn.content, []))
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_name": "harness",
-                            "content": pack.render(
-                                "final_answer.md", evidence_count=box.evidence
-                            ),
-                        }
-                    )
-                    forced = transport.chat(
-                        messages,
-                        definitions,
-                        timeout=max(1.0, deadline - time.perf_counter()),
-                        think=False,
-                    )
-                    run.turns += 1
-                    run.turn_stats.append(forced.stats())
-                    run.input_tokens += forced.prompt_eval_count
-                    run.output_tokens += forced.eval_count
-                    # The forced turn may answer either way, and reading only `content`
-                    # threw away a correct answer once: asked to stop and conclude, the
-                    # model called `finish` with 193 tokens and the rescue recorded an
-                    # empty string over the top of it. Tools stay on the call because
-                    # that `finish` is the contract working — and because dropping them
-                    # rewrites the system block and re-prefills the whole prompt.
-                    answer = forced.content.strip()
-                    for call in forced.tool_calls:
-                        if call.name == "finish":
-                            box.counters.by_name["finish"] += 1
-                            answer = (
-                                str(call.arguments.get("answer") or "").strip()
-                                or answer
-                            )
-                            break
+                    answer = force_final_answer()
                 run.answer, run.answer_source = (
                     answer,
                     (
@@ -486,7 +593,7 @@ def run_task(
                 run.end_reason = (
                     "forced a final answer after the cap cut the turn off"
                     if run.final_answer_forced
-                    else f"no tool call after {max_nudges} nudges"
+                    else f"no tool call after {max_nudges} consecutive nudges"
                 )
                 break
             run.nudges += 1
@@ -517,6 +624,7 @@ def run_task(
             continue
 
         messages.append(_assistant_message(turn.content, turn.tool_calls))
+        stalls = 0
         finished = False
         for call in turn.tool_calls:
             if call.name == "finish":
@@ -531,6 +639,25 @@ def run_task(
                                 "finish_blocked.md",
                                 evidence_count=box.evidence,
                                 min_evidence=min_evidence,
+                            ),
+                        }
+                    )
+                    continue
+                # The mirror of the evidence gate, on the other end of the episode.
+                # `min_evidence` refuses an answer with nothing read behind it; this
+                # refuses one with nothing written behind it, and it is bounded for the
+                # same reason — an agent that cannot do the work must still be allowed
+                # to say so rather than spend a 100-turn budget being told no.
+                if patch_missing():
+                    run.patch_blocked += 1
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_name": "finish",
+                            "content": pack.render(
+                                "patch_blocked.md",
+                                turns_used=run.turns,
+                                max_turns=task.max_turns,
                             ),
                         }
                     )
@@ -572,6 +699,31 @@ def run_task(
         if finished:
             break
 
+        # An observation, not a procedure. §16.1 and §17.11 both measured the
+        # prescription being ignored — `task_patch.md` numbers these steps and `run`
+        # calls went 7 to 0 between packs — while the three episodes that produced a
+        # diff all reached a write tool by call 8 or 9 and the two that produced none
+        # never called one at all. So the tree is reported rather than requested, on a
+        # schedule, and bounded so a long healthy episode is not talked at.
+        if (
+            task.kind == "patch"
+            and run.idle_notices < max_idle_notices
+            and run.turns >= idle_notice_every * (run.idle_notices + 1)
+            and not box.tree_changed
+        ):
+            run.idle_notices += 1
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_name": "harness",
+                    "content": pack.render(
+                        "no_changes_yet.md",
+                        turns_used=run.turns,
+                        max_turns=task.max_turns,
+                    ),
+                }
+            )
+
         # Proactive eviction, so the common case does not pay a wasted round trip. The
         # typed 400 on overflow is the backstop that makes a threshold miscalculation
         # survivable rather than fatal, and it is why this can be a cheap estimate:
@@ -587,6 +739,21 @@ def run_task(
         run.end_reason = f"turn cap at {task.max_turns}"
     if not run.answer and run.draft_answer:
         run.answer, run.answer_source = run.draft_answer, "draft after review"
+    # The same rescue as the stall path, on the exit it was missing from. `high-02` spent
+    # its whole 100-turn budget investigating, never emitted prose and never called
+    # `finish`, and the episode was recorded with a 0-character answer — no anchor, no
+    # rubric, nothing to read. An episode with evidence behind it has something to say at
+    # the cap, and the cap is just another way of running out.
+    if (
+        not run.answer
+        and not run.error
+        and not run.final_answer_forced
+        and box.evidence >= min_evidence
+    ):
+        run.final_answer_forced = True
+        run.answer = force_final_answer()
+        run.answer_source = "forced final answer at the cap"
+        run.end_reason = f"{run.end_reason}, forced a final answer"
     if not run.answer and run.answer_source != "finish":
         run.answer_source = run.answer_source or "none"
 
@@ -613,6 +780,7 @@ def run_task(
             # of unresolved deliberation that scored both anchors on substring matches
             # while failing the task's four-sentence instruction outright.
             f"ans {len(run.answer):>5}c  "
+            f"diff {len(run.diff):>5}B  "
             f"anchors {run.anchors_hit}/{run.anchors_total}  "
             f"reuse {run.prefix_reuse.get('verdict', '?')}  {run.end_reason}"
             + (f"  {run.error[:60]}" if run.error else ""),
@@ -632,6 +800,11 @@ def declared_deltas(
     handed: tuple[str, ...] = (),
     hide_answer_key: bool = True,
     wrapper_override: str = "",
+    max_nudges: int = 2,
+    patch_gate: int = 0,
+    idle_notice_every: int = 10,
+    max_idle_notices: int = 3,
+    think_off_after: int = 0,
 ) -> list[str]:
     """Every deliberate difference from the Claude Code arm. Anything absent is a bug."""
     deltas = [
@@ -640,8 +813,37 @@ def declared_deltas(
         "compact system prompt instead of the Claude Code preamble",
         "observation truncation",
         f"per-turn output cap of {max_output_tokens} tokens",
-        "one forced final answer with thinking off when the cap cuts a turn off empty",
+        (
+            f"{max_nudges} consecutive stalled turns end the episode; a tool call "
+            f"resets the count"
+        ),
+        "thinking is disabled for the one turn after the cap cuts a turn off empty",
+        "one forced final answer with thinking off when the episode ends without one",
+        "write_file and edit_file results carry git diff --stat and the untracked paths",
+        (
+            "write_file refuses a file the episode did not create; edit_file is the "
+            "only way to change one that was already there"
+        ),
+        (
+            "an identical search, list_files or read_file is answered with a repeat "
+            "notice after the second time, until a write resets it"
+        ),
     ]
+    if patch_gate:
+        deltas.append(
+            f"on a patch task, finish is refused while the working tree is unchanged, "
+            f"up to {patch_gate} times"
+        )
+    if think_off_after:
+        deltas.append(
+            f"thinking is disabled for the rest of the episode once the cap has cut "
+            f"{think_off_after} turns off empty"
+        )
+    if max_idle_notices:
+        deltas.append(
+            f"on a patch task, an unchanged working tree is reported as an observation "
+            f"every {idle_notice_every} turns, up to {max_idle_notices} times"
+        )
     if sampling_mode == "greedy":
         deltas.append("sampling diverges from the model card (greedy)")
     if min_evidence > 0:
@@ -692,6 +894,10 @@ def artifact(
     hide_answer_key: bool,
     search_backend: str,
     wrapper_override: str = "",
+    patch_gate: int = 0,
+    idle_notice_every: int = 10,
+    max_idle_notices: int = 3,
+    think_off_after: int = 0,
 ) -> dict[str, Any]:
     """Schema-identical to the other arm's `run` output, plus a `harness` block."""
     return {
@@ -716,6 +922,10 @@ def artifact(
             "think": transport.think,
             "min_evidence": min_evidence,
             "max_nudges": max_nudges,
+            "patch_gate": patch_gate,
+            "idle_notice_every": idle_notice_every,
+            "max_idle_notices": max_idle_notices,
+            "think_off_after": think_off_after,
             "answer_reviews": answer_reviews,
             "handed_context": list(handed),
             "hide_answer_key": hide_answer_key,
@@ -737,6 +947,11 @@ def artifact(
                 handed=handed,
                 hide_answer_key=hide_answer_key,
                 wrapper_override=wrapper_override,
+                max_nudges=max_nudges,
+                patch_gate=patch_gate,
+                idle_notice_every=idle_notice_every,
+                max_idle_notices=max_idle_notices,
+                think_off_after=think_off_after,
             ),
         },
         "runs": runs,
