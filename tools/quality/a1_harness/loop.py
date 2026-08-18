@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from tools.quality.a1_harness import VERSION, tools
 from tools.quality.a1_harness.transport import (
+    DEFAULT_MODEL,
     SINGLE_PASS_PREFILL_TOK_S,
     ContextOverflow,
     HostState,
@@ -48,6 +49,16 @@ from tools.quality.agent_eval_tasks import Task, anchors_found
 
 ARM = "a1-harness"
 LABEL = "Agents-A1-4B-Q8 (a1-harness)"
+
+
+def label_for(model: str) -> str:
+    """The judge prints this verbatim, so a run against another tag must not say A1."""
+    if model == DEFAULT_MODEL:
+        return LABEL
+    name, _, tag = model.rsplit("/", 1)[-1].partition(":")
+    stem = name.removesuffix("-GGUF")
+    return f"{stem}-{tag} (a1-harness)" if tag else f"{stem} (a1-harness)"
+
 
 PACK_ROOT = Path(__file__).resolve().parent / "prompts"
 # Each template's variables are fixed and checked at load, so a typo is a startup error
@@ -794,7 +805,7 @@ def declared_deltas(
     sampling_mode: str,
     min_evidence: int,
     search_backend: str,
-    think: bool,
+    think: bool | str,
     max_output_tokens: int,
     answer_reviews: int = 0,
     handed: tuple[str, ...] = (),
@@ -872,6 +883,11 @@ def declared_deltas(
         )
     if not think:
         deltas.append("thinking disabled")
+    elif isinstance(think, str):
+        deltas.append(
+            f"reasoning_effort pinned to {think}, where the model template defaults "
+            f"it to xhigh"
+        )
     if wrapper_override:
         deltas.append(
             f"every task wrapped in {wrapper_override} regardless of its kind, so a "
@@ -903,7 +919,7 @@ def artifact(
     return {
         "mode": "run",
         "arm": ARM,
-        "label": LABEL,
+        "label": label_for(transport.model),
         "sha": sha,
         "harness": {
             "version": VERSION,

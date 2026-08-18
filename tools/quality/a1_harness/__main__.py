@@ -24,9 +24,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tools.quality.a1_harness import tools
 from tools.quality.a1_harness.loop import (
     ARM,
-    LABEL,
     PromptPack,
     artifact,
+    label_for,
     run_task,
 )
 from tools.quality.a1_harness.transport import (
@@ -36,6 +36,7 @@ from tools.quality.a1_harness.transport import (
     DEFAULT_MODEL,
     DEFAULT_NUM_CTX,
     SAMPLINGS,
+    THINK_EFFORTS,
     Transport,
     TransportError,
 )
@@ -43,12 +44,17 @@ from tools.quality.agent_eval import _write, head_sha
 from tools.quality.agent_eval_tasks import census, select
 
 
+def _think(choice: str) -> bool | str:
+    """`on`/`off` stay booleans; an effort level goes to the wire as ollama's string."""
+    return {"on": True, "off": False}.get(choice, choice)
+
+
 def _transport(args: argparse.Namespace) -> Transport:
     return Transport(
         host=args.host,
         model=args.model,
         num_ctx=args.num_ctx,
-        think=args.think == "on",
+        think=_think(args.think),
         sampling=SAMPLINGS[args.sampling],
         keep_alive=args.keep_alive,
         openai_compat=args.openai_compat,
@@ -174,11 +180,20 @@ def _run_mode(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 2
+        prior_model = str((prior.get("harness") or {}).get("model") or "")
+        if prior_model and prior_model != transport.model:
+            print(
+                f"refusing to resume: {args.out} ran {prior_model}, asked for "
+                f"{transport.model} — a different model is a different arm",
+                file=sys.stderr,
+            )
+            return 2
         done = {record["task_id"]: record for record in prior["runs"]}
 
     pending = [task for task in tasks if task.id not in done]
     print(
-        f"arm={ARM} ({LABEL})  commit={sha[:12]}  pack={pack.name}@{pack.sha}  "
+        f"arm={ARM} ({label_for(transport.model)})  commit={sha[:12]}  "
+        f"pack={pack.name}@{pack.sha}  "
         f"num_ctx={transport.num_ctx}  think={transport.think}  "
         f"sampling={transport.sampling.mode}  min_evidence={args.min_evidence}  "
         f"nudges={args.nudges}  patch_gate={args.patch_gate}  "
@@ -257,7 +272,13 @@ def _common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--num-ctx", type=int, default=DEFAULT_NUM_CTX)
-    parser.add_argument("--think", choices=("on", "off"), default="on")
+    parser.add_argument(
+        "--think",
+        choices=("on", "off", *THINK_EFFORTS),
+        default="on",
+        help="an effort level is Qwen3.8's reasoning_effort, whose template default "
+        "is xhigh, so `on` is the most expensive setting and not a neutral one",
+    )
     parser.add_argument("--sampling", choices=sorted(SAMPLINGS), default="greedy")
     parser.add_argument("--keep-alive", default=DEFAULT_KEEP_ALIVE)
     parser.add_argument(

@@ -136,7 +136,32 @@ CARD = Sampling(
     presence_penalty=1.1,
     repeat_penalty=1.0,
 )
-SAMPLINGS: dict[str, Sampling] = {GREEDY.mode: GREEDY, CARD.mode: CARD}
+# Qwen3.8-27B publishes two sets and they are far apart; this is the *thinking* row,
+# which is the mode this harness runs in. The non-thinking row is `temperature 0.7,
+# top_p 0.80, presence_penalty 1.5` and is deliberately not reachable here, because
+# `--think off` still draws from this table and silently swapping the set underneath a
+# flag that says something else is how an arm stops being comparable to itself. Same
+# `seed` reasoning as `CARD`: pinned, not greedy.
+QWEN_CARD = Sampling(
+    mode="qwen-card",
+    temperature=1.0,
+    top_p=0.95,
+    seed=0,
+    top_k=20,
+    min_p=0.0,
+    presence_penalty=0.0,
+    repeat_penalty=1.0,
+)
+SAMPLINGS: dict[str, Sampling] = {
+    GREEDY.mode: GREEDY,
+    CARD.mode: CARD,
+    QWEN_CARD.mode: QWEN_CARD,
+}
+
+# Qwen3.8's chat template reads `reasoning_effort` and defaults it to `xhigh`, so
+# `think: true` is the *most* expensive setting rather than a neutral one. ollama passes
+# these strings straight through. `high` is an alias the template folds into `xhigh`.
+THINK_EFFORTS = ("low", "medium", "high", "xhigh")
 
 
 @dataclass(slots=True)
@@ -325,7 +350,7 @@ class Transport:
         host: str = DEFAULT_HOST,
         model: str = DEFAULT_MODEL,
         num_ctx: int = DEFAULT_NUM_CTX,
-        think: bool = True,
+        think: bool | str = True,
         sampling: Sampling = GREEDY,
         keep_alive: str = DEFAULT_KEEP_ALIVE,
         openai_compat: bool = False,
@@ -425,7 +450,7 @@ class Transport:
         tools: list[dict[str, Any]] | None = None,
         *,
         timeout: float = 900.0,
-        think: bool | None = None,
+        think: bool | str | None = None,
     ) -> Turn:
         """`think` overrides the episode default for one call, and only downward in cost.
 
@@ -443,7 +468,7 @@ class Transport:
         tools: list[dict[str, Any]] | None,
         *,
         timeout: float,
-        think: bool | None = None,
+        think: bool | str | None = None,
     ) -> Turn:
         body: dict[str, Any] = {
             "model": self.model,
