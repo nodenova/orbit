@@ -36,6 +36,7 @@ from tools.quality.a1_harness.transport import (
     DEFAULT_MODEL,
     DEFAULT_NUM_CTX,
     SAMPLINGS,
+    SINGLE_PASS_PREFILL_TOK_S,
     THINK_EFFORTS,
     Transport,
     TransportError,
@@ -230,6 +231,7 @@ def _run_mode(args: argparse.Namespace) -> int:
                 idle_notice_every=args.idle_notice_every,
                 max_idle_notices=args.idle_notices,
                 think_off_after=args.think_off_after,
+                single_pass_tok_s=args.single_pass_prefill,
             ),
             quiet=True,
         )
@@ -250,6 +252,7 @@ def _run_mode(args: argparse.Namespace) -> int:
             idle_notice_every=args.idle_notice_every,
             max_idle_notices=args.idle_notices,
             think_off_after=args.think_off_after,
+            single_pass_tok_s=args.single_pass_prefill,
         )
         done[task.id] = asdict(run)
         checkpoint()
@@ -280,6 +283,14 @@ def _common(parser: argparse.ArgumentParser) -> None:
         "is xhigh, so `on` is the most expensive setting and not a neutral one",
     )
     parser.add_argument("--sampling", choices=sorted(SAMPLINGS), default="greedy")
+    parser.add_argument(
+        "--single-pass-prefill",
+        type=float,
+        default=SINGLE_PASS_PREFILL_TOK_S,
+        help="this model's measured cold prefill rate; the prefix-reuse floor scales "
+        "off it, and the default is A1's, which scores a reused Qwen turn as a "
+        "re-prefill",
+    )
     parser.add_argument("--keep-alive", default=DEFAULT_KEEP_ALIVE)
     parser.add_argument(
         "--max-output-tokens",

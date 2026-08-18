@@ -174,11 +174,24 @@ class HarnessRun(Run):
 # magnitude, so the threshold is not a delicate one.
 DELTA_RATE_FLOOR_TOK_S = 200.0
 
+# ...but only for a model that prefills like A1 does, and the floor above is a sixth of
+# that model's single-pass rate rather than a property of reuse. Qwen3.8-27B prefills at
+# ~140 tok/s, so a *perfectly* reused turn evaluates its delta at ~113-240 tok/s and the
+# constant above scores it as a re-prefill: measured, it called "no reuse" on 28 of 28
+# episodes while the server log showed `sim = 0.930` and a restored context checkpoint on
+# every turn. The floor therefore scales with the model, and the ratio is what carries
+# over — 200/1200 — so the A1 default is arithmetically unchanged.
+DELTA_RATE_FLOOR_FRACTION = DELTA_RATE_FLOOR_TOK_S / SINGLE_PASS_PREFILL_TOK_S
+
 # What the forced final answer gets when the episode has already spent its wall budget.
 FORCED_ANSWER_TIMEOUT_S = 120.0
 
 
-def prefix_reuse(turn_stats: list[dict[str, Any]]) -> dict[str, Any]:
+def prefix_reuse(
+    turn_stats: list[dict[str, Any]],
+    *,
+    single_pass_tok_s: float = SINGLE_PASS_PREFILL_TOK_S,
+) -> dict[str, Any]:
     """Per turn: was only the new text evaluated, or the whole prompt over again?
 
     Two earlier forms of this were wrong in opposite directions and both would have
@@ -203,12 +216,18 @@ def prefix_reuse(turn_stats: list[dict[str, Any]]) -> dict[str, Any]:
     if len(rows) < 2:
         return {"turns": len(rows), "verdict": "not measured"}
 
+    floor = single_pass_tok_s * DELTA_RATE_FLOOR_FRACTION
     per_turn: list[dict[str, Any]] = []
     re_prefilled: list[int] = []
     for index, ((previous, _), (count, ms)) in enumerate(itertools.pairwise(rows), 2):
         delta = count - previous
         delta_rate = delta / (ms / 1000) if ms else 0.0
-        reused = delta_rate >= DELTA_RATE_FLOOR_TOK_S
+        whole_rate = count / (ms / 1000) if ms else 0.0
+        # Either test alone misreads one end of the range: the delta rate is weak when
+        # the delta is most of the prompt, and the whole-prompt rate is weak when the
+        # turn appends almost nothing. A re-prefill fails both — it evaluates the whole
+        # prompt at the single-pass rate by definition.
+        reused = delta_rate >= floor or whole_rate >= 2.0 * single_pass_tok_s
         if not reused:
             re_prefilled.append(index)
         per_turn.append(
@@ -218,7 +237,7 @@ def prefix_reuse(turn_stats: list[dict[str, Any]]) -> dict[str, Any]:
                 "delta": delta,
                 "ms": round(ms, 1),
                 "delta_tok_s": round(delta_rate, 1),
-                "whole_tok_s": round(count / (ms / 1000), 1) if ms else 0.0,
+                "whole_tok_s": round(whole_rate, 1),
                 "delta_fraction": round(delta / count, 2) if count else 0.0,
                 "reused": reused,
             }
@@ -229,8 +248,8 @@ def prefix_reuse(turn_stats: list[dict[str, Any]]) -> dict[str, Any]:
         "compared": len(per_turn),
         "reused_turns": kept,
         "re_prefilled_turns": re_prefilled,
-        "delta_rate_floor_tok_s": DELTA_RATE_FLOOR_TOK_S,
-        "single_pass_reference_tok_s": SINGLE_PASS_PREFILL_TOK_S,
+        "delta_rate_floor_tok_s": round(floor, 1),
+        "single_pass_reference_tok_s": single_pass_tok_s,
         "per_turn": per_turn,
         "verdict": (
             f"reused on {kept} of {len(per_turn)} turns"
@@ -308,6 +327,7 @@ def run_task(
     idle_notice_every: int = 10,
     max_idle_notices: int = 3,
     think_off_after: int = 0,
+    single_pass_tok_s: float = SINGLE_PASS_PREFILL_TOK_S,
     verbose: bool = True,
 ) -> HarnessRun:
     run = HarnessRun(task_id=task.id, tier=task.tier, arm=ARM, family=task.family)
@@ -775,7 +795,7 @@ def run_task(
     run.answer_key_reads = box.answer_key_reads
     run.answer_key_mentions = box.answer_key_mentions
     run.answer_key_blocked = box.answer_key_blocked
-    run.prefix_reuse = prefix_reuse(run.turn_stats)
+    run.prefix_reuse = prefix_reuse(run.turn_stats, single_pass_tok_s=single_pass_tok_s)
     run.ok = bool(run.answer.strip()) and not run.error
     run.anchors_hit, run.anchors_missing = anchors_found(task, run.answer)
     _collect_patch(task, run, worktree)
@@ -914,6 +934,7 @@ def artifact(
     idle_notice_every: int = 10,
     max_idle_notices: int = 3,
     think_off_after: int = 0,
+    single_pass_tok_s: float = SINGLE_PASS_PREFILL_TOK_S,
 ) -> dict[str, Any]:
     """Schema-identical to the other arm's `run` output, plus a `harness` block."""
     return {
@@ -942,6 +963,7 @@ def artifact(
             "idle_notice_every": idle_notice_every,
             "max_idle_notices": max_idle_notices,
             "think_off_after": think_off_after,
+            "single_pass_prefill_tok_s": single_pass_tok_s,
             "answer_reviews": answer_reviews,
             "handed_context": list(handed),
             "hide_answer_key": hide_answer_key,
